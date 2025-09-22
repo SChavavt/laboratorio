@@ -128,21 +128,23 @@ tab1, tab2 = st.tabs(["➕ Nuevo Proceso", "📋 Consulta"])
 
 # ➕ NUEVO PROCESO
 with tab1:
-    st.subheader("Registrar nuevo proceso")
+    st.subheader("🆕 Registrar nuevo proceso")
 
     with st.form("form_nuevo"):
-        in_orden = st.text_input("No. orden *")
-        in_paciente = st.text_input("Nombre del paciente *")
-        in_doctor = st.text_input("Nombre del doctor *")
-        in_status = st.selectbox("Status *", STATUS_OPTIONS)
-        in_status_nemo = st.selectbox("Status en NEMO *", STATUS_NEMO_OPTIONS)
-        in_tipo_alineador = st.selectbox("Tipo de alineador *", ["Graphy", "Convencional"])
-        in_fecha_recepcion = st.date_input("Fecha de recepción *", datetime.today())
-        in_dias_entrega = st.number_input(
-            "Días de entrega *", min_value=1, value=1, step=1
+        in_orden = st.text_input("🧾 No. orden *")
+        in_paciente = st.text_input("🧑‍🦱 Nombre del paciente *")
+        in_doctor = st.text_input("🧑‍⚕️ Nombre del doctor *")
+        in_status = st.selectbox("📌 Status *", STATUS_OPTIONS)
+        in_status_nemo = st.selectbox("🌐 Status en NEMO *", STATUS_NEMO_OPTIONS)
+        in_tipo_alineador = st.selectbox(
+            "🦷 Tipo de alineador *", ["Graphy", "Convencional"]
         )
-        in_comentarios = st.text_area("Comentarios")
-        in_notas = st.text_area("Notas")
+        in_fecha_recepcion = st.date_input("📅 Fecha de recepción *", datetime.today())
+        in_dias_entrega = st.number_input(
+            "⏳ Días de entrega *", min_value=1, value=1, step=1
+        )
+        in_comentarios = st.text_area("💬 Comentarios")
+        in_notas = st.text_area("📝 Notas")
         enviado = st.form_submit_button("💾 Guardar")
 
     if (
@@ -170,10 +172,10 @@ with tab1:
             "Ultima_Modificacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         append_row(row)
-        st.success("✅ Proceso registrado correctamente.")
+        st.success("🎉 Proceso registrado correctamente.")
         st.cache_data.clear()
     elif enviado:
-        st.error("❌ Por favor completa los campos obligatorios (*).")
+        st.error("⚠️ Por favor completa los campos obligatorios (*).")
 
 # 📋 CONSULTA
 with tab2:
