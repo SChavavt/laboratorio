@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import gspread
+import json
 from google.oauth2.service_account import Credentials
 
 # ==============================
@@ -73,10 +74,11 @@ STATUS_NEMO_OPTIONS = [
 # 🔐 CLIENTE GOOGLE SHEETS
 # ==============================
 def _get_gs_client():
-    creds_info = st.secrets["gsheets"]["google_credentials"]  # 👈 sin dict()
+    creds_str = st.secrets["gsheets"]["google_credentials"]  # 👈 viene como string
+    creds_info = json.loads(creds_str)  # 👈 lo convertimos en dict
     credentials = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     return gspread.authorize(credentials)
-
+    
 @st.cache_resource
 def get_worksheet():
     client = _get_gs_client()
