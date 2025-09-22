@@ -73,6 +73,115 @@ STATUS_NEMO_OPTIONS = [
     "Solo impresión",
 ]
 
+STATUS_COLOR_PREFIXES = [
+    ("1.", "#FFE0B2"),
+    ("2.", "#FFF59D"),
+    ("3.", "#D1C4E9"),
+    ("4.", "#BBDEFB"),
+    ("5.", "#C8E6C9"),
+    ("6.", "#DCEDC8"),
+    ("7.", "#E6EE9C"),
+    ("8.", "#FFF9C4"),
+    ("9.", "#FFE082"),
+    ("10.", "#FFCC80"),
+    ("11.", "#FFAB91"),
+    ("12.", "#F8BBD0"),
+    ("13.", "#F48FB1"),
+    ("14.", "#CE93D8"),
+    ("15.", "#B39DDB"),
+    ("16.", "#9FA8DA"),
+    ("17.", "#90CAF9"),
+]
+
+STATUS_COLOR_EXACT = {
+    "Revisados": "#A5D6A7",
+    "Falta Pago": "#EF9A9A",
+    "Esperando respuesta del Dr.": "#FFE082",
+    "REFINAMIENTO": "#80CBC4",
+}
+
+STATUS_NEMO_BADGE_COLORS = {
+    "Nuevo": "#90CAF9",
+    "Carpeta específica": "#CE93D8",
+    "Duplicado": "#EF9A9A",
+    "Seguimiento": "#FFE082",
+    "Solo impresión": "#A5D6A7",
+}
+
+STATUS_BADGE_DEFAULT_COLOR = "#CFD8DC"
+
+DISPLAY_COLUMN_MAP = {
+    "Nombre_paciente": "Paciente",
+    "Nombre_doctor": "Doctor",
+    "Status_NEMO": "Status en NEMO",
+    "Tipo_alineador": "Tipo de alineador",
+    "Fecha_recepcion": "Fecha de recepción",
+    "Dias_entrega": "Días de entrega",
+    "Ultima_Modificacion": "Última modificación",
+}
+
+DISPLAY_COLUMNS_ORDER = [
+    "Paciente",
+    "Doctor",
+    "Status",
+    "Status en NEMO",
+    "Tipo de alineador",
+    "Fecha de recepción",
+    "Días de entrega",
+    "Comentarios",
+    "Notas",
+    "Última modificación",
+]
+
+
+def _is_light_color(hex_color: str) -> bool:
+    if not hex_color:
+        return True
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        return True
+    try:
+        r, g, b = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return True
+    brightness = 0.299 * r + 0.587 * g + 0.114 * b
+    return brightness > 180
+
+
+def _badge_style_for_color(color: str) -> str:
+    text_color = "#000000" if _is_light_color(color) else "#FFFFFF"
+    return (
+        f"background-color: {color};"
+        "border-radius: 999px;"
+        "padding: 0.15rem 0.6rem;"
+        "font-weight: 600;"
+        "text-align: center;"
+        f"color: {text_color};"
+    )
+
+
+def _status_badge_style(value) -> str:
+    if pd.isna(value):
+        return ""
+    status_text = str(value).strip()
+    if not status_text:
+        return ""
+    color = next(
+        (color for prefix, color in STATUS_COLOR_PREFIXES if status_text.startswith(prefix)),
+        STATUS_COLOR_EXACT.get(status_text, STATUS_BADGE_DEFAULT_COLOR),
+    )
+    return _badge_style_for_color(color)
+
+
+def _status_nemo_badge_style(value) -> str:
+    if pd.isna(value):
+        return ""
+    status_text = str(value).strip()
+    if not status_text:
+        return ""
+    color = STATUS_NEMO_BADGE_COLORS.get(status_text, STATUS_BADGE_DEFAULT_COLOR)
+    return _badge_style_for_color(color)
+
 # ==============================
 # 🔐 CLIENTE GOOGLE SHEETS
 # ==============================
@@ -180,6 +289,30 @@ with tab2:
     st.subheader("Listado de procesos")
     df = fetch_df()
     if not df.empty:
-        st.dataframe(df, use_container_width=True, height=600)
+        display_df = df.drop(columns=["No_orden"], errors="ignore").copy()
+        display_df = display_df.rename(columns=DISPLAY_COLUMN_MAP)
+        if "Fecha de recepción" in display_df.columns:
+            fechas_originales = display_df["Fecha de recepción"]
+            fechas_convertidas = pd.to_datetime(
+                fechas_originales, errors="coerce"
+            )
+            fechas_formateadas = fechas_convertidas.dt.strftime("%d/%m/%Y")
+            display_df["Fecha de recepción"] = fechas_formateadas.where(
+                ~fechas_convertidas.isna(), fechas_originales
+            )
+        display_df = display_df.fillna("")
+        ordered_columns = [
+            column for column in DISPLAY_COLUMNS_ORDER if column in display_df.columns
+        ]
+        if ordered_columns:
+            display_df = display_df.loc[:, ordered_columns]
+        styler = display_df.style
+        if "Status" in display_df.columns:
+            styler = styler.applymap(_status_badge_style, subset=["Status"])
+        if "Status en NEMO" in display_df.columns:
+            styler = styler.applymap(
+                _status_nemo_badge_style, subset=["Status en NEMO"]
+            )
+        st.dataframe(styler, use_container_width=True, height=600, hide_index=True)
     else:
         st.info("No hay procesos registrados aún.")
