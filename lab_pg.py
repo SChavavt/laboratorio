@@ -93,7 +93,12 @@ def get_worksheet():
         ws = ss.worksheet(ws_name)
     except gspread.WorksheetNotFound:
         ws = ss.add_worksheet(title=ws_name, rows="1000", cols=str(len(COLUMNS)))
-        ws.update([COLUMNS])
+        ws.update("A1", [COLUMNS])
+    else:
+        # Mantener sincronizada la fila de encabezados con los campos definidos.
+        current_headers = ws.row_values(1)
+        if current_headers[: len(COLUMNS)] != COLUMNS:
+            ws.update("A1", [COLUMNS])
     return ws
 
 @st.cache_data(ttl=30)
@@ -158,8 +163,8 @@ with tab1:
             "Status": in_status,
             "Status_NEMO": in_status_nemo,
             "Tipo_alineador": in_tipo_alineador,
-            "Fecha_recepcion": in_fecha_recepcion.isoformat(),
-            "Dias_entrega": int(in_dias_entrega),
+            "Fecha_recepcion": in_fecha_recepcion.strftime("%Y-%m-%d"),
+            "Dias_entrega": str(int(in_dias_entrega)),
             "Comentarios": in_comentarios,
             "Notas": in_notas,
             "Ultima_Modificacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
