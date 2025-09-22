@@ -17,9 +17,12 @@ COLUMNS = [
     "No_orden",
     "Nombre_paciente",
     "Nombre_doctor",
-    "Comentarios",
     "Status",
     "Status_NEMO",
+    "Tipo_alineador",
+    "Fecha_recepcion",
+    "Dias_entrega",
+    "Comentarios",
     "Notas",
     "Ultima_Modificacion",
 ]
@@ -126,20 +129,38 @@ with tab1:
         in_orden = st.text_input("No. orden *")
         in_paciente = st.text_input("Nombre del paciente *")
         in_doctor = st.text_input("Nombre del doctor *")
-        in_comentarios = st.text_area("Comentarios")
         in_status = st.selectbox("Status *", STATUS_OPTIONS)
         in_status_nemo = st.selectbox("Status en NEMO *", STATUS_NEMO_OPTIONS)
+        in_tipo_alineador = st.selectbox("Tipo de alineador *", ["Graphy", "Convencional"])
+        in_fecha_recepcion = st.date_input("Fecha de recepción *", datetime.today())
+        in_dias_entrega = st.number_input(
+            "Días de entrega *", min_value=1, value=1, step=1
+        )
+        in_comentarios = st.text_area("Comentarios")
         in_notas = st.text_area("Notas")
         enviado = st.form_submit_button("💾 Guardar")
 
-    if enviado and in_orden and in_paciente and in_doctor:
+    if (
+        enviado
+        and in_orden
+        and in_paciente
+        and in_doctor
+        and in_status
+        and in_status_nemo
+        and in_tipo_alineador
+        and in_fecha_recepcion
+        and in_dias_entrega
+    ):
         row = {
             "No_orden": in_orden,
             "Nombre_paciente": in_paciente,
             "Nombre_doctor": in_doctor,
-            "Comentarios": in_comentarios,
             "Status": in_status,
             "Status_NEMO": in_status_nemo,
+            "Tipo_alineador": in_tipo_alineador,
+            "Fecha_recepcion": in_fecha_recepcion.isoformat(),
+            "Dias_entrega": int(in_dias_entrega),
+            "Comentarios": in_comentarios,
             "Notas": in_notas,
             "Ultima_Modificacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
