@@ -140,26 +140,52 @@ def append_row(row):
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 
-def update_process(no_orden, data_dict):
+def update_process(identifier, data_dict):
     df = fetch_df()
     if df.empty:
         return False
 
-    procesos = df[df["No_orden"].astype(str).str.strip() != ""]
-    if procesos.empty:
-        return False
+    row_idx = None
+    current_no_orden = None
 
-    matching = procesos[procesos["No_orden"] == no_orden]
-    if matching.empty:
-        return False
+    if isinstance(identifier, tuple):
+        if len(identifier) >= 2:
+            current_no_orden = identifier[0]
+            row_idx = identifier[1]
+        elif identifier:
+            current_no_orden = identifier[0]
+    elif isinstance(identifier, dict):
+        current_no_orden = identifier.get("No_orden")
+        row_idx = identifier.get("row_index")
+    else:
+        current_no_orden = identifier
 
-    row_idx = matching.index[0]
+    if row_idx is not None:
+        try:
+            row_idx = int(row_idx)
+        except (TypeError, ValueError):
+            return False
+        if row_idx not in df.index:
+            return False
+        row_series = df.loc[row_idx]
+    else:
+        procesos = df[df["No_orden"].astype(str).str.strip() != ""]
+        if procesos.empty:
+            return False
+
+        current_no_orden = str(current_no_orden)
+        matching = procesos[procesos["No_orden"] == current_no_orden]
+        if matching.empty:
+            return False
+        row_idx = matching.index[0]
+        row_series = matching.iloc[0]
+
     row_number = row_idx + 2  # encabezado +1
 
     start_col = COLUMNS.index("Responsable_SUD") + 1
     end_col = COLUMNS.index("Fecha_solicitud_envio") + 1
 
-    row_values = [matching.iloc[0].get(col, "") for col in COLUMNS]
+    row_values = [row_series.get(col, "") for col in COLUMNS]
     for col, value in data_dict.items():
         if col in COLUMNS:
             row_values[COLUMNS.index(col)] = str(value)
@@ -190,7 +216,6 @@ with tab1:
     st.subheader("🆕 Registrar nuevo proceso")
 
     with st.form("form_nuevo"):
-        in_orden = st.text_input("🧾 No. orden *")
         in_paciente = st.text_input("🧑‍🦱 Nombre del paciente *")
         in_doctor = st.text_input("🧑‍⚕️ Nombre del doctor *")
         in_status = st.selectbox("📌 Status *", STATUS_OPTIONS)
@@ -208,7 +233,6 @@ with tab1:
 
     if (
         enviado
-        and in_orden
         and in_paciente
         and in_doctor
         and in_status
@@ -218,7 +242,7 @@ with tab1:
         and in_dias_entrega
     ):
         row = {
-            "No_orden": in_orden,
+            "No_orden": "",
             "Nombre_paciente": in_paciente,
             "Nombre_doctor": in_doctor,
             "Status": in_status,
@@ -251,46 +275,50 @@ with tab_sud:
     st.subheader("Gestión de SUD")
     df_sud = fetch_df()
 
-    if df_sud.empty or df_sud["No_orden"].astype(str).str.strip().eq("").all():
+    if df_sud.empty:
         st.info("No hay procesos disponibles para actualizar.")
     else:
-        procesos = df_sud[df_sud["No_orden"].astype(str).str.strip() != ""].copy()
-        procesos["No_orden"] = procesos["No_orden"].astype(str)
-        procesos["Nombre_paciente"] = procesos["Nombre_paciente"].astype(str)
+        procesos = df_sud.copy()
         display_labels = {}
-        for _, row in procesos.iterrows():
-            label = (
-                f"{row['No_orden']} – {row['Nombre_paciente']}"
-                if row["Nombre_paciente"].strip()
-                else str(row["No_orden"])
-            )
-            display_labels[row["No_orden"]] = label
-        opciones = list(dict.fromkeys(procesos["No_orden"].tolist()))
+        for idx, row in procesos.iterrows():
+            no_orden = str(row.get("No_orden", "") or "").strip()
+            if no_orden.lower() == "nan":
+                no_orden = ""
+            paciente = str(row.get("Nombre_paciente", "") or "").strip()
+            paciente = paciente or "Sin nombre"
+            if no_orden:
+                label = f"{no_orden} – {paciente}"
+            else:
+                label = f"Sin No. orden – {paciente} (fila {idx + 2})"
+            display_labels[idx] = label
 
-        if not opciones:
-            st.info("No hay procesos con número de orden válido.")
-        else:
-            selected_no_orden = st.selectbox(
-                "Selecciona el proceso",
-                opciones,
-                format_func=lambda x: display_labels.get(x, str(x)),
-            )
+        opciones = list(procesos.index)
 
-            selected_row = procesos[procesos["No_orden"] == selected_no_orden].iloc[0]
+        selected_idx = st.selectbox(
+            "Selecciona el proceso",
+            opciones,
+            format_func=lambda x: display_labels.get(x, f"Fila {x + 2}"),
+        )
 
-            def _parse_date(value):
-                try:
-                    return datetime.strptime(value, "%Y-%m-%d").date()
-                except Exception:
-                    return None
+        selected_row = procesos.loc[selected_idx]
+        current_no_orden = str(selected_row.get("No_orden", "") or "").strip()
+        if current_no_orden.lower() == "nan":
+            current_no_orden = ""
+        identifier = (current_no_orden if current_no_orden else None, selected_idx)
 
-            def _parse_time(value):
-                for fmt in ("%H:%M", "%H:%M:%S"):
-                    try:
-                        return datetime.strptime(value, fmt).time()
-                    except Exception:
-                        continue
+        def _parse_date(value):
+            try:
+                return datetime.strptime(value, "%Y-%m-%d").date()
+            except Exception:
                 return None
+
+        def _parse_time(value):
+            for fmt in ("%H:%M", "%H:%M:%S"):
+                try:
+                    return datetime.strptime(value, fmt).time()
+                except Exception:
+                    continue
+            return None
 
             fecha_inicio_val = _parse_date(selected_row.get("Fecha_inicio_SUD", ""))
             fecha_solicitud_val = _parse_date(
@@ -387,7 +415,7 @@ with tab_sud:
                         "Fecha_solicitud_envio": fecha_solicitud.isoformat(),
                     }
 
-                    if update_process(selected_no_orden, data):
+                    if update_process(identifier, data):
                         st.success("Información SUD actualizada correctamente.")
                         st.cache_data.clear()
                     else:
@@ -399,7 +427,71 @@ with tab_sud:
 with tab2:
     st.subheader("Listado de procesos")
     df = fetch_df()
-    if not df.empty:
-        st.dataframe(df, use_container_width=True, height=600)
-    else:
+    if df.empty:
         st.info("No hay procesos registrados aún.")
+    else:
+        procesos_labels = {}
+        for idx, row in df.iterrows():
+            no_orden = str(row.get("No_orden", "") or "").strip()
+            if no_orden.lower() == "nan":
+                no_orden = ""
+            paciente = str(row.get("Nombre_paciente", "") or "").strip()
+            paciente = paciente or "Sin nombre"
+            if no_orden:
+                label = f"{no_orden} – {paciente}"
+            else:
+                label = f"Sin No. orden – {paciente} (fila {idx + 2})"
+            procesos_labels[idx] = label
+
+        opciones = list(df.index)
+        if not opciones:
+            st.info("No hay procesos registrados aún.")
+        else:
+            default_selection = st.session_state.get("tab2_selected_idx", opciones[0])
+            if default_selection not in opciones:
+                default_selection = opciones[0]
+
+            form_key = "form_editar_no_orden"
+            input_key = "tab2_no_orden_input"
+
+            with st.form(form_key):
+                selected_idx = st.selectbox(
+                    "Selecciona el proceso a editar",
+                    opciones,
+                    format_func=lambda x: procesos_labels.get(x, f"Fila {x + 2}"),
+                    index=opciones.index(default_selection),
+                )
+
+                current_value = str(df.at[selected_idx, "No_orden"] or "").strip()
+                if current_value.lower() == "nan":
+                    current_value = ""
+
+                stored_selection = st.session_state.get("tab2_selected_idx")
+                if stored_selection != selected_idx or input_key not in st.session_state:
+                    st.session_state[input_key] = current_value
+
+                st.session_state["tab2_selected_idx"] = selected_idx
+
+                nuevo_no_orden = st.text_input(
+                    "No. orden",
+                    key=input_key,
+                )
+
+                guardar_orden = st.form_submit_button("Guardar número de orden")
+
+            if guardar_orden:
+                ws = get_worksheet()
+                row_number = selected_idx + 2
+                col_number = COLUMNS.index("No_orden") + 1
+                cell = rowcol_to_a1(row_number, col_number)
+                valor = (nuevo_no_orden or "").strip()
+                ws.update(cell, valor)
+                ws.update(
+                    rowcol_to_a1(row_number, COLUMNS.index("Ultima_Modificacion") + 1),
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                st.success("Número de orden actualizado correctamente.")
+                st.session_state[input_key] = valor
+                st.cache_data.clear()
+
+        st.dataframe(df, use_container_width=True, height=600)
