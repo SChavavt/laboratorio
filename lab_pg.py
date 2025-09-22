@@ -4,6 +4,7 @@ import time
 from datetime import datetime, date
 import gspread
 from google.oauth2.service_account import Credentials
+import json
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -33,8 +34,8 @@ PRIORIDADES = ["Alta", "Media", "Baja"]
 # 🔐 CLIENTE GOOGLE SHEETS
 # ==============================
 def _get_gs_client():
-    creds_info = dict(st.secrets.get("google_credentials", {}))
-    credentials = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+    creds_dict = json.loads(st.secrets["gsheets"]["google_credentials"])
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
     return gspread.authorize(credentials)
 
 @st.cache_resource
@@ -91,12 +92,34 @@ def update_row_by_id(id_value, row):
 st.set_page_config(page_title="Procesos ARTTDLAB", layout="wide")
 st.title("📋 Plataforma de Procesos – ARTTDLAB")
 
-tab1, tab2, tab3 = st.tabs(["📋 Lista", "➕ Nuevo", "✏️ Editar"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📋 Lista", "➕ Nuevo", "✏️ Editar", "📊 Estadísticas", "⚙️ Admin"]
+)
 
 # 📋 LISTA
 with tab1:
     st.subheader("Listado de Procesos")
     df = fetch_df()
+
+    with st.expander("🔎 Filtros", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        estado = col1.selectbox("Estado", ["(Todos)"] + ESTADOS)
+        prioridad = col2.selectbox("Prioridad", ["(Todos)"] + PRIORIDADES)
+        responsable = col3.text_input("Responsable contiene...")
+        buscar = st.text_input("Buscar en Proceso/Comentarios...")
+
+    if estado != "(Todos)":
+        df = df[df["Estado"] == estado]
+    if prioridad != "(Todos)":
+        df = df[df["Prioridad"] == prioridad]
+    if responsable:
+        df = df[df["Responsable"].str.contains(responsable, case=False, na=False)]
+    if buscar:
+        df = df[
+            df["Proceso"].str.contains(buscar, case=False, na=False)
+            | df["Comentarios"].str.contains(buscar, case=False, na=False)
+        ]
+
     st.dataframe(df, use_container_width=True, height=500)
 
 # ➕ NUEVO
@@ -144,8 +167,20 @@ with tab3:
         with st.form("form_editar"):
             ed_proceso = st.text_input("Proceso *", value=row_now["Proceso"])
             ed_responsable = st.text_input("Responsable *", value=row_now["Responsable"])
-            ed_estado = st.selectbox("Estado", ESTADOS, index=ESTADOS.index(row_now["Estado"]) if row_now["Estado"] in ESTADOS else 0)
-            ed_prioridad = st.selectbox("Prioridad", PRIORIDADES, index=PRIORIDADES.index(row_now["Prioridad"]) if row_now["Prioridad"] in PRIORIDADES else 1)
+            ed_estado = st.selectbox(
+                "Estado",
+                ESTADOS,
+                index=ESTADOS.index(row_now["Estado"])
+                if row_now["Estado"] in ESTADOS
+                else 0,
+            )
+            ed_prioridad = st.selectbox(
+                "Prioridad",
+                PRIORIDADES,
+                index=PRIORIDADES.index(row_now["Prioridad"])
+                if row_now["Prioridad"] in PRIORIDADES
+                else 1,
+            )
             ed_coment = st.text_area("Comentarios", value=row_now["Comentarios"])
             enviado = st.form_submit_button("💾 Actualizar")
 
@@ -165,3 +200,32 @@ with tab3:
             update_row_by_id(sel_id, new_row)
             st.success("✅ Proceso actualizado correctamente.")
             st.cache_data.clear()
+
+# 📊 ESTADÍSTICAS
+with tab4:
+    st.subheader("Estadísticas de Procesos")
+    df_stats = fetch_df()
+    if not df_stats.empty:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Por Estado**")
+            st.bar_chart(df_stats["Estado"].value_counts())
+        with col2:
+            st.markdown("**Por Prioridad**")
+            st.bar_chart(df_stats["Prioridad"].value_counts())
+
+# ⚙️ ADMIN
+with tab5:
+    st.subheader("Administración")
+    df_exp = fetch_df()
+    if not df_exp.empty:
+        csv = df_exp.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Descargar CSV",
+            csv,
+            "procesos_arttdlab.csv",
+            mime="text/csv",
+        )
+
+    st.write(f"**Sheet ID:** {st.secrets['gsheets']['sheet_id']}")
+    st.write(f"**Worksheet:** {st.secrets['gsheets']['worksheet_name']}")
