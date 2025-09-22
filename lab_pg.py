@@ -73,7 +73,7 @@ STATUS_NEMO_OPTIONS = [
 # 🔐 CLIENTE GOOGLE SHEETS
 # ==============================
 def _get_gs_client():
-    creds_info = dict(st.secrets["gsheets"]["google_credentials"])
+    creds_info = st.secrets["gsheets"]["google_credentials"]  # 👈 sin dict()
     credentials = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     return gspread.authorize(credentials)
 
