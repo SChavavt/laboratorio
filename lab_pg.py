@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import gspread
 import json
+from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 
 # ==============================
@@ -24,7 +25,27 @@ COLUMNS = [
     "Dias_entrega",
     "Comentarios",
     "Notas",
+    "Responsable_SUD",
+    "Fecha_inicio_SUD",
+    "Hora_inicio_SUD",
+    "Plantilla_superior",
+    "Plantilla_inferior",
+    "IPR",
+    "No_alineadores_superior",
+    "No_alineadores_inferior",
+    "Total_alineadores",
+    "Fecha_solicitud_envio",
     "Ultima_Modificacion",
+]
+
+RESPONSABLE_SUD_OPTIONS = [
+    "Selecciona",
+    "Arq Brenda",
+    "Karen",
+    "Melissa",
+    "Georgina",
+    "Carolina",
+    "Daniela",
 ]
 
 STATUS_OPTIONS = [
@@ -118,13 +139,51 @@ def append_row(row):
     values = [str(row.get(c, "")) for c in COLUMNS]
     ws.append_row(values, value_input_option="USER_ENTERED")
 
+
+def update_process(no_orden, data_dict):
+    df = fetch_df()
+    if df.empty:
+        return False
+
+    procesos = df[df["No_orden"].astype(str).str.strip() != ""]
+    if procesos.empty:
+        return False
+
+    matching = procesos[procesos["No_orden"] == no_orden]
+    if matching.empty:
+        return False
+
+    row_idx = matching.index[0]
+    row_number = row_idx + 2  # encabezado +1
+
+    start_col = COLUMNS.index("Responsable_SUD") + 1
+    end_col = COLUMNS.index("Fecha_solicitud_envio") + 1
+
+    row_values = [matching.iloc[0].get(col, "") for col in COLUMNS]
+    for col, value in data_dict.items():
+        if col in COLUMNS:
+            row_values[COLUMNS.index(col)] = str(value)
+
+    ws = get_worksheet()
+    start_cell = rowcol_to_a1(row_number, start_col)
+    end_cell = rowcol_to_a1(row_number, end_col)
+    ws.update(
+        f"{start_cell}:{end_cell}",
+        [row_values[start_col - 1 : end_col]],
+    )
+    ws.update(
+        rowcol_to_a1(row_number, COLUMNS.index("Ultima_Modificacion") + 1),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    return True
+
 # ==============================
 # 🚀 APP STREAMLIT
 # ==============================
 st.set_page_config(page_title="Procesos – ARTTDLAB", layout="wide")
 st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 
-tab1, tab2 = st.tabs(["➕ Nuevo Proceso", "📋 Consulta"])
+tab1, tab_sud, tab2 = st.tabs(["➕ Nuevo Proceso", "SUD", "📋 Consulta"])
 
 # ➕ NUEVO PROCESO
 with tab1:
@@ -169,6 +228,16 @@ with tab1:
             "Dias_entrega": str(int(in_dias_entrega)),
             "Comentarios": in_comentarios,
             "Notas": in_notas,
+            "Responsable_SUD": "",
+            "Fecha_inicio_SUD": "",
+            "Hora_inicio_SUD": "",
+            "Plantilla_superior": "",
+            "Plantilla_inferior": "",
+            "IPR": "",
+            "No_alineadores_superior": "",
+            "No_alineadores_inferior": "",
+            "Total_alineadores": "",
+            "Fecha_solicitud_envio": "",
             "Ultima_Modificacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         append_row(row)
@@ -176,6 +245,155 @@ with tab1:
         st.cache_data.clear()
     elif enviado:
         st.error("⚠️ Por favor completa los campos obligatorios (*).")
+
+# 🧩 SUD
+with tab_sud:
+    st.subheader("Gestión de SUD")
+    df_sud = fetch_df()
+
+    if df_sud.empty or df_sud["No_orden"].astype(str).str.strip().eq("").all():
+        st.info("No hay procesos disponibles para actualizar.")
+    else:
+        procesos = df_sud[df_sud["No_orden"].astype(str).str.strip() != ""].copy()
+        procesos["No_orden"] = procesos["No_orden"].astype(str)
+        procesos["Nombre_paciente"] = procesos["Nombre_paciente"].astype(str)
+        display_labels = {}
+        for _, row in procesos.iterrows():
+            label = (
+                f"{row['No_orden']} – {row['Nombre_paciente']}"
+                if row["Nombre_paciente"].strip()
+                else str(row["No_orden"])
+            )
+            display_labels[row["No_orden"]] = label
+        opciones = list(dict.fromkeys(procesos["No_orden"].tolist()))
+
+        if not opciones:
+            st.info("No hay procesos con número de orden válido.")
+        else:
+            selected_no_orden = st.selectbox(
+                "Selecciona el proceso",
+                opciones,
+                format_func=lambda x: display_labels.get(x, str(x)),
+            )
+
+            selected_row = procesos[procesos["No_orden"] == selected_no_orden].iloc[0]
+
+            def _parse_date(value):
+                try:
+                    return datetime.strptime(value, "%Y-%m-%d").date()
+                except Exception:
+                    return None
+
+            def _parse_time(value):
+                for fmt in ("%H:%M", "%H:%M:%S"):
+                    try:
+                        return datetime.strptime(value, fmt).time()
+                    except Exception:
+                        continue
+                return None
+
+            fecha_inicio_val = _parse_date(selected_row.get("Fecha_inicio_SUD", ""))
+            fecha_solicitud_val = _parse_date(
+                selected_row.get("Fecha_solicitud_envio", "")
+            )
+            hora_inicio_val = _parse_time(selected_row.get("Hora_inicio_SUD", ""))
+
+            responsable_default = selected_row.get("Responsable_SUD", "")
+            responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
+            if (
+                responsable_default
+                and responsable_default not in responsable_options
+            ):
+                responsable_options.append(responsable_default)
+            responsable_index = (
+                responsable_options.index(responsable_default)
+                if responsable_default in responsable_options
+                else 0
+            )
+
+            with st.form("form_sud"):
+                responsable = st.selectbox(
+                    "Responsable hacer SUD *",
+                    responsable_options,
+                    index=responsable_index,
+                )
+                fecha_inicio = st.date_input(
+                    "Fecha inicio SUD *",
+                    value=fecha_inicio_val or datetime.today().date(),
+                )
+                hora_inicio = st.time_input(
+                    "Hora de inicio *",
+                    value=hora_inicio_val or datetime.now().time().replace(second=0, microsecond=0),
+                )
+                plantilla_superior = st.text_input(
+                    "Plantilla superior *",
+                    value=selected_row.get("Plantilla_superior", ""),
+                )
+                plantilla_inferior = st.text_input(
+                    "Plantilla inferior *",
+                    value=selected_row.get("Plantilla_inferior", ""),
+                )
+                ipr_default = selected_row.get("IPR", "-") if selected_row.get("IPR") else "-"
+                ipr = st.radio("IPR *", options=["x", "-"], index=0 if ipr_default == "x" else 1)
+                no_sup = st.number_input(
+                    "No. alineadores superior *",
+                    min_value=0,
+                    value=int(selected_row.get("No_alineadores_superior", "0") or 0),
+                    step=1,
+                )
+                no_inf = st.number_input(
+                    "No. alineadores inferior *",
+                    min_value=0,
+                    value=int(selected_row.get("No_alineadores_inferior", "0") or 0),
+                    step=1,
+                )
+                total_alineadores = no_sup + no_inf
+                st.number_input(
+                    "Total alineadores",
+                    min_value=0,
+                    value=total_alineadores,
+                    step=1,
+                    disabled=True,
+                )
+                fecha_solicitud = st.date_input(
+                    "Fecha solicitud de envío *",
+                    value=fecha_solicitud_val or datetime.today().date(),
+                )
+
+                guardar_sud = st.form_submit_button("Actualizar SUD")
+
+            if guardar_sud:
+                errores = []
+                if responsable in ("", "Selecciona"):
+                    errores.append("Selecciona un responsable.")
+                if not plantilla_superior.strip():
+                    errores.append("Ingresa la plantilla superior.")
+                if not plantilla_inferior.strip():
+                    errores.append("Ingresa la plantilla inferior.")
+
+                if errores:
+                    st.error("\n".join(errores))
+                else:
+                    data = {
+                        "Responsable_SUD": responsable,
+                        "Fecha_inicio_SUD": fecha_inicio.isoformat(),
+                        "Hora_inicio_SUD": hora_inicio.strftime("%H:%M"),
+                        "Plantilla_superior": plantilla_superior.strip(),
+                        "Plantilla_inferior": plantilla_inferior.strip(),
+                        "IPR": ipr,
+                        "No_alineadores_superior": str(no_sup),
+                        "No_alineadores_inferior": str(no_inf),
+                        "Total_alineadores": str(total_alineadores),
+                        "Fecha_solicitud_envio": fecha_solicitud.isoformat(),
+                    }
+
+                    if update_process(selected_no_orden, data):
+                        st.success("Información SUD actualizada correctamente.")
+                        st.cache_data.clear()
+                    else:
+                        st.error(
+                            "No se encontró el proceso o no fue posible actualizar los datos."
+                        )
 
 # 📋 CONSULTA
 with tab2:
