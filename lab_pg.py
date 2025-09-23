@@ -434,32 +434,14 @@ with tab_sud:
         st.info("No hay procesos disponibles para actualizar.")
     else:
         procesos = df_sud.copy()
-        display_labels = {}
-        for idx, row in procesos.iterrows():
-            no_orden = str(row.get("No_orden", "") or "").strip()
-            if no_orden.lower() == "nan":
-                no_orden = ""
-            paciente = str(row.get("Nombre_paciente", "") or "").strip()
-            paciente = paciente or "Sin nombre"
-            if no_orden:
-                label = f"{no_orden} – {paciente}"
-            else:
-                label = f"Sin No. orden – {paciente} (fila {idx + 2})"
-            display_labels[idx] = label
 
-        opciones = list(procesos.index)
-
-        selected_idx = st.selectbox(
-            "Selecciona el proceso",
-            opciones,
-            format_func=lambda x: display_labels.get(x, f"Fila {x + 2}"),
-        )
-
-        selected_row = procesos.loc[selected_idx]
-        current_no_orden = str(selected_row.get("No_orden", "") or "").strip()
-        if current_no_orden.lower() == "nan":
-            current_no_orden = ""
-        identifier = (current_no_orden if current_no_orden else None, selected_idx)
+        status_nemo_emojis = {
+            "Nuevo": "🆕",
+            "Carpeta específica": "📁",
+            "Duplicado": "🧬",
+            "Seguimiento": "📌",
+            "Solo impresión": "🖨️",
+        }
 
         def _parse_date(value):
             try:
@@ -475,108 +457,164 @@ with tab_sud:
                     continue
             return None
 
-            fecha_inicio_val = _parse_date(selected_row.get("Fecha_inicio_SUD", ""))
-            fecha_solicitud_val = _parse_date(
-                selected_row.get("Fecha_solicitud_envio", "")
+        def _parse_int(value, default=0):
+            if value is None:
+                return default
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if not cleaned or cleaned.lower() == "nan":
+                    return default
+                value = cleaned
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return default
+
+        for idx, row in procesos.iterrows():
+            no_orden = str(row.get("No_orden", "") or "").strip()
+            if no_orden.lower() == "nan":
+                no_orden = ""
+            paciente = str(row.get("Nombre_paciente", "") or "").strip() or "Sin nombre"
+            doctor = str(row.get("Nombre_doctor", "") or "").strip() or "Sin doctor"
+
+            status_nemo_value, status_nemo_label, _ = _resolve_option_data(
+                row.get("Status_NEMO"),
+                row.get("Status_NEMO_Color"),
+                by_value=STATUS_NEMO_BY_VALUE,
+                by_label=STATUS_NEMO_BY_LABEL,
             )
-            hora_inicio_val = _parse_time(selected_row.get("Hora_inicio_SUD", ""))
+            status_nemo_label = status_nemo_label or "Sin status NEMO"
+            status_nemo_emoji = status_nemo_emojis.get(status_nemo_label, "❓")
+            expander_title = f"{status_nemo_emoji} {paciente} – {doctor} • {status_nemo_label}"
 
-            responsable_default = selected_row.get("Responsable_SUD", "")
-            responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
-            if (
-                responsable_default
-                and responsable_default not in responsable_options
-            ):
-                responsable_options.append(responsable_default)
-            responsable_index = (
-                responsable_options.index(responsable_default)
-                if responsable_default in responsable_options
-                else 0
-            )
+            identifier = (no_orden if no_orden else None, idx)
 
-            with st.form("form_sud"):
-                responsable = st.selectbox(
-                    "Responsable hacer SUD *",
-                    responsable_options,
-                    index=responsable_index,
-                )
-                fecha_inicio = st.date_input(
-                    "Fecha inicio SUD *",
-                    value=fecha_inicio_val or datetime.today().date(),
-                )
-                hora_inicio = st.time_input(
-                    "Hora de inicio *",
-                    value=hora_inicio_val or datetime.now().time().replace(second=0, microsecond=0),
-                )
-                plantilla_superior = st.text_input(
-                    "Plantilla superior *",
-                    value=selected_row.get("Plantilla_superior", ""),
-                )
-                plantilla_inferior = st.text_input(
-                    "Plantilla inferior *",
-                    value=selected_row.get("Plantilla_inferior", ""),
-                )
-                ipr_default = selected_row.get("IPR", "-") if selected_row.get("IPR") else "-"
-                ipr = st.radio("IPR *", options=["x", "-"], index=0 if ipr_default == "x" else 1)
-                no_sup = st.number_input(
-                    "No. alineadores superior *",
-                    min_value=0,
-                    value=int(selected_row.get("No_alineadores_superior", "0") or 0),
-                    step=1,
-                )
-                no_inf = st.number_input(
-                    "No. alineadores inferior *",
-                    min_value=0,
-                    value=int(selected_row.get("No_alineadores_inferior", "0") or 0),
-                    step=1,
-                )
-                total_alineadores = no_sup + no_inf
-                st.number_input(
-                    "Total alineadores",
-                    min_value=0,
-                    value=total_alineadores,
-                    step=1,
-                    disabled=True,
-                )
-                fecha_solicitud = st.date_input(
-                    "Fecha solicitud de envío *",
-                    value=fecha_solicitud_val or datetime.today().date(),
+            with st.expander(expander_title, expanded=False):
+                st.caption(
+                    f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
+                    f"Status NEMO ID: {status_nemo_value or 'N/D'}"
                 )
 
-                guardar_sud = st.form_submit_button("Actualizar SUD")
+                fecha_inicio_val = _parse_date(row.get("Fecha_inicio_SUD", ""))
+                fecha_solicitud_val = _parse_date(row.get("Fecha_solicitud_envio", ""))
+                hora_inicio_val = _parse_time(row.get("Hora_inicio_SUD", ""))
 
-            if guardar_sud:
-                errores = []
-                if responsable in ("", "Selecciona"):
-                    errores.append("Selecciona un responsable.")
-                if not plantilla_superior.strip():
-                    errores.append("Ingresa la plantilla superior.")
-                if not plantilla_inferior.strip():
-                    errores.append("Ingresa la plantilla inferior.")
+                responsable_default = row.get("Responsable_SUD", "")
+                responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
+                if (
+                    responsable_default
+                    and responsable_default not in responsable_options
+                ):
+                    responsable_options.append(responsable_default)
+                responsable_index = (
+                    responsable_options.index(responsable_default)
+                    if responsable_default in responsable_options
+                    else 0
+                )
 
-                if errores:
-                    st.error("\n".join(errores))
-                else:
-                    data = {
-                        "Responsable_SUD": responsable,
-                        "Fecha_inicio_SUD": fecha_inicio.isoformat(),
-                        "Hora_inicio_SUD": hora_inicio.strftime("%H:%M"),
-                        "Plantilla_superior": plantilla_superior.strip(),
-                        "Plantilla_inferior": plantilla_inferior.strip(),
-                        "IPR": ipr,
-                        "No_alineadores_superior": str(no_sup),
-                        "No_alineadores_inferior": str(no_inf),
-                        "Total_alineadores": str(total_alineadores),
-                        "Fecha_solicitud_envio": fecha_solicitud.isoformat(),
-                    }
+                form_key = f"form_sud_{idx}"
+                with st.form(form_key):
+                    responsable = st.selectbox(
+                        "Responsable hacer SUD *",
+                        responsable_options,
+                        index=responsable_index,
+                        key=f"{form_key}_responsable",
+                    )
+                    fecha_inicio = st.date_input(
+                        "Fecha inicio SUD *",
+                        value=fecha_inicio_val or datetime.today().date(),
+                        key=f"{form_key}_fecha_inicio",
+                    )
+                    hora_inicio = st.time_input(
+                        "Hora de inicio *",
+                        value=(
+                            hora_inicio_val
+                            or datetime.now()
+                            .time()
+                            .replace(second=0, microsecond=0)
+                        ),
+                        key=f"{form_key}_hora_inicio",
+                    )
+                    plantilla_superior = st.text_input(
+                        "Plantilla superior *",
+                        value=row.get("Plantilla_superior", ""),
+                        key=f"{form_key}_plantilla_sup",
+                    )
+                    plantilla_inferior = st.text_input(
+                        "Plantilla inferior *",
+                        value=row.get("Plantilla_inferior", ""),
+                        key=f"{form_key}_plantilla_inf",
+                    )
+                    ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
+                    ipr = st.radio(
+                        "IPR *",
+                        options=["x", "-"],
+                        index=0 if ipr_default == "x" else 1,
+                        key=f"{form_key}_ipr",
+                    )
+                    no_sup = st.number_input(
+                        "No. alineadores superior *",
+                        min_value=0,
+                        value=_parse_int(row.get("No_alineadores_superior", "0")),
+                        step=1,
+                        key=f"{form_key}_no_sup",
+                    )
+                    no_inf = st.number_input(
+                        "No. alineadores inferior *",
+                        min_value=0,
+                        value=_parse_int(row.get("No_alineadores_inferior", "0")),
+                        step=1,
+                        key=f"{form_key}_no_inf",
+                    )
+                    total_alineadores = int(no_sup + no_inf)
+                    st.number_input(
+                        "Total alineadores",
+                        min_value=0,
+                        value=total_alineadores,
+                        step=1,
+                        disabled=True,
+                        key=f"{form_key}_total",
+                    )
+                    fecha_solicitud = st.date_input(
+                        "Fecha solicitud de envío *",
+                        value=fecha_solicitud_val or datetime.today().date(),
+                        key=f"{form_key}_fecha_solicitud",
+                    )
 
-                    if update_process(identifier, data):
-                        st.success("Información SUD actualizada correctamente.")
-                        st.cache_data.clear()
+                    guardar_sud = st.form_submit_button("Actualizar SUD")
+
+                if guardar_sud:
+                    errores = []
+                    if responsable in ("", "Selecciona"):
+                        errores.append("Selecciona un responsable.")
+                    if not plantilla_superior.strip():
+                        errores.append("Ingresa la plantilla superior.")
+                    if not plantilla_inferior.strip():
+                        errores.append("Ingresa la plantilla inferior.")
+
+                    if errores:
+                        st.error("\n".join(errores))
                     else:
-                        st.error(
-                            "No se encontró el proceso o no fue posible actualizar los datos."
-                        )
+                        data = {
+                            "Responsable_SUD": responsable,
+                            "Fecha_inicio_SUD": fecha_inicio.isoformat(),
+                            "Hora_inicio_SUD": hora_inicio.strftime("%H:%M"),
+                            "Plantilla_superior": plantilla_superior.strip(),
+                            "Plantilla_inferior": plantilla_inferior.strip(),
+                            "IPR": ipr,
+                            "No_alineadores_superior": str(int(no_sup)),
+                            "No_alineadores_inferior": str(int(no_inf)),
+                            "Total_alineadores": str(total_alineadores),
+                            "Fecha_solicitud_envio": fecha_solicitud.isoformat(),
+                        }
+
+                        if update_process(identifier, data):
+                            st.success("Información SUD actualizada correctamente.")
+                            st.cache_data.clear()
+                        else:
+                            st.error(
+                                "No se encontró el proceso o no fue posible actualizar los datos."
+                            )
 
 # 📋 CONSULTA
 with tab2:
