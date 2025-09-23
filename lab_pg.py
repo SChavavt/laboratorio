@@ -626,18 +626,18 @@ with tab_sud:
                     )
 
                     responsable = st.selectbox(
-                        "Responsable hacer SUD *",
+                        "Responsable hacer SUD",
                         responsable_options,
                         index=responsable_index,
                         key=f"{form_key}_responsable",
                     )
                     fecha_inicio = st.date_input(
-                        "Fecha inicio SUD *",
+                        "Fecha inicio SUD",
                         value=fecha_inicio_val or datetime.today().date(),
                         key=f"{form_key}_fecha_inicio",
                     )
                     hora_inicio = st.time_input(
-                        "Hora de inicio *",
+                        "Hora de inicio",
                         value=(
                             hora_inicio_val
                             or datetime.now()
@@ -647,31 +647,31 @@ with tab_sud:
                         key=f"{form_key}_hora_inicio",
                     )
                     plantilla_superior = st.text_input(
-                        "Plantilla superior *",
+                        "Plantilla superior",
                         value=row.get("Plantilla_superior", ""),
                         key=f"{form_key}_plantilla_sup",
                     )
                     plantilla_inferior = st.text_input(
-                        "Plantilla inferior *",
+                        "Plantilla inferior",
                         value=row.get("Plantilla_inferior", ""),
                         key=f"{form_key}_plantilla_inf",
                     )
                     ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
                     ipr = st.radio(
-                        "IPR *",
+                        "IPR",
                         options=["x", "-"],
                         index=0 if ipr_default == "x" else 1,
                         key=f"{form_key}_ipr",
                     )
                     no_sup = st.number_input(
-                        "No. alineadores superior *",
+                        "No. alineadores superior",
                         min_value=0,
                         value=_parse_int(row.get("No_alineadores_superior", "0")),
                         step=1,
                         key=f"{form_key}_no_sup",
                     )
                     no_inf = st.number_input(
-                        "No. alineadores inferior *",
+                        "No. alineadores inferior",
                         min_value=0,
                         value=_parse_int(row.get("No_alineadores_inferior", "0")),
                         step=1,
@@ -687,7 +687,7 @@ with tab_sud:
                         key=f"{form_key}_total",
                     )
                     fecha_solicitud = st.date_input(
-                        "Fecha solicitud de envío *",
+                        "Fecha solicitud de envío",
                         value=fecha_solicitud_val or datetime.today().date(),
                         key=f"{form_key}_fecha_solicitud",
                     )
@@ -702,13 +702,6 @@ with tab_sud:
                         errores.append("Selecciona un status NEMO válido.")
                     if int(dias_entrega) < 1:
                         errores.append("Ingresa un número válido de días de entrega.")
-                    if responsable in ("", "Selecciona"):
-                        errores.append("Selecciona un responsable.")
-                    if not plantilla_superior.strip():
-                        errores.append("Ingresa la plantilla superior.")
-                    if not plantilla_inferior.strip():
-                        errores.append("Ingresa la plantilla inferior.")
-
                     if errores:
                         st.error("\n".join(errores))
                     else:
@@ -726,26 +719,82 @@ with tab_sud:
                             else status_nemo_color_value or ""
                         )
 
+                        def _merge_value(column_name, new_value, *, transform=None, strip=False):
+                            previous_raw = row.get(column_name, "")
+                            previous_value = _normalize_cell(previous_raw)
+                            if new_value is None:
+                                return previous_value
+                            value = new_value
+                            if strip and isinstance(value, str):
+                                value = value.strip()
+                            if transform is not None and value is not None:
+                                value = transform(value)
+                            if isinstance(value, str):
+                                return value
+                            return str(value)
+
+                        responsable_value = (
+                            "" if responsable in ("", "Selecciona") else responsable
+                        )
+
                         data = {
-                            "Status": status,
+                            "Status": _merge_value("Status", status),
                             "Status_Color": status_color_result,
-                            "Status_NEMO": status_nemo,
+                            "Status_NEMO": _merge_value("Status_NEMO", status_nemo),
                             "Status_NEMO_Color": status_nemo_color_result,
-                            "Tipo_alineador": tipo_alineador,
-                            "Fecha_recepcion": fecha_recepcion.isoformat(),
-                            "Dias_entrega": str(int(dias_entrega)),
-                            "Comentarios": comentarios,
-                            "Notas": notas,
-                            "Responsable_SUD": responsable,
-                            "Fecha_inicio_SUD": fecha_inicio.isoformat(),
-                            "Hora_inicio_SUD": hora_inicio.strftime("%H:%M"),
-                            "Plantilla_superior": plantilla_superior.strip(),
-                            "Plantilla_inferior": plantilla_inferior.strip(),
-                            "IPR": ipr,
-                            "No_alineadores_superior": str(int(no_sup)),
-                            "No_alineadores_inferior": str(int(no_inf)),
-                            "Total_alineadores": str(total_alineadores),
-                            "Fecha_solicitud_envio": fecha_solicitud.isoformat(),
+                            "Tipo_alineador": _merge_value(
+                                "Tipo_alineador", tipo_alineador
+                            ),
+                            "Fecha_recepcion": _merge_value(
+                                "Fecha_recepcion",
+                                fecha_recepcion,
+                                transform=lambda v: v.isoformat(),
+                            ),
+                            "Dias_entrega": _merge_value(
+                                "Dias_entrega", dias_entrega, transform=lambda v: str(int(v))
+                            ),
+                            "Comentarios": _merge_value("Comentarios", comentarios),
+                            "Notas": _merge_value("Notas", notas),
+                            "Responsable_SUD": _merge_value(
+                                "Responsable_SUD", responsable_value
+                            ),
+                            "Fecha_inicio_SUD": _merge_value(
+                                "Fecha_inicio_SUD",
+                                fecha_inicio,
+                                transform=lambda v: v.isoformat(),
+                            ),
+                            "Hora_inicio_SUD": _merge_value(
+                                "Hora_inicio_SUD",
+                                hora_inicio,
+                                transform=lambda v: v.strftime("%H:%M"),
+                            ),
+                            "Plantilla_superior": _merge_value(
+                                "Plantilla_superior", plantilla_superior, strip=True
+                            ),
+                            "Plantilla_inferior": _merge_value(
+                                "Plantilla_inferior", plantilla_inferior, strip=True
+                            ),
+                            "IPR": _merge_value("IPR", ipr),
+                            "No_alineadores_superior": _merge_value(
+                                "No_alineadores_superior",
+                                no_sup,
+                                transform=lambda v: str(int(v)),
+                            ),
+                            "No_alineadores_inferior": _merge_value(
+                                "No_alineadores_inferior",
+                                no_inf,
+                                transform=lambda v: str(int(v)),
+                            ),
+                            "Total_alineadores": _merge_value(
+                                "Total_alineadores",
+                                total_alineadores,
+                                transform=lambda v: str(int(v)),
+                            ),
+                            "Fecha_solicitud_envio": _merge_value(
+                                "Fecha_solicitud_envio",
+                                fecha_solicitud,
+                                transform=lambda v: v.isoformat(),
+                            ),
                         }
 
                         if update_process(identifier, data):
