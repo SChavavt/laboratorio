@@ -359,36 +359,27 @@ with tab1:
         in_paciente = st.text_input("🧑‍🦱 Nombre del paciente *")
         in_doctor = st.text_input("🧑‍⚕️ Nombre del doctor *")
         in_status = st.selectbox(
-            "📌 Status *",
+            "📌 Status",
             STATUS_VALUES,
             format_func=format_status_option,
         )
         in_status_nemo = st.selectbox(
-            "🌐 Status en NEMO *",
+            "🌐 Status en NEMO",
             STATUS_NEMO_VALUES,
             format_func=format_status_nemo_option,
         )
         in_tipo_alineador = st.selectbox(
-            "🦷 Tipo de alineador *", ["Graphy", "Convencional"]
+            "🦷 Tipo de alineador", ["Graphy", "Convencional"]
         )
-        in_fecha_recepcion = st.date_input("📅 Fecha de recepción *", datetime.today())
+        in_fecha_recepcion = st.date_input("📅 Fecha de recepción", datetime.today())
         in_dias_entrega = st.number_input(
-            "⏳ Días de entrega *", min_value=1, value=1, step=1
+            "⏳ Días de entrega", min_value=1, value=1, step=1
         )
         in_comentarios = st.text_area("💬 Comentarios")
         in_notas = st.text_area("📝 Notas")
         enviado = st.form_submit_button("💾 Guardar")
 
-    if (
-        enviado
-        and in_paciente
-        and in_doctor
-        and in_status
-        and in_status_nemo
-        and in_tipo_alineador
-        and in_fecha_recepcion
-        and in_dias_entrega
-    ):
+    if enviado and in_paciente and in_doctor:
         status_option = STATUS_OPTIONS_BY_VALUE.get(in_status)
         status_color = status_option["color"] if status_option else ""
         status_nemo_option = STATUS_NEMO_BY_VALUE.get(in_status_nemo)
@@ -423,7 +414,16 @@ with tab1:
         st.success("🎉 Proceso registrado correctamente.")
         st.cache_data.clear()
     elif enviado:
-        st.error("⚠️ Por favor completa los campos obligatorios (*).")
+        campos_faltantes = []
+        if not in_paciente:
+            campos_faltantes.append("Nombre del paciente")
+        if not in_doctor:
+            campos_faltantes.append("Nombre del doctor")
+
+        if campos_faltantes:
+            campos_texto = " y ".join(campos_faltantes)
+            prefijo = "los campos obligatorios" if len(campos_faltantes) > 1 else "el campo obligatorio"
+            st.error(f"⚠️ Por favor completa {prefijo}: {campos_texto}.")
 
 # 🧩 SUD
 with tab_sud:
