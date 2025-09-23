@@ -798,16 +798,37 @@ with tab_sud:
                     },
                 )
 
-                ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
+                ipr_value = row.get("IPR")
+                ipr_default = "No"
+                if isinstance(ipr_value, bool):
+                    ipr_default = "Sí" if ipr_value else "No"
+                elif ipr_value is not None:
+                    normalized_ipr = (
+                        unicodedata.normalize("NFKD", ipr_value)
+                        if isinstance(ipr_value, str)
+                        else str(ipr_value)
+                    )
+                    normalized_ipr = "".join(
+                        c for c in normalized_ipr if not unicodedata.combining(c)
+                    ).strip().lower()
+                    if normalized_ipr in {"x", "si", "s", "true", "1", "yes"}:
+                        ipr_default = "Sí"
+
                 ipr_key = f"{form_key}_ipr"
+                ipr_options = ["Sí", "No"]
+                ipr_index = ipr_options.index(ipr_default) if ipr_default in ipr_options else 1
+
                 st.radio(
                     "IPR",
-                    options=["x", "-"],
-                    index=0 if ipr_default == "x" else 1,
+                    options=ipr_options,
+                    index=ipr_index,
                     key=ipr_key,
                     on_change=save_field,
                     args=("IPR",),
-                    kwargs={"key": ipr_key},
+                    kwargs={
+                        "key": ipr_key,
+                        "transform": lambda v: "Sí" if v == "Sí" else "No",
+                    },
                 )
 
                 no_sup_key = f"{form_key}_no_sup"
