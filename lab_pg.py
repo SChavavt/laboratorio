@@ -3,7 +3,8 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime, time
+from functools import partial
 
 import gspread
 import pandas as pd
@@ -347,6 +348,59 @@ def update_process(identifier, data_dict):
     )
     return True
 
+
+def _prepare_sheet_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value)
+
+
+def persist_field_change(
+    identifier,
+    field_name,
+    *,
+    key,
+    transform=None,
+    extra_resolver=None,
+):
+    raw_value = st.session_state.get(key)
+    try:
+        value = transform(raw_value) if transform else raw_value
+    except Exception:
+        st.error(f"No se pudo procesar el campo {field_name}.")
+        return
+
+    data = {field_name: _prepare_sheet_value(value)}
+
+    if extra_resolver is not None:
+        try:
+            extra_data = extra_resolver(value)
+        except Exception:
+            st.error(
+                f"Ocurrió un problema al calcular valores derivados para {field_name}."
+            )
+            return
+        if extra_data:
+            data.update(
+                {
+                    extra_field: _prepare_sheet_value(extra_value)
+                    for extra_field, extra_value in extra_data.items()
+                }
+            )
+
+    if update_process(identifier, data):
+        st.cache_data.clear()
+    else:
+        st.error(f"No se pudo actualizar el campo {field_name}.")
+
 # ==============================
 # 🚀 APP STREAMLIT
 # ==============================
@@ -575,235 +629,251 @@ with tab_sud:
             )
 
             form_key = f"form_sud_{idx}"
-            with st.form(form_key):
-                with st.expander(expander_title, expanded=False):
-                    st.caption(
-                        f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
-                        f"Status NEMO ID: {status_nemo_value or 'N/D'}"
-                    )
+            with st.expander(expander_title, expanded=False):
+                st.caption(
+                    f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
+                    f"Status NEMO ID: {status_nemo_value or 'N/D'}"
+                )
 
-                    status = st.selectbox(
-                        "📌 Status",
-                        status_options,
-                        index=status_index,
-                        format_func=format_status_option,
-                        key=f"{form_key}_status",
-                    )
-                    status_nemo = st.selectbox(
-                        "🌐 Status en NEMO",
-                        status_nemo_options,
-                        index=status_nemo_index,
-                        format_func=format_status_nemo_option,
-                        key=f"{form_key}_status_nemo",
-                    )
-                    tipo_alineador = st.selectbox(
-                        "🦷 Tipo de alineador",
-                        tipo_alineador_options,
-                        index=tipo_alineador_index,
-                        key=f"{form_key}_tipo_alineador",
-                    )
-                    fecha_recepcion = st.date_input(
-                        "📅 Fecha de recepción",
-                        value=fecha_recepcion_val or datetime.today().date(),
-                        key=f"{form_key}_fecha_recepcion",
-                    )
-                    dias_entrega = st.number_input(
-                        "⏳ Días de entrega",
-                        min_value=1,
-                        value=int(dias_entrega_val),
-                        step=1,
-                        key=f"{form_key}_dias_entrega",
-                    )
-                    comentarios = st.text_area(
-                        "💬 Comentarios",
-                        value=comentarios_default,
-                        key=f"{form_key}_comentarios",
-                    )
-                    notas = st.text_area(
-                        "📝 Notas",
-                        value=notas_default,
-                        key=f"{form_key}_notas",
-                    )
+                save_field = partial(persist_field_change, identifier)
 
-                    responsable = st.selectbox(
-                        "Responsable hacer SUD",
-                        responsable_options,
-                        index=responsable_index,
-                        key=f"{form_key}_responsable",
-                    )
-                    fecha_inicio = st.date_input(
-                        "Fecha inicio SUD",
-                        value=fecha_inicio_val or datetime.today().date(),
-                        key=f"{form_key}_fecha_inicio",
-                    )
-                    hora_inicio = st.time_input(
-                        "Hora de inicio",
-                        value=(
-                            hora_inicio_val
-                            or datetime.now()
-                            .time()
-                            .replace(second=0, microsecond=0)
-                        ),
-                        key=f"{form_key}_hora_inicio",
-                    )
-                    plantilla_superior = st.text_input(
-                        "Plantilla superior",
-                        value=row.get("Plantilla_superior", ""),
-                        key=f"{form_key}_plantilla_sup",
-                    )
-                    plantilla_inferior = st.text_input(
-                        "Plantilla inferior",
-                        value=row.get("Plantilla_inferior", ""),
-                        key=f"{form_key}_plantilla_inf",
-                    )
-                    ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
-                    ipr = st.radio(
-                        "IPR",
-                        options=["x", "-"],
-                        index=0 if ipr_default == "x" else 1,
-                        key=f"{form_key}_ipr",
-                    )
-                    no_sup = st.number_input(
-                        "No. alineadores superior",
-                        min_value=0,
-                        value=_parse_int(row.get("No_alineadores_superior", "0")),
-                        step=1,
-                        key=f"{form_key}_no_sup",
-                    )
-                    no_inf = st.number_input(
-                        "No. alineadores inferior",
-                        min_value=0,
-                        value=_parse_int(row.get("No_alineadores_inferior", "0")),
-                        step=1,
-                        key=f"{form_key}_no_inf",
-                    )
-                    total_alineadores = int(no_sup + no_inf)
-                    st.number_input(
-                        "Total alineadores",
-                        min_value=0,
-                        value=total_alineadores,
-                        step=1,
-                        disabled=True,
-                        key=f"{form_key}_total",
-                    )
-                    fecha_solicitud = st.date_input(
-                        "Fecha solicitud de envío",
-                        value=fecha_solicitud_val or datetime.today().date(),
-                        key=f"{form_key}_fecha_solicitud",
-                    )
-
-                    guardar_sud = st.form_submit_button("Actualizar SUD")
-
-                if guardar_sud:
-                    errores = []
-                    if not status:
-                        errores.append("Selecciona un status válido.")
-                    if not status_nemo:
-                        errores.append("Selecciona un status NEMO válido.")
-                    if int(dias_entrega) < 1:
-                        errores.append("Ingresa un número válido de días de entrega.")
-                    if errores:
-                        st.error("\n".join(errores))
-                    else:
-                        status_option = STATUS_OPTIONS_BY_VALUE.get(status)
-                        status_color_result = (
-                            status_option["color"]
-                            if status_option
-                            else status_color_value or ""
-                        )
-
-                        status_nemo_option = STATUS_NEMO_BY_VALUE.get(status_nemo)
-                        status_nemo_color_result = (
-                            status_nemo_option["color"]
-                            if status_nemo_option
-                            else status_nemo_color_value or ""
-                        )
-
-                        def _merge_value(column_name, new_value, *, transform=None, strip=False):
-                            previous_raw = row.get(column_name, "")
-                            previous_value = _normalize_cell(previous_raw)
-                            if new_value is None:
-                                return previous_value
-                            value = new_value
-                            if strip and isinstance(value, str):
-                                value = value.strip()
-                            if transform is not None and value is not None:
-                                value = transform(value)
-                            if isinstance(value, str):
-                                return value
-                            return str(value)
-
-                        responsable_value = (
-                            "" if responsable in ("", "Selecciona") else responsable
-                        )
-
-                        data = {
-                            "Status": _merge_value("Status", status),
-                            "Status_Color": status_color_result,
-                            "Status_NEMO": _merge_value("Status_NEMO", status_nemo),
-                            "Status_NEMO_Color": status_nemo_color_result,
-                            "Tipo_alineador": _merge_value(
-                                "Tipo_alineador", tipo_alineador
-                            ),
-                            "Fecha_recepcion": _merge_value(
-                                "Fecha_recepcion",
-                                fecha_recepcion,
-                                transform=lambda v: v.isoformat(),
-                            ),
-                            "Dias_entrega": _merge_value(
-                                "Dias_entrega", dias_entrega, transform=lambda v: str(int(v))
-                            ),
-                            "Comentarios": _merge_value("Comentarios", comentarios),
-                            "Notas": _merge_value("Notas", notas),
-                            "Responsable_SUD": _merge_value(
-                                "Responsable_SUD", responsable_value
-                            ),
-                            "Fecha_inicio_SUD": _merge_value(
-                                "Fecha_inicio_SUD",
-                                fecha_inicio,
-                                transform=lambda v: v.isoformat(),
-                            ),
-                            "Hora_inicio_SUD": _merge_value(
-                                "Hora_inicio_SUD",
-                                hora_inicio,
-                                transform=lambda v: v.strftime("%H:%M"),
-                            ),
-                            "Plantilla_superior": _merge_value(
-                                "Plantilla_superior", plantilla_superior, strip=True
-                            ),
-                            "Plantilla_inferior": _merge_value(
-                                "Plantilla_inferior", plantilla_inferior, strip=True
-                            ),
-                            "IPR": _merge_value("IPR", ipr),
-                            "No_alineadores_superior": _merge_value(
-                                "No_alineadores_superior",
-                                no_sup,
-                                transform=lambda v: str(int(v)),
-                            ),
-                            "No_alineadores_inferior": _merge_value(
-                                "No_alineadores_inferior",
-                                no_inf,
-                                transform=lambda v: str(int(v)),
-                            ),
-                            "Total_alineadores": _merge_value(
-                                "Total_alineadores",
-                                total_alineadores,
-                                transform=lambda v: str(int(v)),
-                            ),
-                            "Fecha_solicitud_envio": _merge_value(
-                                "Fecha_solicitud_envio",
-                                fecha_solicitud,
-                                transform=lambda v: v.isoformat(),
-                            ),
-                        }
-
-                        if update_process(identifier, data):
-                            st.success("Información SUD actualizada correctamente.")
-                            st.cache_data.clear()
-                        else:
-                            st.error(
-                                "No se encontró el proceso o no fue posible actualizar los datos."
+                status_key = f"{form_key}_status"
+                st.selectbox(
+                    "📌 Status",
+                    status_options,
+                    index=status_index,
+                    format_func=format_status_option,
+                    key=status_key,
+                    on_change=save_field,
+                    args=("Status",),
+                    kwargs={
+                        "key": status_key,
+                        "extra_resolver": lambda value, default=status_color_value: {
+                            "Status_Color": (
+                                (STATUS_OPTIONS_BY_VALUE.get(value) or {}).get("color")
+                                or default
+                                or ""
                             )
+                        },
+                    },
+                )
+
+                status_nemo_key = f"{form_key}_status_nemo"
+                st.selectbox(
+                    "🌐 Status en NEMO",
+                    status_nemo_options,
+                    index=status_nemo_index,
+                    format_func=format_status_nemo_option,
+                    key=status_nemo_key,
+                    on_change=save_field,
+                    args=("Status_NEMO",),
+                    kwargs={
+                        "key": status_nemo_key,
+                        "extra_resolver": lambda value, default=status_nemo_color_value: {
+                            "Status_NEMO_Color": (
+                                (STATUS_NEMO_BY_VALUE.get(value) or {}).get("color")
+                                or default
+                                or ""
+                            )
+                        },
+                    },
+                )
+
+                tipo_alineador_key = f"{form_key}_tipo_alineador"
+                st.selectbox(
+                    "🦷 Tipo de alineador",
+                    tipo_alineador_options,
+                    index=tipo_alineador_index,
+                    key=tipo_alineador_key,
+                    on_change=save_field,
+                    args=("Tipo_alineador",),
+                    kwargs={"key": tipo_alineador_key},
+                )
+
+                fecha_recepcion_key = f"{form_key}_fecha_recepcion"
+                st.date_input(
+                    "📅 Fecha de recepción",
+                    value=fecha_recepcion_val or datetime.today().date(),
+                    key=fecha_recepcion_key,
+                    on_change=save_field,
+                    args=("Fecha_recepcion",),
+                    kwargs={"key": fecha_recepcion_key},
+                )
+
+                dias_entrega_key = f"{form_key}_dias_entrega"
+                st.number_input(
+                    "⏳ Días de entrega",
+                    min_value=1,
+                    value=int(dias_entrega_val),
+                    step=1,
+                    key=dias_entrega_key,
+                    on_change=save_field,
+                    args=("Dias_entrega",),
+                    kwargs={
+                        "key": dias_entrega_key,
+                        "transform": lambda v: int(v) if v is not None else 0,
+                    },
+                )
+
+                comentarios_key = f"{form_key}_comentarios"
+                st.text_area(
+                    "💬 Comentarios",
+                    value=comentarios_default,
+                    key=comentarios_key,
+                    on_change=save_field,
+                    args=("Comentarios",),
+                    kwargs={"key": comentarios_key},
+                )
+
+                notas_key = f"{form_key}_notas"
+                st.text_area(
+                    "📝 Notas",
+                    value=notas_default,
+                    key=notas_key,
+                    on_change=save_field,
+                    args=("Notas",),
+                    kwargs={"key": notas_key},
+                )
+
+                responsable_key = f"{form_key}_responsable"
+                st.selectbox(
+                    "Responsable hacer SUD",
+                    responsable_options,
+                    index=responsable_index,
+                    key=responsable_key,
+                    on_change=save_field,
+                    args=("Responsable_SUD",),
+                    kwargs={
+                        "key": responsable_key,
+                        "transform": lambda v: "" if v in ("", "Selecciona") else v,
+                    },
+                )
+
+                fecha_inicio_key = f"{form_key}_fecha_inicio"
+                st.date_input(
+                    "Fecha inicio SUD",
+                    value=fecha_inicio_val or datetime.today().date(),
+                    key=fecha_inicio_key,
+                    on_change=save_field,
+                    args=("Fecha_inicio_SUD",),
+                    kwargs={"key": fecha_inicio_key},
+                )
+
+                hora_inicio_key = f"{form_key}_hora_inicio"
+                st.time_input(
+                    "Hora de inicio",
+                    value=(
+                        hora_inicio_val
+                        or datetime.now().time().replace(second=0, microsecond=0)
+                    ),
+                    key=hora_inicio_key,
+                    on_change=save_field,
+                    args=("Hora_inicio_SUD",),
+                    kwargs={"key": hora_inicio_key},
+                )
+
+                plantilla_sup_key = f"{form_key}_plantilla_sup"
+                st.text_input(
+                    "Plantilla superior",
+                    value=row.get("Plantilla_superior", ""),
+                    key=plantilla_sup_key,
+                    on_change=save_field,
+                    args=("Plantilla_superior",),
+                    kwargs={
+                        "key": plantilla_sup_key,
+                        "transform": lambda v: v.strip() if isinstance(v, str) else v,
+                    },
+                )
+
+                plantilla_inf_key = f"{form_key}_plantilla_inf"
+                st.text_input(
+                    "Plantilla inferior",
+                    value=row.get("Plantilla_inferior", ""),
+                    key=plantilla_inf_key,
+                    on_change=save_field,
+                    args=("Plantilla_inferior",),
+                    kwargs={
+                        "key": plantilla_inf_key,
+                        "transform": lambda v: v.strip() if isinstance(v, str) else v,
+                    },
+                )
+
+                ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
+                ipr_key = f"{form_key}_ipr"
+                st.radio(
+                    "IPR",
+                    options=["x", "-"],
+                    index=0 if ipr_default == "x" else 1,
+                    key=ipr_key,
+                    on_change=save_field,
+                    args=("IPR",),
+                    kwargs={"key": ipr_key},
+                )
+
+                no_sup_key = f"{form_key}_no_sup"
+                no_sup = st.number_input(
+                    "No. alineadores superior",
+                    min_value=0,
+                    value=_parse_int(row.get("No_alineadores_superior", "0")),
+                    step=1,
+                    key=no_sup_key,
+                    on_change=save_field,
+                    args=("No_alineadores_superior",),
+                    kwargs={
+                        "key": no_sup_key,
+                        "transform": lambda v: int(v) if v is not None else 0,
+                        "extra_resolver": lambda _value, sup_key=no_sup_key, inf_key=f"{form_key}_no_inf": {
+                            "Total_alineadores": (
+                                (int(st.session_state.get(sup_key, 0) or 0))
+                                + (int(st.session_state.get(inf_key, 0) or 0))
+                            )
+                        },
+                    },
+                )
+
+                no_inf_key = f"{form_key}_no_inf"
+                no_inf = st.number_input(
+                    "No. alineadores inferior",
+                    min_value=0,
+                    value=_parse_int(row.get("No_alineadores_inferior", "0")),
+                    step=1,
+                    key=no_inf_key,
+                    on_change=save_field,
+                    args=("No_alineadores_inferior",),
+                    kwargs={
+                        "key": no_inf_key,
+                        "transform": lambda v: int(v) if v is not None else 0,
+                        "extra_resolver": lambda _value, sup_key=no_sup_key, inf_key=no_inf_key: {
+                            "Total_alineadores": (
+                                (int(st.session_state.get(sup_key, 0) or 0))
+                                + (int(st.session_state.get(inf_key, 0) or 0))
+                            )
+                        },
+                    },
+                )
+
+                try:
+                    total_alineadores = int(no_sup) + int(no_inf)
+                except (TypeError, ValueError):
+                    total_alineadores = 0
+
+                st.number_input(
+                    "Total alineadores",
+                    min_value=0,
+                    value=total_alineadores,
+                    step=1,
+                    disabled=True,
+                )
+
+                fecha_solicitud_key = f"{form_key}_fecha_solicitud"
+                st.date_input(
+                    "Fecha solicitud de envío",
+                    value=fecha_solicitud_val or datetime.today().date(),
+                    key=fecha_solicitud_key,
+                    on_change=save_field,
+                    args=("Fecha_solicitud_envio",),
+                    kwargs={"key": fecha_solicitud_key},
+                )
 
 # 📋 CONSULTA
 with tab2:
