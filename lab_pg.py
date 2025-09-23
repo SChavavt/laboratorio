@@ -314,8 +314,20 @@ def update_process(identifier, data_dict):
 
     row_number = row_idx + 2  # encabezado +1
 
-    start_col = COLUMNS.index("Responsable_SUD") + 1
-    end_col = COLUMNS.index("Fecha_solicitud_envio") + 1
+    target_indices = [
+        COLUMNS.index(col)
+        for col in COLUMNS
+        if col in data_dict
+    ]
+    if target_indices:
+        start_idx = min(target_indices)
+        end_idx = max(target_indices)
+    else:
+        start_idx = COLUMNS.index("Responsable_SUD")
+        end_idx = COLUMNS.index("Fecha_solicitud_envio")
+
+    start_col = start_idx + 1
+    end_col = end_idx + 1
 
     row_values = [row_series.get(col, "") for col in COLUMNS]
     for col, value in data_dict.items():
@@ -435,6 +447,14 @@ with tab_sud:
     else:
         procesos = df_sud.copy()
 
+        st.markdown(
+            "<style>\n"
+            f"{STATUS_SELECTBOX_CSS}\n"
+            f"{STATUS_NEMO_SELECTBOX_CSS}\n"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+
         status_nemo_emojis = {
             "Nuevo": "🆕",
             "Carpeta específica": "📁",
@@ -477,21 +497,69 @@ with tab_sud:
             paciente = str(row.get("Nombre_paciente", "") or "").strip() or "Sin nombre"
             doctor = str(row.get("Nombre_doctor", "") or "").strip() or "Sin doctor"
 
-            status_nemo_value, status_nemo_label, _ = _resolve_option_data(
+            status_value, _, status_color_value = _resolve_option_data(
+                row.get("Status"),
+                row.get("Status_Color"),
+                by_value=STATUS_OPTIONS_BY_VALUE,
+                by_label=STATUS_OPTIONS_BY_LABEL,
+            )
+            status_options = STATUS_VALUES.copy()
+            if status_value and status_value not in status_options:
+                status_options.append(status_value)
+
+            (
+                status_nemo_value,
+                status_nemo_label,
+                status_nemo_color_value,
+            ) = _resolve_option_data(
                 row.get("Status_NEMO"),
                 row.get("Status_NEMO_Color"),
                 by_value=STATUS_NEMO_BY_VALUE,
                 by_label=STATUS_NEMO_BY_LABEL,
             )
+            status_nemo_options = STATUS_NEMO_VALUES.copy()
+            if status_nemo_value and status_nemo_value not in status_nemo_options:
+                status_nemo_options.append(status_nemo_value)
             status_nemo_label = status_nemo_label or "Sin status NEMO"
             status_nemo_emoji = status_nemo_emojis.get(status_nemo_label, "❓")
-            expander_title = f"{status_nemo_emoji} {paciente} – {doctor} • {status_nemo_label}"
+            expander_title = (
+                f"{status_nemo_emoji} {paciente} – {doctor} • {status_nemo_label}"
+            )
 
             identifier = (no_orden if no_orden else None, idx)
 
+            fecha_recepcion_val = _parse_date(row.get("Fecha_recepcion", ""))
             fecha_inicio_val = _parse_date(row.get("Fecha_inicio_SUD", ""))
             fecha_solicitud_val = _parse_date(row.get("Fecha_solicitud_envio", ""))
             hora_inicio_val = _parse_time(row.get("Hora_inicio_SUD", ""))
+
+            dias_entrega_val = max(
+                1, _parse_int(row.get("Dias_entrega", "1"), default=1)
+            )
+            comentarios_default = _normalize_cell(row.get("Comentarios", ""))
+            notas_default = _normalize_cell(row.get("Notas", ""))
+
+            tipo_alineador_default = _normalize_cell(row.get("Tipo_alineador", ""))
+            tipo_alineador_default = tipo_alineador_default or "Graphy"
+            tipo_alineador_options = ["Graphy", "Convencional"]
+            if tipo_alineador_default not in tipo_alineador_options:
+                tipo_alineador_options.append(tipo_alineador_default)
+
+            status_index = (
+                status_options.index(status_value)
+                if status_value in status_options
+                else 0
+            )
+            status_nemo_index = (
+                status_nemo_options.index(status_nemo_value)
+                if status_nemo_value in status_nemo_options
+                else 0
+            )
+            tipo_alineador_index = (
+                tipo_alineador_options.index(tipo_alineador_default)
+                if tipo_alineador_default in tipo_alineador_options
+                else 0
+            )
 
             responsable_default = row.get("Responsable_SUD", "")
             responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
@@ -512,6 +580,49 @@ with tab_sud:
                     st.caption(
                         f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
                         f"Status NEMO ID: {status_nemo_value or 'N/D'}"
+                    )
+
+                    status = st.selectbox(
+                        "📌 Status",
+                        status_options,
+                        index=status_index,
+                        format_func=format_status_option,
+                        key=f"{form_key}_status",
+                    )
+                    status_nemo = st.selectbox(
+                        "🌐 Status en NEMO",
+                        status_nemo_options,
+                        index=status_nemo_index,
+                        format_func=format_status_nemo_option,
+                        key=f"{form_key}_status_nemo",
+                    )
+                    tipo_alineador = st.selectbox(
+                        "🦷 Tipo de alineador",
+                        tipo_alineador_options,
+                        index=tipo_alineador_index,
+                        key=f"{form_key}_tipo_alineador",
+                    )
+                    fecha_recepcion = st.date_input(
+                        "📅 Fecha de recepción",
+                        value=fecha_recepcion_val or datetime.today().date(),
+                        key=f"{form_key}_fecha_recepcion",
+                    )
+                    dias_entrega = st.number_input(
+                        "⏳ Días de entrega",
+                        min_value=1,
+                        value=int(dias_entrega_val),
+                        step=1,
+                        key=f"{form_key}_dias_entrega",
+                    )
+                    comentarios = st.text_area(
+                        "💬 Comentarios",
+                        value=comentarios_default,
+                        key=f"{form_key}_comentarios",
+                    )
+                    notas = st.text_area(
+                        "📝 Notas",
+                        value=notas_default,
+                        key=f"{form_key}_notas",
                     )
 
                     responsable = st.selectbox(
@@ -585,6 +696,12 @@ with tab_sud:
 
                 if guardar_sud:
                     errores = []
+                    if not status:
+                        errores.append("Selecciona un status válido.")
+                    if not status_nemo:
+                        errores.append("Selecciona un status NEMO válido.")
+                    if int(dias_entrega) < 1:
+                        errores.append("Ingresa un número válido de días de entrega.")
                     if responsable in ("", "Selecciona"):
                         errores.append("Selecciona un responsable.")
                     if not plantilla_superior.strip():
@@ -595,7 +712,30 @@ with tab_sud:
                     if errores:
                         st.error("\n".join(errores))
                     else:
+                        status_option = STATUS_OPTIONS_BY_VALUE.get(status)
+                        status_color_result = (
+                            status_option["color"]
+                            if status_option
+                            else status_color_value or ""
+                        )
+
+                        status_nemo_option = STATUS_NEMO_BY_VALUE.get(status_nemo)
+                        status_nemo_color_result = (
+                            status_nemo_option["color"]
+                            if status_nemo_option
+                            else status_nemo_color_value or ""
+                        )
+
                         data = {
+                            "Status": status,
+                            "Status_Color": status_color_result,
+                            "Status_NEMO": status_nemo,
+                            "Status_NEMO_Color": status_nemo_color_result,
+                            "Tipo_alineador": tipo_alineador,
+                            "Fecha_recepcion": fecha_recepcion.isoformat(),
+                            "Dias_entrega": str(int(dias_entrega)),
+                            "Comentarios": comentarios,
+                            "Notas": notas,
                             "Responsable_SUD": responsable,
                             "Fecha_inicio_SUD": fecha_inicio.isoformat(),
                             "Hora_inicio_SUD": hora_inicio.strftime("%H:%M"),
