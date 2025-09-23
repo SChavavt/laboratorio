@@ -768,7 +768,7 @@ with tab_sud:
 
                 responsable_key = f"{form_key}_responsable"
                 st.selectbox(
-                    "Responsable hacer SUD",
+                    "🧑‍🔧 Responsable hacer SUD",
                     responsable_options,
                     index=responsable_index,
                     key=responsable_key,
@@ -782,7 +782,7 @@ with tab_sud:
 
                 fecha_inicio_key = f"{form_key}_fecha_inicio"
                 st.date_input(
-                    "Fecha inicio SUD",
+                    "📅 Fecha inicio SUD",
                     value=fecha_inicio_val or datetime.today().date(),
                     key=fecha_inicio_key,
                     on_change=save_field,
@@ -792,7 +792,7 @@ with tab_sud:
 
                 hora_inicio_key = f"{form_key}_hora_inicio"
                 st.time_input(
-                    "Hora de inicio",
+                    "⏰ Hora de inicio",
                     value=(
                         hora_inicio_val
                         or datetime.now().time().replace(second=0, microsecond=0)
@@ -805,7 +805,7 @@ with tab_sud:
 
                 plantilla_sup_key = f"{form_key}_plantilla_sup"
                 st.text_input(
-                    "Plantilla superior",
+                    "📄 Plantilla superior",
                     value=row.get("Plantilla_superior", ""),
                     key=plantilla_sup_key,
                     on_change=save_field,
@@ -818,7 +818,7 @@ with tab_sud:
 
                 plantilla_inf_key = f"{form_key}_plantilla_inf"
                 st.text_input(
-                    "Plantilla inferior",
+                    "📄 Plantilla inferior",
                     value=row.get("Plantilla_inferior", ""),
                     key=plantilla_inf_key,
                     on_change=save_field,
@@ -850,7 +850,7 @@ with tab_sud:
                 ipr_index = ipr_options.index(ipr_default) if ipr_default in ipr_options else 1
 
                 st.radio(
-                    "IPR",
+                    "⚙️ IPR",
                     options=ipr_options,
                     index=ipr_index,
                     key=ipr_key,
@@ -865,7 +865,7 @@ with tab_sud:
                 total_key = f"{form_key}_total_alineadores"
                 no_sup_key = f"{form_key}_no_sup"
                 no_sup = st.number_input(
-                    "No. alineadores superior",
+                    "🔢 No. alineadores superior",
                     min_value=0,
                     value=_parse_int(row.get("No_alineadores_superior", "0")),
                     step=1,
@@ -889,7 +889,7 @@ with tab_sud:
 
                 no_inf_key = f"{form_key}_no_inf"
                 no_inf = st.number_input(
-                    "No. alineadores inferior",
+                    "🔢 No. alineadores inferior",
                     min_value=0,
                     value=_parse_int(row.get("No_alineadores_inferior", "0")),
                     step=1,
@@ -917,7 +917,7 @@ with tab_sud:
                     total_calculado = 0
 
                 st.number_input(
-                    "Total alineadores",
+                    "🧮 Total alineadores",
                     min_value=0,
                     value=st.session_state.get(total_key, total_calculado),
                     step=1,
@@ -927,7 +927,7 @@ with tab_sud:
 
                 fecha_solicitud_key = f"{form_key}_fecha_solicitud"
                 st.date_input(
-                    "Fecha solicitud de envío",
+                    "📬 Fecha solicitud de envío",
                     value=fecha_solicitud_val or datetime.today().date(),
                     key=fecha_solicitud_key,
                     on_change=save_field,
