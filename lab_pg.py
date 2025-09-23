@@ -363,6 +363,37 @@ def _prepare_sheet_value(value):
     return str(value)
 
 
+def _sync_total_alineadores(
+    *,
+    total_key: str,
+    sup_key: str,
+    inf_key: str,
+    sup_value=None,
+    inf_value=None,
+):
+    def _to_int(raw):
+        if raw is None:
+            return 0
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if not raw:
+                return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            try:
+                return int(float(raw))
+            except (TypeError, ValueError):
+                return 0
+
+    sup_raw = sup_value if sup_value is not None else st.session_state.get(sup_key, 0)
+    inf_raw = inf_value if inf_value is not None else st.session_state.get(inf_key, 0)
+
+    total = _to_int(sup_raw) + _to_int(inf_raw)
+    st.session_state[total_key] = total
+    return {"Total_alineadores": total}
+
+
 def persist_field_change(
     identifier,
     field_name,
@@ -810,6 +841,7 @@ with tab_sud:
                     kwargs={"key": ipr_key},
                 )
 
+                total_key = f"{form_key}_total_alineadores"
                 no_sup_key = f"{form_key}_no_sup"
                 no_sup = st.number_input(
                     "No. alineadores superior",
@@ -822,12 +854,15 @@ with tab_sud:
                     kwargs={
                         "key": no_sup_key,
                         "transform": lambda v: int(v) if v is not None else 0,
-                        "extra_resolver": lambda _value, sup_key=no_sup_key, inf_key=f"{form_key}_no_inf": {
-                            "Total_alineadores": (
-                                (int(st.session_state.get(sup_key, 0) or 0))
-                                + (int(st.session_state.get(inf_key, 0) or 0))
-                            )
-                        },
+                        "extra_resolver": lambda value,
+                        sup_key=no_sup_key,
+                        inf_key=f"{form_key}_no_inf",
+                        total_key=total_key: _sync_total_alineadores(
+                            total_key=total_key,
+                            sup_key=sup_key,
+                            inf_key=inf_key,
+                            sup_value=value,
+                        ),
                     },
                 )
 
@@ -843,26 +878,30 @@ with tab_sud:
                     kwargs={
                         "key": no_inf_key,
                         "transform": lambda v: int(v) if v is not None else 0,
-                        "extra_resolver": lambda _value, sup_key=no_sup_key, inf_key=no_inf_key: {
-                            "Total_alineadores": (
-                                (int(st.session_state.get(sup_key, 0) or 0))
-                                + (int(st.session_state.get(inf_key, 0) or 0))
-                            )
-                        },
+                        "extra_resolver": lambda value,
+                        sup_key=no_sup_key,
+                        inf_key=no_inf_key,
+                        total_key=total_key: _sync_total_alineadores(
+                            total_key=total_key,
+                            sup_key=sup_key,
+                            inf_key=inf_key,
+                            inf_value=value,
+                        ),
                     },
                 )
 
                 try:
-                    total_alineadores = int(no_sup) + int(no_inf)
+                    total_calculado = int(no_sup) + int(no_inf)
                 except (TypeError, ValueError):
-                    total_alineadores = 0
+                    total_calculado = 0
 
                 st.number_input(
                     "Total alineadores",
                     min_value=0,
-                    value=total_alineadores,
+                    value=st.session_state.get(total_key, total_calculado),
                     step=1,
                     disabled=True,
+                    key=total_key,
                 )
 
                 fecha_solicitud_key = f"{form_key}_fecha_solicitud"
