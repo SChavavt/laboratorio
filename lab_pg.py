@@ -489,31 +489,31 @@ with tab_sud:
 
             identifier = (no_orden if no_orden else None, idx)
 
-            with st.expander(expander_title, expanded=False):
-                st.caption(
-                    f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
-                    f"Status NEMO ID: {status_nemo_value or 'N/D'}"
-                )
+            fecha_inicio_val = _parse_date(row.get("Fecha_inicio_SUD", ""))
+            fecha_solicitud_val = _parse_date(row.get("Fecha_solicitud_envio", ""))
+            hora_inicio_val = _parse_time(row.get("Hora_inicio_SUD", ""))
 
-                fecha_inicio_val = _parse_date(row.get("Fecha_inicio_SUD", ""))
-                fecha_solicitud_val = _parse_date(row.get("Fecha_solicitud_envio", ""))
-                hora_inicio_val = _parse_time(row.get("Hora_inicio_SUD", ""))
+            responsable_default = row.get("Responsable_SUD", "")
+            responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
+            if (
+                responsable_default
+                and responsable_default not in responsable_options
+            ):
+                responsable_options.append(responsable_default)
+            responsable_index = (
+                responsable_options.index(responsable_default)
+                if responsable_default in responsable_options
+                else 0
+            )
 
-                responsable_default = row.get("Responsable_SUD", "")
-                responsable_options = RESPONSABLE_SUD_OPTIONS.copy()
-                if (
-                    responsable_default
-                    and responsable_default not in responsable_options
-                ):
-                    responsable_options.append(responsable_default)
-                responsable_index = (
-                    responsable_options.index(responsable_default)
-                    if responsable_default in responsable_options
-                    else 0
-                )
+            form_key = f"form_sud_{idx}"
+            with st.form(form_key):
+                with st.expander(expander_title, expanded=False):
+                    st.caption(
+                        f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
+                        f"Status NEMO ID: {status_nemo_value or 'N/D'}"
+                    )
 
-                form_key = f"form_sud_{idx}"
-                with st.form(form_key):
                     responsable = st.selectbox(
                         "Responsable hacer SUD *",
                         responsable_options,
