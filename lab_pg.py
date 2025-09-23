@@ -140,14 +140,23 @@ def _build_mappings(options: list[dict[str, str]]) -> tuple[dict[str, dict[str, 
     return by_value, by_label
 
 
-def _build_select_css(options: list[dict[str, str]], *, css_class: str, data_attr: str) -> str:
+def _build_select_css(options: list[dict[str, str]]) -> str:
     css_rules: list[str] = []
+    base_selector = 'div[data-baseweb="select"]'
     for option in options:
-        identifier = option["value"]
+        label = option["label"]
         color = option["color"]
+        safe_label = label.replace('"', '\\"')
+        selectors = [
+            f'{base_selector} [role="option"][aria-label="{safe_label}"]',
+            f'{base_selector} [role="option"][aria-label="{safe_label}"][aria-selected="true"]',
+            f'{base_selector} [aria-live="polite"] span[title="{safe_label}"]',
+            f'{base_selector} [aria-live="polite"] div[title="{safe_label}"]',
+            f'{base_selector} div[data-baseweb="tag"][title="{safe_label}"]',
+        ]
+        selector_block = ",\n".join(selectors)
         css_rules.append(
-            f'div[data-baseweb="select"] .{css_class}[data-{data_attr}="{identifier}"] '
-            f'{{ color: {color}; }}'
+            f"{selector_block} {{ color: {color} !important; }}"
         )
     return "\n".join(css_rules)
 
@@ -160,26 +169,14 @@ STATUS_NEMO_OPTIONS = _build_options(_STATUS_NEMO_LABELS, prefix="status_nemo")
 STATUS_NEMO_BY_VALUE, STATUS_NEMO_BY_LABEL = _build_mappings(STATUS_NEMO_OPTIONS)
 STATUS_NEMO_VALUES = [opt["value"] for opt in STATUS_NEMO_OPTIONS]
 
-STATUS_DATA_ATTR = "status-value"
-STATUS_NEMO_DATA_ATTR = "status-nemo-value"
-STATUS_OPTION_CLASS = "status-option"
-STATUS_NEMO_OPTION_CLASS = "status-nemo-option"
-STATUS_SELECTBOX_CSS = _build_select_css(
-    STATUS_OPTIONS, css_class=STATUS_OPTION_CLASS, data_attr=STATUS_DATA_ATTR
-)
-STATUS_NEMO_SELECTBOX_CSS = _build_select_css(
-    STATUS_NEMO_OPTIONS,
-    css_class=STATUS_NEMO_OPTION_CLASS,
-    data_attr=STATUS_NEMO_DATA_ATTR,
-)
+STATUS_SELECTBOX_CSS = _build_select_css(STATUS_OPTIONS)
+STATUS_NEMO_SELECTBOX_CSS = _build_select_css(STATUS_NEMO_OPTIONS)
 
 
 def format_status_option(value: str | None) -> str:
     return _format_colored_option(
         value,
         STATUS_OPTIONS_BY_VALUE,
-        css_class=STATUS_OPTION_CLASS,
-        data_attr=STATUS_DATA_ATTR,
     )
 
 
@@ -187,26 +184,19 @@ def format_status_nemo_option(value: str | None) -> str:
     return _format_colored_option(
         value,
         STATUS_NEMO_BY_VALUE,
-        css_class=STATUS_NEMO_OPTION_CLASS,
-        data_attr=STATUS_NEMO_DATA_ATTR,
     )
 
 
 def _format_colored_option(
     value: str | None,
     mapping: dict[str, dict[str, str]],
-    *,
-    css_class: str,
-    data_attr: str,
 ) -> str:
     if value is None:
         return ""
     option = mapping.get(value)
     if option is None:
         return str(value)
-    label = option["label"]
-    identifier = option["value"]
-    return f'<span class="{css_class}" data-{data_attr}="{identifier}">{label}</span>'
+    return option["label"]
 
 
 def _normalize_cell(value: str | None) -> str:
