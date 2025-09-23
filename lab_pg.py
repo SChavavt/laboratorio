@@ -140,6 +140,18 @@ def _build_mappings(options: list[dict[str, str]]) -> tuple[dict[str, dict[str, 
     return by_value, by_label
 
 
+def _build_select_css(options: list[dict[str, str]], *, css_class: str, data_attr: str) -> str:
+    css_rules: list[str] = []
+    for option in options:
+        identifier = option["value"]
+        color = option["color"]
+        css_rules.append(
+            f'div[data-baseweb="select"] .{css_class}[data-{data_attr}="{identifier}"] '
+            f'{{ color: {color}; }}'
+        )
+    return "\n".join(css_rules)
+
+
 STATUS_OPTIONS = _build_options(_STATUS_LABELS, prefix="status")
 STATUS_OPTIONS_BY_VALUE, STATUS_OPTIONS_BY_LABEL = _build_mappings(STATUS_OPTIONS)
 STATUS_VALUES = [opt["value"] for opt in STATUS_OPTIONS]
@@ -195,18 +207,6 @@ def _format_colored_option(
     label = option["label"]
     identifier = option["value"]
     return f'<span class="{css_class}" data-{data_attr}="{identifier}">{label}</span>'
-
-
-def _build_select_css(options: list[dict[str, str]], *, css_class: str, data_attr: str) -> str:
-    css_rules: list[str] = []
-    for option in options:
-        identifier = option["value"]
-        color = option["color"]
-        css_rules.append(
-            f'div[data-baseweb="select"] .{css_class}[data-{data_attr}="{identifier}"] '
-            f'{{ color: {color}; }}'
-        )
-    return "\n".join(css_rules)
 
 
 def _normalize_cell(value: str | None) -> str:
