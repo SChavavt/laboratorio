@@ -517,12 +517,6 @@ with tab_sud:
             "Solo impresión": "🖨️",
         }
 
-        ipr_option_labels = {
-            "x": "X",
-            "-": "Sin IPR (-)",
-        }
-        ipr_options = list(ipr_option_labels.keys())
-
         def _parse_date(value):
             try:
                 return datetime.strptime(value, "%Y-%m-%d").date()
@@ -806,16 +800,10 @@ with tab_sud:
 
                 ipr_default = row.get("IPR", "-") if row.get("IPR") else "-"
                 ipr_key = f"{form_key}_ipr"
-                ipr_index = (
-                    ipr_options.index(ipr_default)
-                    if ipr_default in ipr_options
-                    else 0
-                )
                 st.radio(
                     "IPR",
-                    options=ipr_options,
-                    index=ipr_index,
-                    format_func=lambda value: ipr_option_labels.get(value, value),
+                    options=["x", "-"],
+                    index=0 if ipr_default == "x" else 1,
                     key=ipr_key,
                     on_change=save_field,
                     args=("IPR",),
