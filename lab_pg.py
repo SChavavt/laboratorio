@@ -1,8 +1,13 @@
-import streamlit as st
-import pandas as pd
-from datetime import datetime
-import gspread
+import colorsys
+import hashlib
 import json
+import re
+import unicodedata
+from datetime import datetime
+
+import gspread
+import pandas as pd
+import streamlit as st
 from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 
@@ -19,7 +24,9 @@ COLUMNS = [
     "Nombre_paciente",
     "Nombre_doctor",
     "Status",
+    "Status_Color",
     "Status_NEMO",
+    "Status_NEMO_Color",
     "Tipo_alineador",
     "Fecha_recepcion",
     "Dias_entrega",
@@ -48,7 +55,7 @@ RESPONSABLE_SUD_OPTIONS = [
     "Daniela",
 ]
 
-STATUS_OPTIONS = [
+_STATUS_LABELS = [
     "1. Revisión de scan",
     "2. Por hacer Setup",
     "2.1 Scan con falla",
@@ -86,13 +93,148 @@ STATUS_OPTIONS = [
     "16. Enviado / empaquetado",
 ]
 
-STATUS_NEMO_OPTIONS = [
+_STATUS_NEMO_LABELS = [
     "Nuevo",
     "Carpeta específica",
     "Duplicado",
     "Seguimiento",
     "Solo impresión",
 ]
+
+
+def _slugify_label(label: str) -> str:
+    normalized = unicodedata.normalize("NFKD", label)
+    ascii_label = "".join(c for c in normalized if not unicodedata.combining(c))
+    ascii_label = ascii_label.lower()
+    ascii_label = re.sub(r"[^a-z0-9]+", "_", ascii_label)
+    ascii_label = ascii_label.strip("_")
+    return ascii_label or "estado"
+
+
+def _generate_color(value: str, *, saturation: float = 0.65, lightness: float = 0.55) -> str:
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()
+    hue = int(digest[:6], 16) / 0xFFFFFF
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
+
+
+def _build_options(labels: list[str], prefix: str) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen_values: set[str] = set()
+    for label in labels:
+        base_value = _slugify_label(label)
+        value = base_value
+        suffix = 1
+        while value in seen_values:
+            suffix += 1
+            value = f"{base_value}_{suffix}"
+        seen_values.add(value)
+        color = _generate_color(f"{prefix}_{value}")
+        options.append({"value": value, "label": label, "color": color})
+    return options
+
+
+def _build_mappings(options: list[dict[str, str]]) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    by_value = {opt["value"]: opt for opt in options}
+    by_label = {opt["label"]: opt for opt in options}
+    return by_value, by_label
+
+
+STATUS_OPTIONS = _build_options(_STATUS_LABELS, prefix="status")
+STATUS_OPTIONS_BY_VALUE, STATUS_OPTIONS_BY_LABEL = _build_mappings(STATUS_OPTIONS)
+STATUS_VALUES = [opt["value"] for opt in STATUS_OPTIONS]
+
+STATUS_NEMO_OPTIONS = _build_options(_STATUS_NEMO_LABELS, prefix="status_nemo")
+STATUS_NEMO_BY_VALUE, STATUS_NEMO_BY_LABEL = _build_mappings(STATUS_NEMO_OPTIONS)
+STATUS_NEMO_VALUES = [opt["value"] for opt in STATUS_NEMO_OPTIONS]
+
+STATUS_DATA_ATTR = "status-value"
+STATUS_NEMO_DATA_ATTR = "status-nemo-value"
+STATUS_OPTION_CLASS = "status-option"
+STATUS_NEMO_OPTION_CLASS = "status-nemo-option"
+STATUS_SELECTBOX_CSS = _build_select_css(
+    STATUS_OPTIONS, css_class=STATUS_OPTION_CLASS, data_attr=STATUS_DATA_ATTR
+)
+STATUS_NEMO_SELECTBOX_CSS = _build_select_css(
+    STATUS_NEMO_OPTIONS,
+    css_class=STATUS_NEMO_OPTION_CLASS,
+    data_attr=STATUS_NEMO_DATA_ATTR,
+)
+
+
+def format_status_option(value: str | None) -> str:
+    return _format_colored_option(
+        value,
+        STATUS_OPTIONS_BY_VALUE,
+        css_class=STATUS_OPTION_CLASS,
+        data_attr=STATUS_DATA_ATTR,
+    )
+
+
+def format_status_nemo_option(value: str | None) -> str:
+    return _format_colored_option(
+        value,
+        STATUS_NEMO_BY_VALUE,
+        css_class=STATUS_NEMO_OPTION_CLASS,
+        data_attr=STATUS_NEMO_DATA_ATTR,
+    )
+
+
+def _format_colored_option(
+    value: str | None,
+    mapping: dict[str, dict[str, str]],
+    *,
+    css_class: str,
+    data_attr: str,
+) -> str:
+    if value is None:
+        return ""
+    option = mapping.get(value)
+    if option is None:
+        return str(value)
+    label = option["label"]
+    identifier = option["value"]
+    return f'<span class="{css_class}" data-{data_attr}="{identifier}">{label}</span>'
+
+
+def _build_select_css(options: list[dict[str, str]], *, css_class: str, data_attr: str) -> str:
+    css_rules: list[str] = []
+    for option in options:
+        identifier = option["value"]
+        color = option["color"]
+        css_rules.append(
+            f'div[data-baseweb="select"] .{css_class}[data-{data_attr}="{identifier}"] '
+            f'{{ color: {color}; }}'
+        )
+    return "\n".join(css_rules)
+
+
+def _normalize_cell(value: str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+    else:
+        text = str(value)
+    return "" if text.lower() == "nan" else text
+
+
+def _resolve_option_data(
+    raw_value: str | None,
+    stored_color: str | None,
+    *,
+    by_value: dict[str, dict[str, str]],
+    by_label: dict[str, dict[str, str]],
+) -> tuple[str, str, str]:
+    cleaned_value = _normalize_cell(raw_value)
+    color = _normalize_cell(stored_color)
+    option = by_value.get(cleaned_value)
+    if option is None:
+        option = by_label.get(cleaned_value)
+    if option is None:
+        return cleaned_value, cleaned_value, color
+    resolved_color = color or option["color"]
+    return option["value"], option["label"], resolved_color
 
 # ==============================
 # 🔐 CLIENTE GOOGLE SHEETS
@@ -215,11 +357,27 @@ tab1, tab_sud, tab2 = st.tabs(["➕ Nuevo Proceso", "SUD", "📋 Consulta"])
 with tab1:
     st.subheader("🆕 Registrar nuevo proceso")
 
+    st.markdown(
+        "<style>\n"
+        f"{STATUS_SELECTBOX_CSS}\n"
+        f"{STATUS_NEMO_SELECTBOX_CSS}\n"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
     with st.form("form_nuevo"):
         in_paciente = st.text_input("🧑‍🦱 Nombre del paciente *")
         in_doctor = st.text_input("🧑‍⚕️ Nombre del doctor *")
-        in_status = st.selectbox("📌 Status *", STATUS_OPTIONS)
-        in_status_nemo = st.selectbox("🌐 Status en NEMO *", STATUS_NEMO_OPTIONS)
+        in_status = st.selectbox(
+            "📌 Status *",
+            STATUS_VALUES,
+            format_func=format_status_option,
+        )
+        in_status_nemo = st.selectbox(
+            "🌐 Status en NEMO *",
+            STATUS_NEMO_VALUES,
+            format_func=format_status_nemo_option,
+        )
         in_tipo_alineador = st.selectbox(
             "🦷 Tipo de alineador *", ["Graphy", "Convencional"]
         )
@@ -241,12 +399,19 @@ with tab1:
         and in_fecha_recepcion
         and in_dias_entrega
     ):
+        status_option = STATUS_OPTIONS_BY_VALUE.get(in_status)
+        status_color = status_option["color"] if status_option else ""
+        status_nemo_option = STATUS_NEMO_BY_VALUE.get(in_status_nemo)
+        status_nemo_color = status_nemo_option["color"] if status_nemo_option else ""
+
         row = {
             "No_orden": "",
             "Nombre_paciente": in_paciente,
             "Nombre_doctor": in_doctor,
             "Status": in_status,
+            "Status_Color": status_color,
             "Status_NEMO": in_status_nemo,
+            "Status_NEMO_Color": status_nemo_color,
             "Tipo_alineador": in_tipo_alineador,
             "Fecha_recepcion": in_fecha_recepcion.strftime("%Y-%m-%d"),
             "Dias_entrega": str(int(in_dias_entrega)),
@@ -494,4 +659,42 @@ with tab2:
                 st.session_state[input_key] = valor
                 st.cache_data.clear()
 
-        st.dataframe(df, use_container_width=True, height=600)
+        df_display = df.copy()
+        if not df_display.empty:
+            status_info = df_display.apply(
+                lambda row: _resolve_option_data(
+                    row.get("Status"),
+                    row.get("Status_Color"),
+                    by_value=STATUS_OPTIONS_BY_VALUE,
+                    by_label=STATUS_OPTIONS_BY_LABEL,
+                ),
+                axis=1,
+                result_type="expand",
+            )
+            status_info.columns = ["Status_ID", "Status_Label", "Status_Color_Value"]
+            status_idx = df_display.columns.get_loc("Status")
+            df_display.insert(status_idx, "Status_ID", status_info["Status_ID"])
+            df_display["Status"] = status_info["Status_Label"]
+            df_display["Status_Color"] = status_info["Status_Color_Value"]
+
+            nemo_info = df_display.apply(
+                lambda row: _resolve_option_data(
+                    row.get("Status_NEMO"),
+                    row.get("Status_NEMO_Color"),
+                    by_value=STATUS_NEMO_BY_VALUE,
+                    by_label=STATUS_NEMO_BY_LABEL,
+                ),
+                axis=1,
+                result_type="expand",
+            )
+            nemo_info.columns = [
+                "Status_NEMO_ID",
+                "Status_NEMO_Label",
+                "Status_NEMO_Color_Value",
+            ]
+            nemo_idx = df_display.columns.get_loc("Status_NEMO")
+            df_display.insert(nemo_idx, "Status_NEMO_ID", nemo_info["Status_NEMO_ID"])
+            df_display["Status_NEMO"] = nemo_info["Status_NEMO_Label"]
+            df_display["Status_NEMO_Color"] = nemo_info["Status_NEMO_Color_Value"]
+
+        st.dataframe(df_display, use_container_width=True, height=600)
