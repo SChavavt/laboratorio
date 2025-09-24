@@ -26,9 +26,7 @@ COLUMNS = [
     "Nombre_paciente",
     "Nombre_doctor",
     "Status",
-    "Status_Color",
     "Status_NEMO",
-    "Status_NEMO_Color",
     "Tipo_alineador",
     "Fecha_recepcion",
     "Dias_entrega",
@@ -216,20 +214,17 @@ def _normalize_cell(value: str | None) -> str:
 
 def _resolve_option_data(
     raw_value: str | None,
-    stored_color: str | None,
     *,
     by_value: dict[str, dict[str, str]],
     by_label: dict[str, dict[str, str]],
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     cleaned_value = _normalize_cell(raw_value)
-    color = _normalize_cell(stored_color)
     option = by_value.get(cleaned_value)
     if option is None:
         option = by_label.get(cleaned_value)
     if option is None:
-        return cleaned_value, cleaned_value, color
-    resolved_color = color or option["color"]
-    return option["value"], option["label"], resolved_color
+        return cleaned_value, cleaned_value
+    return option["value"], option["label"]
 
 
 def _ensure_ui_state_defaults() -> None:
@@ -525,19 +520,12 @@ with tab1:
         enviado = st.form_submit_button("💾 Guardar")
 
     if enviado and in_paciente and in_doctor:
-        status_option = STATUS_OPTIONS_BY_VALUE.get(in_status)
-        status_color = status_option["color"] if status_option else ""
-        status_nemo_option = STATUS_NEMO_BY_VALUE.get(in_status_nemo)
-        status_nemo_color = status_nemo_option["color"] if status_nemo_option else ""
-
         row = {
             "No_orden": "",
             "Nombre_paciente": in_paciente,
             "Nombre_doctor": in_doctor,
             "Status": in_status,
-            "Status_Color": status_color,
             "Status_NEMO": in_status_nemo,
-            "Status_NEMO_Color": status_nemo_color,
             "Tipo_alineador": in_tipo_alineador,
             "Fecha_recepcion": in_fecha_recepcion.strftime("%Y-%m-%d"),
             "Dias_entrega": str(int(in_dias_entrega)),
@@ -630,9 +618,8 @@ with tab_sud:
             paciente = str(row.get("Nombre_paciente", "") or "").strip() or "Sin nombre"
             doctor = str(row.get("Nombre_doctor", "") or "").strip() or "Sin doctor"
 
-            status_value, status_label, status_color_value = _resolve_option_data(
+            status_value, status_label = _resolve_option_data(
                 row.get("Status"),
-                row.get("Status_Color"),
                 by_value=STATUS_OPTIONS_BY_VALUE,
                 by_label=STATUS_OPTIONS_BY_LABEL,
             )
@@ -645,10 +632,8 @@ with tab_sud:
             (
                 status_nemo_value,
                 status_nemo_label,
-                status_nemo_color_value,
             ) = _resolve_option_data(
                 row.get("Status_NEMO"),
-                row.get("Status_NEMO_Color"),
                 by_value=STATUS_NEMO_BY_VALUE,
                 by_label=STATUS_NEMO_BY_LABEL,
             )
@@ -749,16 +734,7 @@ with tab_sud:
                         key=status_key,
                         on_change=save_field,
                         args=("Status",),
-                        kwargs={
-                            "key": status_key,
-                            "extra_resolver": lambda value, default=status_color_value: {
-                                "Status_Color": (
-                                    (STATUS_OPTIONS_BY_VALUE.get(value) or {}).get("color")
-                                    or default
-                                    or ""
-                                )
-                            },
-                        },
+                        kwargs={"key": status_key},
                     )
 
                     status_nemo_key = f"{form_key}_status_nemo"
@@ -770,16 +746,7 @@ with tab_sud:
                         key=status_nemo_key,
                         on_change=save_field,
                         args=("Status_NEMO",),
-                        kwargs={
-                            "key": status_nemo_key,
-                            "extra_resolver": lambda value, default=status_nemo_color_value: {
-                                "Status_NEMO_Color": (
-                                    (STATUS_NEMO_BY_VALUE.get(value) or {}).get("color")
-                                    or default
-                                    or ""
-                                )
-                            },
-                        },
+                        kwargs={"key": status_nemo_key},
                     )
 
                     tipo_alineador_key = f"{form_key}_tipo_alineador"
@@ -1041,7 +1008,6 @@ with tab2:
             status_info = df_display.apply(
                 lambda row: _resolve_option_data(
                     row.get("Status"),
-                    row.get("Status_Color"),
                     by_value=STATUS_OPTIONS_BY_VALUE,
                     by_label=STATUS_OPTIONS_BY_LABEL,
                 ),
@@ -1051,7 +1017,6 @@ with tab2:
             status_info.columns = [
                 "Status_ID",
                 "Status_Label",
-                "_Status_Color_Value",
             ]
             status_idx = df_display.columns.get_loc("Status")
             df_display.insert(status_idx, "Status_ID", status_info["Status_ID"])
@@ -1060,7 +1025,6 @@ with tab2:
             nemo_info = df_display.apply(
                 lambda row: _resolve_option_data(
                     row.get("Status_NEMO"),
-                    row.get("Status_NEMO_Color"),
                     by_value=STATUS_NEMO_BY_VALUE,
                     by_label=STATUS_NEMO_BY_LABEL,
                 ),
@@ -1070,7 +1034,6 @@ with tab2:
             nemo_info.columns = [
                 "Status_NEMO_ID",
                 "Status_NEMO_Label",
-                "_Status_NEMO_Color_Value",
             ]
             nemo_idx = df_display.columns.get_loc("Status_NEMO")
             df_display.insert(nemo_idx, "Status_NEMO_ID", nemo_info["Status_NEMO_ID"])
