@@ -57,6 +57,7 @@ RESPONSABLE_SUD_OPTIONS = [
 TAB_LABELS = ["➕ Nuevo Proceso", "SUD", "📋 Consulta"]
 _ACTIVE_TAB_QUERY_PARAM = "tab"
 _ACTIVE_TAB_STATE_KEY = "active_tab"
+_ACTIVE_TAB_INDEX_STATE_KEY = "active_tab_index"
 _SUD_TAB_LABEL = TAB_LABELS[1]
 SUD_EXPANDERS_STATE_KEY = "sud_expanders_state"
 
@@ -273,40 +274,65 @@ def _ensure_ui_state_defaults() -> None:
 def _ensure_active_tab_state() -> None:
     params = st.query_params
     values = params.get_all(_ACTIVE_TAB_QUERY_PARAM)
-    requested = values[0] if values else params.get(_ACTIVE_TAB_QUERY_PARAM, TAB_LABELS[0])
-    if requested not in TAB_LABELS:
-        requested = TAB_LABELS[0]
-    st.session_state.setdefault(_ACTIVE_TAB_STATE_KEY, requested)
-    if st.session_state[_ACTIVE_TAB_STATE_KEY] != requested:
-        st.session_state[_ACTIVE_TAB_STATE_KEY] = requested
+    raw_index = values[0] if values else params.get(_ACTIVE_TAB_QUERY_PARAM)
+    index = _normalize_tab_index(raw_index)
+    label = TAB_LABELS[index]
+
+    st.session_state.setdefault(_ACTIVE_TAB_INDEX_STATE_KEY, index)
+    if st.session_state[_ACTIVE_TAB_INDEX_STATE_KEY] != index:
+        st.session_state[_ACTIVE_TAB_INDEX_STATE_KEY] = index
+
+    st.session_state.setdefault(_ACTIVE_TAB_STATE_KEY, label)
+    if st.session_state[_ACTIVE_TAB_STATE_KEY] != label:
+        st.session_state[_ACTIVE_TAB_STATE_KEY] = label
+
+    if raw_index != str(index):
+        st.query_params[_ACTIVE_TAB_QUERY_PARAM] = str(index)
+
+
+def _normalize_tab_index(raw_value) -> int:
+    try:
+        index = int(raw_value)
+    except (TypeError, ValueError):
+        index = 0
+    if index < 0:
+        index = 0
+    if index >= len(TAB_LABELS):
+        index = len(TAB_LABELS) - 1
+    return index
 
 
 def _set_active_tab(tab_label: str) -> None:
     if tab_label not in TAB_LABELS:
         return
-    current = st.session_state.get(_ACTIVE_TAB_STATE_KEY)
-    if current != tab_label:
+    index = TAB_LABELS.index(tab_label)
+    if st.session_state.get(_ACTIVE_TAB_STATE_KEY) != tab_label:
         st.session_state[_ACTIVE_TAB_STATE_KEY] = tab_label
-    st.query_params[_ACTIVE_TAB_QUERY_PARAM] = tab_label
+    if st.session_state.get(_ACTIVE_TAB_INDEX_STATE_KEY) != index:
+        st.session_state[_ACTIVE_TAB_INDEX_STATE_KEY] = index
+    st.query_params[_ACTIVE_TAB_QUERY_PARAM] = str(index)
 
 
 def _render_tabs_with_state(labels: list[str]):
     tabs = st.tabs(labels)
-    active_tab = st.session_state.get(_ACTIVE_TAB_STATE_KEY, labels[0])
-    _emit_tab_selection_script(active_tab)
+    active_index = st.session_state.get(_ACTIVE_TAB_INDEX_STATE_KEY, 0)
+    active_index = _normalize_tab_index(active_index)
+    _emit_tab_selection_script(active_index)
     return tabs
 
 
-def _emit_tab_selection_script(active_tab: str) -> None:
+def _emit_tab_selection_script(active_tab_index: int) -> None:
     safe_labels = json.dumps(TAB_LABELS, ensure_ascii=False)
+    max_index = max(len(TAB_LABELS) - 1, 0)
+    normalized_index = min(max(int(active_tab_index or 0), 0), max_index)
     script = f"""
     <script>
     const tabLabels = {safe_labels};
-    const activeTab = {json.dumps(active_tab, ensure_ascii=False)};
+    const activeTabIndex = {normalized_index};
     const queryParam = {json.dumps(_ACTIVE_TAB_QUERY_PARAM)};
-    function updateQueryParam(label) {{
+    function updateQueryParam(index) {{
         const url = new URL(window.parent.location.href);
-        url.searchParams.set(queryParam, label);
+        url.searchParams.set(queryParam, index.toString());
         window.parent.history.replaceState(null, '', url);
     }}
     function activateTab() {{
@@ -315,10 +341,12 @@ def _emit_tab_selection_script(active_tab: str) -> None:
             window.setTimeout(activateTab, 100);
             return;
         }}
-        tabButtons.forEach((button) => {{
-            const label = (button.textContent || '').trim();
-            button.addEventListener('click', () => updateQueryParam(label), {{ once: false }});
-            if (label === activeTab && button.getAttribute('aria-selected') !== 'true') {{
+        tabButtons.forEach((button, index) => {{
+            if (!button.dataset.tabSyncAttached) {{
+                button.dataset.tabSyncAttached = 'true';
+                button.addEventListener('click', () => updateQueryParam(index), {{ once: false }});
+            }}
+            if (index === activeTabIndex && button.getAttribute('aria-selected') !== 'true') {{
                 button.click();
             }}
         }});
