@@ -1048,11 +1048,14 @@ with tab2:
                 axis=1,
                 result_type="expand",
             )
-            status_info.columns = ["Status_ID", "Status_Label", "Status_Color_Value"]
+            status_info.columns = [
+                "Status_ID",
+                "Status_Label",
+                "_Status_Color_Value",
+            ]
             status_idx = df_display.columns.get_loc("Status")
             df_display.insert(status_idx, "Status_ID", status_info["Status_ID"])
             df_display["Status"] = status_info["Status_Label"]
-            df_display["Status_Color"] = status_info["Status_Color_Value"]
 
             nemo_info = df_display.apply(
                 lambda row: _resolve_option_data(
@@ -1067,14 +1070,16 @@ with tab2:
             nemo_info.columns = [
                 "Status_NEMO_ID",
                 "Status_NEMO_Label",
-                "Status_NEMO_Color_Value",
+                "_Status_NEMO_Color_Value",
             ]
             nemo_idx = df_display.columns.get_loc("Status_NEMO")
             df_display.insert(nemo_idx, "Status_NEMO_ID", nemo_info["Status_NEMO_ID"])
             df_display["Status_NEMO"] = nemo_info["Status_NEMO_Label"]
-            df_display["Status_NEMO_Color"] = nemo_info["Status_NEMO_Color_Value"]
 
         excel_buffer = BytesIO()
+        df_display = df_display.drop(
+            columns=["Status_Color", "Status_NEMO_Color"], errors="ignore"
+        )
         df_display.to_excel(excel_buffer, index=False, sheet_name="Procesos")
         excel_buffer.seek(0)
 
