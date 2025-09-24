@@ -5,6 +5,7 @@ import re
 import unicodedata
 from datetime import date, datetime, time
 from functools import partial
+from io import BytesIO
 
 import gspread
 import pandas as pd
@@ -726,6 +727,19 @@ with tab_sud:
                 save_field = partial(persist_field_change, identifier)
 
                 with col_left:
+                    no_orden_key = f"{form_key}_no_orden"
+                    st.text_input(
+                        "🔢 No. orden",
+                        value=no_orden,
+                        key=no_orden_key,
+                        on_change=save_field,
+                        args=("No_orden",),
+                        kwargs={
+                            "key": no_orden_key,
+                            "transform": lambda v: (v or "").strip(),
+                        },
+                    )
+
                     status_key = f"{form_key}_status"
                     st.selectbox(
                         "📌 Status",
@@ -1005,7 +1019,7 @@ with tab2:
     if df.empty:
         st.info("No hay procesos registrados aún.")
     else:
-        procesos_labels = {}
+        procesos_labels: list[str] = []
         for idx, row in df.iterrows():
             no_orden = str(row.get("No_orden", "") or "").strip()
             if no_orden.lower() == "nan":
@@ -1016,58 +1030,11 @@ with tab2:
                 label = f"{no_orden} – {paciente}"
             else:
                 label = f"Sin No. orden – {paciente} (fila {idx + 2})"
-            procesos_labels[idx] = label
+            procesos_labels.append(label)
 
-        opciones = list(df.index)
-        if not opciones:
-            st.info("No hay procesos registrados aún.")
-        else:
-            default_selection = st.session_state.get("tab2_selected_idx", opciones[0])
-            if default_selection not in opciones:
-                default_selection = opciones[0]
-
-            form_key = "form_editar_no_orden"
-            input_key = "tab2_no_orden_input"
-
-            with st.form(form_key):
-                selected_idx = st.selectbox(
-                    "Selecciona el proceso a editar",
-                    opciones,
-                    format_func=lambda x: procesos_labels.get(x, f"Fila {x + 2}"),
-                    index=opciones.index(default_selection),
-                )
-
-                current_value = str(df.at[selected_idx, "No_orden"] or "").strip()
-                if current_value.lower() == "nan":
-                    current_value = ""
-
-                stored_selection = st.session_state.get("tab2_selected_idx")
-                if stored_selection != selected_idx or input_key not in st.session_state:
-                    st.session_state[input_key] = current_value
-
-                st.session_state["tab2_selected_idx"] = selected_idx
-
-                nuevo_no_orden = st.text_input(
-                    "No. orden",
-                    key=input_key,
-                )
-
-                guardar_orden = st.form_submit_button("Guardar número de orden")
-
-            if guardar_orden:
-                ws = get_worksheet()
-                row_number = selected_idx + 2
-                col_number = COLUMNS.index("No_orden") + 1
-                cell = rowcol_to_a1(row_number, col_number)
-                valor = (nuevo_no_orden or "").strip()
-                ws.update(cell, valor)
-                ws.update(
-                    rowcol_to_a1(row_number, COLUMNS.index("Ultima_Modificacion") + 1),
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                st.success("Número de orden actualizado correctamente.")
-                st.session_state[input_key] = valor
-                st.cache_data.clear()
+        if procesos_labels:
+            st.markdown("**Procesos disponibles:**")
+            st.markdown("\n".join(f"- {label}" for label in procesos_labels))
 
         df_display = df.copy()
         if not df_display.empty:
@@ -1106,5 +1073,16 @@ with tab2:
             df_display.insert(nemo_idx, "Status_NEMO_ID", nemo_info["Status_NEMO_ID"])
             df_display["Status_NEMO"] = nemo_info["Status_NEMO_Label"]
             df_display["Status_NEMO_Color"] = nemo_info["Status_NEMO_Color_Value"]
+
+        excel_buffer = BytesIO()
+        df_display.to_excel(excel_buffer, index=False, sheet_name="Procesos")
+        excel_buffer.seek(0)
+
+        st.download_button(
+            "⬇️ Descargar Excel",
+            data=excel_buffer,
+            file_name=f"procesos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
         st.dataframe(df_display, use_container_width=True, height=600)
