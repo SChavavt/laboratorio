@@ -428,7 +428,6 @@ def _sync_total_alineadores(
     inf_raw = inf_value if inf_value is not None else st.session_state.get(inf_key, 0)
 
     total = _to_int(sup_raw) + _to_int(inf_raw)
-    st.session_state[total_key] = total
     return {"Total_alineadores": total}
 
 
@@ -977,7 +976,7 @@ with tab_sud:
                     st.number_input(
                         "🧮 Total alineadores",
                         min_value=0,
-                        value=st.session_state.get(total_key, total_calculado),
+                        value=total_calculado,
                         step=1,
                         disabled=True,
                         key=total_key,
