@@ -986,23 +986,6 @@ with tab2:
     if df.empty:
         st.info("No hay procesos registrados aún.")
     else:
-        procesos_labels: list[str] = []
-        for idx, row in df.iterrows():
-            no_orden = str(row.get("No_orden", "") or "").strip()
-            if no_orden.lower() == "nan":
-                no_orden = ""
-            paciente = str(row.get("Nombre_paciente", "") or "").strip()
-            paciente = paciente or "Sin nombre"
-            if no_orden:
-                label = f"{no_orden} – {paciente}"
-            else:
-                label = f"Sin No. orden – {paciente} (fila {idx + 2})"
-            procesos_labels.append(label)
-
-        if procesos_labels:
-            st.markdown("**Procesos disponibles:**")
-            st.markdown("\n".join(f"- {label}" for label in procesos_labels))
-
         df_display = df.copy()
         if not df_display.empty:
             status_info = df_display.apply(
@@ -1015,11 +998,9 @@ with tab2:
                 result_type="expand",
             )
             status_info.columns = [
-                "Status_ID",
+                "Status_Value",
                 "Status_Label",
             ]
-            status_idx = df_display.columns.get_loc("Status")
-            df_display.insert(status_idx, "Status_ID", status_info["Status_ID"])
             df_display["Status"] = status_info["Status_Label"]
 
             nemo_info = df_display.apply(
@@ -1032,11 +1013,9 @@ with tab2:
                 result_type="expand",
             )
             nemo_info.columns = [
-                "Status_NEMO_ID",
+                "Status_NEMO_Value",
                 "Status_NEMO_Label",
             ]
-            nemo_idx = df_display.columns.get_loc("Status_NEMO")
-            df_display.insert(nemo_idx, "Status_NEMO_ID", nemo_info["Status_NEMO_ID"])
             df_display["Status_NEMO"] = nemo_info["Status_NEMO_Label"]
 
         excel_buffer = BytesIO()
