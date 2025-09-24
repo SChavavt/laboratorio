@@ -164,6 +164,41 @@ def _build_select_css(options: list[dict[str, str]]) -> str:
     return "\n".join(css_rules)
 
 
+def _ensure_unique_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Garantiza que todas las columnas del DataFrame tengan nombres únicos."""
+
+    if df.empty or df.columns.is_unique:
+        return df
+
+    new_columns: list[str] = []
+    counts: dict[str, int] = {}
+
+    for original_name in df.columns:
+        # Convertimos a string para evitar problemas con nombres no textuales.
+        base_name = str(original_name).strip()
+        if not base_name:
+            base_name = "Columna"
+
+        occurrence = counts.get(base_name, 0)
+        if occurrence == 0 and base_name not in new_columns:
+            new_name = base_name
+        else:
+            # Generamos sufijos incrementales hasta encontrar un nombre libre.
+            suffix = occurrence + 1
+            new_name = f"{base_name}_{suffix}"
+            while new_name in counts or new_name in new_columns:
+                suffix += 1
+                new_name = f"{base_name}_{suffix}"
+            counts[new_name] = 0
+
+        counts[base_name] = occurrence + 1
+        new_columns.append(new_name)
+
+    df = df.copy()
+    df.columns = new_columns
+    return df
+
+
 STATUS_OPTIONS = _build_options(_STATUS_LABELS, prefix="status")
 STATUS_OPTIONS_BY_VALUE, STATUS_OPTIONS_BY_LABEL = _build_mappings(STATUS_OPTIONS)
 STATUS_VALUES = [opt["value"] for opt in STATUS_OPTIONS]
@@ -1022,6 +1057,7 @@ with tab2:
         df_display = df_display.drop(
             columns=["Status_Color", "Status_NEMO_Color"], errors="ignore"
         )
+        df_display = _ensure_unique_column_names(df_display)
         df_display.to_excel(excel_buffer, index=False, sheet_name="Procesos")
         excel_buffer.seek(0)
 
