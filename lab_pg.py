@@ -10,8 +10,8 @@ from io import BytesIO
 import gspread
 import pandas as pd
 import streamlit as st
-from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
+from gspread.cell import Cell
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -21,14 +21,13 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-COLUMNS = [
+DEFAULT_COLUMNS = [
     "No_orden",
     "Nombre_paciente",
     "Nombre_doctor",
     "Status",
     "Status_NEMO",
     "Tipo_alineador",
-    "Fecha_recepcion",
     "Dias_entrega",
     "Comentarios",
     "Notas",
@@ -315,30 +314,44 @@ def get_worksheet():
     try:
         ws = ss.worksheet(ws_name)
     except gspread.WorksheetNotFound:
-        ws = ss.add_worksheet(title=ws_name, rows="1000", cols=str(len(COLUMNS)))
-        ws.update("A1", [COLUMNS])
-    else:
-        # Mantener sincronizada la fila de encabezados con los campos definidos.
-        current_headers = ws.row_values(1)
-        if current_headers[: len(COLUMNS)] != COLUMNS:
-            ws.update("A1", [COLUMNS])
+        ws = ss.add_worksheet(title=ws_name, rows="1000", cols=str(len(DEFAULT_COLUMNS)))
+        ws.update("A1", [DEFAULT_COLUMNS])
     return ws
+
+
+@st.cache_data(ttl=30)
+def fetch_columns():
+    ws = get_worksheet()
+    headers = ws.row_values(1)
+    if headers:
+        return headers
+    ws.update("A1", [DEFAULT_COLUMNS])
+    return DEFAULT_COLUMNS.copy()
 
 @st.cache_data(ttl=30)
 def fetch_df():
     ws = get_worksheet()
+    columns = fetch_columns()
     values = ws.get_all_values()
     if not values:
-        return pd.DataFrame(columns=COLUMNS)
+        return pd.DataFrame(columns=columns)
     df = pd.DataFrame(values[1:], columns=values[0])
-    for c in COLUMNS:
+    required_columns = set(DEFAULT_COLUMNS)
+    required_columns.add("Fecha_recepcion")
+    for c in required_columns:
         if c not in df.columns:
             df[c] = ""
-    return df[COLUMNS]
+    ordered_columns = columns + [
+        col for col in DEFAULT_COLUMNS if col not in columns
+    ]
+    extra_columns = [col for col in df.columns if col not in ordered_columns]
+    ordered_columns.extend(extra_columns)
+    return df[ordered_columns]
 
 def append_row(row):
     ws = get_worksheet()
-    values = [str(row.get(c, "")) for c in COLUMNS]
+    columns = fetch_columns()
+    values = [str(row.get(c, "")) if c in row else "" for c in columns]
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 
@@ -384,37 +397,35 @@ def update_process(identifier, data_dict):
 
     row_number = row_idx + 2  # encabezado +1
 
-    target_indices = [
-        COLUMNS.index(col)
-        for col in COLUMNS
-        if col in data_dict
-    ]
-    if target_indices:
-        start_idx = min(target_indices)
-        end_idx = max(target_indices)
-    else:
-        start_idx = COLUMNS.index("Responsable_SUD")
-        end_idx = COLUMNS.index("Fecha_solicitud_envio")
+    columns = fetch_columns()
+    column_positions = {name: idx + 1 for idx, name in enumerate(columns)}
 
-    start_col = start_idx + 1
-    end_col = end_idx + 1
-
-    row_values = [row_series.get(col, "") for col in COLUMNS]
+    updates: list[Cell] = []
     for col, value in data_dict.items():
-        if col in COLUMNS:
-            row_values[COLUMNS.index(col)] = str(value)
+        if col not in column_positions:
+            continue
+        updates.append(
+            Cell(
+                row=row_number,
+                col=column_positions[col],
+                value=_prepare_sheet_value(value),
+            )
+        )
+
+    if "Ultima_Modificacion" in column_positions:
+        updates.append(
+            Cell(
+                row=row_number,
+                col=column_positions["Ultima_Modificacion"],
+                value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+
+    if not updates:
+        return False
 
     ws = get_worksheet()
-    start_cell = rowcol_to_a1(row_number, start_col)
-    end_cell = rowcol_to_a1(row_number, end_col)
-    ws.update(
-        f"{start_cell}:{end_cell}",
-        [row_values[start_col - 1 : end_col]],
-    )
-    ws.update(
-        rowcol_to_a1(row_number, COLUMNS.index("Ultima_Modificacion") + 1),
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    )
+    ws.update_cells(updates)
     return True
 
 
@@ -503,7 +514,17 @@ def persist_field_change(
                 }
             )
 
-    if update_process(identifier, data):
+    columns = fetch_columns()
+    filtered_data = {
+        col: val for col, val in data.items() if col in columns
+    }
+    if not filtered_data:
+        st.warning(
+            f"El campo {field_name} no existe en la hoja de cálculo actual."
+        )
+        return
+
+    if update_process(identifier, filtered_data):
         st.cache_data.clear()
     else:
         st.error(f"No se pudo actualizar el campo {field_name}.")
@@ -517,6 +538,8 @@ st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 _ensure_ui_state_defaults()
 
 tab1, tab_sud, tab2 = st.tabs(TAB_LABELS)
+
+sheet_columns = fetch_columns()
 
 # ➕ NUEVO PROCESO
 with tab1:
@@ -546,7 +569,11 @@ with tab1:
         in_tipo_alineador = st.selectbox(
             "🦷 Tipo de alineador", ["Graphy", "Convencional"]
         )
-        in_fecha_recepcion = st.date_input("📅 Fecha de recepción", datetime.today())
+        in_fecha_recepcion = None
+        if "Fecha_recepcion" in sheet_columns:
+            in_fecha_recepcion = st.date_input(
+                "📅 Fecha de recepción", datetime.today()
+            )
         in_dias_entrega = st.number_input(
             "⏳ Días de entrega", min_value=1, value=1, step=1
         )
@@ -555,29 +582,33 @@ with tab1:
         enviado = st.form_submit_button("💾 Guardar")
 
     if enviado and in_paciente and in_doctor:
-        row = {
-            "No_orden": "",
-            "Nombre_paciente": in_paciente,
-            "Nombre_doctor": in_doctor,
-            "Status": in_status,
-            "Status_NEMO": in_status_nemo,
-            "Tipo_alineador": in_tipo_alineador,
-            "Fecha_recepcion": in_fecha_recepcion.strftime("%Y-%m-%d"),
-            "Dias_entrega": str(int(in_dias_entrega)),
-            "Comentarios": in_comentarios,
-            "Notas": in_notas,
-            "Responsable_SUD": "",
-            "Fecha_inicio_SUD": "",
-            "Hora_inicio_SUD": "",
-            "Plantilla_superior": "",
-            "Plantilla_inferior": "",
-            "IPR": "",
-            "No_alineadores_superior": "",
-            "No_alineadores_inferior": "",
-            "Total_alineadores": "",
-            "Fecha_solicitud_envio": "",
-            "Ultima_Modificacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        row: dict[str, str] = {}
+
+        if "No_orden" in sheet_columns:
+            row["No_orden"] = ""
+        if "Nombre_paciente" in sheet_columns:
+            row["Nombre_paciente"] = in_paciente
+        if "Nombre_doctor" in sheet_columns:
+            row["Nombre_doctor"] = in_doctor
+        if "Status" in sheet_columns:
+            row["Status"] = in_status
+        if "Status_NEMO" in sheet_columns:
+            row["Status_NEMO"] = in_status_nemo
+        if "Tipo_alineador" in sheet_columns:
+            row["Tipo_alineador"] = in_tipo_alineador
+        if "Fecha_recepcion" in sheet_columns and in_fecha_recepcion:
+            row["Fecha_recepcion"] = in_fecha_recepcion.strftime("%Y-%m-%d")
+        if "Dias_entrega" in sheet_columns:
+            row["Dias_entrega"] = str(int(in_dias_entrega))
+        if "Comentarios" in sheet_columns:
+            row["Comentarios"] = in_comentarios
+        if "Notas" in sheet_columns:
+            row["Notas"] = in_notas
+        if "Ultima_Modificacion" in sheet_columns:
+            row["Ultima_Modificacion"] = datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
         append_row(row)
         st.success("🎉 Proceso registrado correctamente.")
         st.cache_data.clear()
@@ -602,6 +633,7 @@ with tab_sud:
         st.info("No hay procesos disponibles para actualizar.")
     else:
         procesos = df_sud.copy()
+        has_fecha_recepcion = "Fecha_recepcion" in sheet_columns
 
         st.markdown(
             "<style>\n"
@@ -687,7 +719,9 @@ with tab_sud:
 
             identifier = (no_orden if no_orden else None, idx)
 
-            fecha_recepcion_val = _parse_date(row.get("Fecha_recepcion", ""))
+            fecha_recepcion_val = None
+            if has_fecha_recepcion:
+                fecha_recepcion_val = _parse_date(row.get("Fecha_recepcion", ""))
             fecha_inicio_val = _parse_date(row.get("Fecha_inicio_SUD", ""))
             fecha_solicitud_val = _parse_date(row.get("Fecha_solicitud_envio", ""))
             hora_inicio_val = _parse_time(row.get("Hora_inicio_SUD", ""))
@@ -795,15 +829,16 @@ with tab_sud:
                         kwargs={"key": tipo_alineador_key},
                     )
 
-                    fecha_recepcion_key = f"{form_key}_fecha_recepcion"
-                    st.date_input(
-                        "📅 Fecha de recepción",
-                        value=fecha_recepcion_val or datetime.today().date(),
-                        key=fecha_recepcion_key,
-                        on_change=save_field,
-                        args=("Fecha_recepcion",),
-                        kwargs={"key": fecha_recepcion_key},
-                    )
+                    if has_fecha_recepcion:
+                        fecha_recepcion_key = f"{form_key}_fecha_recepcion"
+                        st.date_input(
+                            "📅 Fecha de recepción",
+                            value=fecha_recepcion_val or datetime.today().date(),
+                            key=fecha_recepcion_key,
+                            on_change=save_field,
+                            args=("Fecha_recepcion",),
+                            kwargs={"key": fecha_recepcion_key},
+                        )
 
                     dias_entrega_key = f"{form_key}_dias_entrega"
                     st.number_input(
