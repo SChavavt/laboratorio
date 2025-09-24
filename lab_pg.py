@@ -56,6 +56,11 @@ RESPONSABLE_SUD_OPTIONS = [
     "Daniela",
 ]
 
+TAB_LABELS = ["➕ Nuevo Proceso", "SUD", "📋 Consulta"]
+SUD_TAB_LABEL = TAB_LABELS[1]
+TABS_STATE_KEY = "main_tabs"
+SUD_EXPANDERS_STATE_KEY = "sud_expanders_state"
+
 _STATUS_LABELS = [
     "1. Revisión de scan",
     "2. Por hacer Setup",
@@ -226,6 +231,44 @@ def _resolve_option_data(
         return cleaned_value, cleaned_value, color
     resolved_color = color or option["color"]
     return option["value"], option["label"], resolved_color
+
+
+def _ensure_ui_state_defaults() -> None:
+    if TABS_STATE_KEY not in st.session_state:
+        st.session_state[TABS_STATE_KEY] = TAB_LABELS[0]
+    if SUD_EXPANDERS_STATE_KEY not in st.session_state:
+        st.session_state[SUD_EXPANDERS_STATE_KEY] = {}
+
+
+def _normalize_expander_key(row_index) -> str | None:
+    if row_index is None:
+        return None
+    try:
+        return str(int(row_index))
+    except (TypeError, ValueError):
+        try:
+            return str(row_index)
+        except Exception:
+            return None
+
+
+def _focus_sud_tab(row_index=None) -> None:
+    st.session_state[TABS_STATE_KEY] = SUD_TAB_LABEL
+    key = _normalize_expander_key(row_index)
+    if key is None:
+        return
+    expanders_state = st.session_state.setdefault(SUD_EXPANDERS_STATE_KEY, {})
+    for existing_key in list(expanders_state.keys()):
+        expanders_state[existing_key] = existing_key == key
+    expanders_state[key] = True
+
+
+def _is_expander_marked_open(row_index) -> bool:
+    key = _normalize_expander_key(row_index)
+    if key is None:
+        return False
+    expanders_state = st.session_state.get(SUD_EXPANDERS_STATE_KEY, {})
+    return bool(expanders_state.get(key))
 
 # ==============================
 # 🔐 CLIENTE GOOGLE SHEETS
@@ -402,6 +445,14 @@ def persist_field_change(
     transform=None,
     extra_resolver=None,
 ):
+    row_index = None
+    if isinstance(identifier, tuple) and len(identifier) >= 2:
+        row_index = identifier[1]
+    elif isinstance(identifier, dict):
+        row_index = identifier.get("row_index")
+
+    _focus_sud_tab(row_index)
+
     raw_value = st.session_state.get(key)
     try:
         value = transform(raw_value) if transform else raw_value
@@ -438,7 +489,9 @@ def persist_field_change(
 st.set_page_config(page_title="Procesos – ARTTDLAB", layout="wide")
 st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 
-tab1, tab_sud, tab2 = st.tabs(["➕ Nuevo Proceso", "SUD", "📋 Consulta"])
+_ensure_ui_state_defaults()
+
+tab1, tab_sud, tab2 = st.tabs(TAB_LABELS, key=TABS_STATE_KEY)
 
 # ➕ NUEVO PROCESO
 with tab1:
@@ -660,7 +713,10 @@ with tab_sud:
             )
 
             form_key = f"form_sud_{idx}"
-            with st.expander(expander_title, expanded=False):
+            with st.expander(
+                expander_title,
+                expanded=_is_expander_marked_open(idx),
+            ):
                 st.caption(
                     f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
                     f"Status NEMO ID: {status_nemo_value or 'N/D'}"
