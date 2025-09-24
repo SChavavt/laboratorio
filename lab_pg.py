@@ -629,7 +629,7 @@ with tab_sud:
             paciente = str(row.get("Nombre_paciente", "") or "").strip() or "Sin nombre"
             doctor = str(row.get("Nombre_doctor", "") or "").strip() or "Sin doctor"
 
-            status_value, _, status_color_value = _resolve_option_data(
+            status_value, status_label, status_color_value = _resolve_option_data(
                 row.get("Status"),
                 row.get("Status_Color"),
                 by_value=STATUS_OPTIONS_BY_VALUE,
@@ -638,6 +638,8 @@ with tab_sud:
             status_options = STATUS_VALUES.copy()
             if status_value and status_value not in status_options:
                 status_options.append(status_value)
+
+            status_label_display = status_label or "Sin status"
 
             (
                 status_nemo_value,
@@ -654,8 +656,12 @@ with tab_sud:
                 status_nemo_options.append(status_nemo_value)
             status_nemo_label = status_nemo_label or "Sin status NEMO"
             status_nemo_emoji = status_nemo_emojis.get(status_nemo_label, "❓")
-            expander_title = (
-                f"{status_nemo_emoji} {paciente} – {doctor} • {status_nemo_label}"
+            expander_title = " • ".join(
+                [
+                    f"{status_nemo_emoji} {paciente} – {doctor}",
+                    status_label_display,
+                    status_nemo_label,
+                ]
             )
 
             identifier = (no_orden if no_orden else None, idx)
