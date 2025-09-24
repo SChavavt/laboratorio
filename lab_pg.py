@@ -55,6 +55,9 @@ RESPONSABLE_SUD_OPTIONS = [
 ]
 
 TAB_LABELS = ["➕ Nuevo Proceso", "SUD", "📋 Consulta"]
+_ACTIVE_TAB_QUERY_PARAM = "tab"
+_ACTIVE_TAB_STATE_KEY = "active_tab"
+_SUD_TAB_LABEL = TAB_LABELS[1]
 SUD_EXPANDERS_STATE_KEY = "sud_expanders_state"
 
 _STATUS_LABELS = [
@@ -262,8 +265,69 @@ def _resolve_option_data(
 
 
 def _ensure_ui_state_defaults() -> None:
+    _ensure_active_tab_state()
     if SUD_EXPANDERS_STATE_KEY not in st.session_state:
         st.session_state[SUD_EXPANDERS_STATE_KEY] = {}
+
+
+def _ensure_active_tab_state() -> None:
+    params = st.experimental_get_query_params()
+    requested = params.get(_ACTIVE_TAB_QUERY_PARAM, [TAB_LABELS[0]])[0]
+    if requested not in TAB_LABELS:
+        requested = TAB_LABELS[0]
+    st.session_state.setdefault(_ACTIVE_TAB_STATE_KEY, requested)
+    if st.session_state[_ACTIVE_TAB_STATE_KEY] != requested:
+        st.session_state[_ACTIVE_TAB_STATE_KEY] = requested
+
+
+def _set_active_tab(tab_label: str) -> None:
+    if tab_label not in TAB_LABELS:
+        return
+    current = st.session_state.get(_ACTIVE_TAB_STATE_KEY)
+    if current != tab_label:
+        st.session_state[_ACTIVE_TAB_STATE_KEY] = tab_label
+    params = dict(st.experimental_get_query_params())
+    params[_ACTIVE_TAB_QUERY_PARAM] = [tab_label]
+    st.experimental_set_query_params(**params)
+
+
+def _render_tabs_with_state(labels: list[str]):
+    tabs = st.tabs(labels)
+    active_tab = st.session_state.get(_ACTIVE_TAB_STATE_KEY, labels[0])
+    _emit_tab_selection_script(active_tab)
+    return tabs
+
+
+def _emit_tab_selection_script(active_tab: str) -> None:
+    safe_labels = json.dumps(TAB_LABELS, ensure_ascii=False)
+    script = f"""
+    <script>
+    const tabLabels = {safe_labels};
+    const activeTab = {json.dumps(active_tab, ensure_ascii=False)};
+    const queryParam = {json.dumps(_ACTIVE_TAB_QUERY_PARAM)};
+    function updateQueryParam(label) {{
+        const url = new URL(window.parent.location.href);
+        url.searchParams.set(queryParam, label);
+        window.parent.history.replaceState(null, '', url);
+    }}
+    function activateTab() {{
+        const tabButtons = window.parent.document.querySelectorAll('div[data-baseweb="tab-list"] button');
+        if (!tabButtons || tabButtons.length < tabLabels.length) {{
+            window.setTimeout(activateTab, 100);
+            return;
+        }}
+        tabButtons.forEach((button) => {{
+            const label = (button.textContent || '').trim();
+            button.addEventListener('click', () => updateQueryParam(label), {{ once: false }});
+            if (label === activeTab && button.getAttribute('aria-selected') !== 'true') {{
+                button.click();
+            }}
+        }});
+    }}
+    activateTab();
+    </script>
+    """
+    st.markdown(script, unsafe_allow_html=True)
 
 
 def _normalize_expander_key(row_index) -> str | None:
@@ -282,6 +346,7 @@ def _focus_sud_tab(row_index=None) -> None:
     key = _normalize_expander_key(row_index)
     if key is None:
         return
+    _set_active_tab(_SUD_TAB_LABEL)
     expanders_state = st.session_state.setdefault(SUD_EXPANDERS_STATE_KEY, {})
     for existing_key in list(expanders_state.keys()):
         expanders_state[existing_key] = existing_key == key
@@ -537,7 +602,7 @@ st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 
 _ensure_ui_state_defaults()
 
-tab1, tab_sud, tab2 = st.tabs(TAB_LABELS)
+tab1, tab_sud, tab2 = _render_tabs_with_state(TAB_LABELS)
 
 sheet_columns = fetch_columns()
 
