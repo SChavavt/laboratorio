@@ -271,8 +271,9 @@ def _ensure_ui_state_defaults() -> None:
 
 
 def _ensure_active_tab_state() -> None:
-    params = st.experimental_get_query_params()
-    requested = params.get(_ACTIVE_TAB_QUERY_PARAM, [TAB_LABELS[0]])[0]
+    params = st.query_params
+    values = params.get_all(_ACTIVE_TAB_QUERY_PARAM)
+    requested = values[0] if values else params.get(_ACTIVE_TAB_QUERY_PARAM, TAB_LABELS[0])
     if requested not in TAB_LABELS:
         requested = TAB_LABELS[0]
     st.session_state.setdefault(_ACTIVE_TAB_STATE_KEY, requested)
@@ -286,9 +287,7 @@ def _set_active_tab(tab_label: str) -> None:
     current = st.session_state.get(_ACTIVE_TAB_STATE_KEY)
     if current != tab_label:
         st.session_state[_ACTIVE_TAB_STATE_KEY] = tab_label
-    params = dict(st.experimental_get_query_params())
-    params[_ACTIVE_TAB_QUERY_PARAM] = [tab_label]
-    st.experimental_set_query_params(**params)
+    st.query_params[_ACTIVE_TAB_QUERY_PARAM] = tab_label
 
 
 def _render_tabs_with_state(labels: list[str]):
