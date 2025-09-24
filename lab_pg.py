@@ -56,6 +56,11 @@ RESPONSABLE_SUD_OPTIONS = [
     "Daniela",
 ]
 
+TAB_LABELS = ["➕ Nuevo Proceso", "SUD", "📋 Consulta"]
+SUD_TAB_LABEL = TAB_LABELS[1]
+TABS_STATE_KEY = "main_tabs"
+SUD_EXPANDERS_STATE_KEY = "sud_expanders_state"
+
 _STATUS_LABELS = [
     "1. Revisión de scan",
     "2. Por hacer Setup",
@@ -226,6 +231,136 @@ def _resolve_option_data(
         return cleaned_value, cleaned_value, color
     resolved_color = color or option["color"]
     return option["value"], option["label"], resolved_color
+
+
+def _sync_tab_query_param(label: str) -> None:
+    params = st.experimental_get_query_params()
+    current = params.get("tab", [])
+    current_value = current[0] if current else None
+    if current_value == label:
+        return
+    params["tab"] = [label]
+    normalized_params = {
+        key: value if len(value) > 1 else value[0]
+        for key, value in params.items()
+        if value
+    }
+    st.experimental_set_query_params(**normalized_params)
+
+
+def _ensure_ui_state_defaults() -> None:
+    params = st.experimental_get_query_params()
+    tab_param = params.get("tab", [])
+    if tab_param:
+        selected_tab = tab_param[0]
+        if selected_tab in TAB_LABELS:
+            st.session_state[TABS_STATE_KEY] = selected_tab
+    if TABS_STATE_KEY not in st.session_state:
+        st.session_state[TABS_STATE_KEY] = TAB_LABELS[0]
+    _sync_tab_query_param(st.session_state[TABS_STATE_KEY])
+    if SUD_EXPANDERS_STATE_KEY not in st.session_state:
+        st.session_state[SUD_EXPANDERS_STATE_KEY] = {}
+
+
+def _normalize_expander_key(row_index) -> str | None:
+    if row_index is None:
+        return None
+    try:
+        return str(int(row_index))
+    except (TypeError, ValueError):
+        try:
+            return str(row_index)
+        except Exception:
+            return None
+
+
+def _focus_sud_tab(row_index=None) -> None:
+    st.session_state[TABS_STATE_KEY] = SUD_TAB_LABEL
+    _sync_tab_query_param(SUD_TAB_LABEL)
+    key = _normalize_expander_key(row_index)
+    if key is None:
+        return
+    expanders_state = st.session_state.setdefault(SUD_EXPANDERS_STATE_KEY, {})
+    for existing_key in list(expanders_state.keys()):
+        expanders_state[existing_key] = existing_key == key
+    expanders_state[key] = True
+
+
+def _restore_tab_from_state() -> None:
+    active_label = st.session_state.get(TABS_STATE_KEY)
+    if not active_label:
+        return
+    script_template = """
+    <script>
+    const activeLabel = __ACTIVE_LABEL__;
+    const knownLabels = __TAB_LABELS__;
+    function buildQueryParams(params) {
+        const queryParams = {};
+        params.forEach((value, key) => {
+            if (Object.prototype.hasOwnProperty.call(queryParams, key)) {
+                const current = queryParams[key];
+                if (Array.isArray(current)) {
+                    current.push(value);
+                } else {
+                    queryParams[key] = [current, value];
+                }
+            } else {
+                queryParams[key] = value;
+            }
+        });
+        return queryParams;
+    }
+    function updateQuery(label) {
+        const params = new URLSearchParams(window.parent.location.search);
+        if (params.get('tab') === label) {
+            return;
+        }
+        params.set('tab', label);
+        const queryParams = buildQueryParams(params);
+        window.parent.postMessage({
+            type: 'streamlit:setQueryParams',
+            queryParams
+        }, '*');
+    }
+    function initTabsSync() {
+        const tabsRoot = window.parent.document.querySelector('div[data-testid="stTabs"]');
+        if (!tabsRoot) {
+            setTimeout(initTabsSync, 50);
+            return;
+        }
+        const tabs = tabsRoot.querySelectorAll('button[role="tab"]');
+        let activeApplied = false;
+        tabs.forEach((tab) => {
+            const label = tab.innerText.trim();
+            if (!knownLabels.includes(label)) {
+                return;
+            }
+            if (!tab.dataset.tabSyncAttached) {
+                tab.dataset.tabSyncAttached = 'true';
+                tab.addEventListener('click', () => updateQuery(label));
+            }
+            if (!activeApplied && label === activeLabel && tab.getAttribute('aria-selected') !== 'true') {
+                tab.click();
+                activeApplied = true;
+            }
+        });
+    }
+    initTabsSync();
+    </script>
+    """
+    script = (
+        script_template.replace("__ACTIVE_LABEL__", json.dumps(active_label))
+        .replace("__TAB_LABELS__", json.dumps(TAB_LABELS))
+    )
+    st.markdown(script, unsafe_allow_html=True)
+
+
+def _is_expander_marked_open(row_index) -> bool:
+    key = _normalize_expander_key(row_index)
+    if key is None:
+        return False
+    expanders_state = st.session_state.get(SUD_EXPANDERS_STATE_KEY, {})
+    return bool(expanders_state.get(key))
 
 # ==============================
 # 🔐 CLIENTE GOOGLE SHEETS
@@ -402,6 +537,14 @@ def persist_field_change(
     transform=None,
     extra_resolver=None,
 ):
+    row_index = None
+    if isinstance(identifier, tuple) and len(identifier) >= 2:
+        row_index = identifier[1]
+    elif isinstance(identifier, dict):
+        row_index = identifier.get("row_index")
+
+    _focus_sud_tab(row_index)
+
     raw_value = st.session_state.get(key)
     try:
         value = transform(raw_value) if transform else raw_value
@@ -438,7 +581,11 @@ def persist_field_change(
 st.set_page_config(page_title="Procesos – ARTTDLAB", layout="wide")
 st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 
-tab1, tab_sud, tab2 = st.tabs(["➕ Nuevo Proceso", "SUD", "📋 Consulta"])
+_ensure_ui_state_defaults()
+
+tabs = st.tabs(TAB_LABELS)
+_restore_tab_from_state()
+tab1, tab_sud, tab2 = tabs
 
 # ➕ NUEVO PROCESO
 with tab1:
@@ -660,7 +807,10 @@ with tab_sud:
             )
 
             form_key = f"form_sud_{idx}"
-            with st.expander(expander_title, expanded=False):
+            with st.expander(
+                expander_title,
+                expanded=_is_expander_marked_open(idx),
+            ):
                 st.caption(
                     f"No. orden: {no_orden if no_orden else 'Sin número de orden'} | "
                     f"Status NEMO ID: {status_nemo_value or 'N/D'}"
