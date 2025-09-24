@@ -57,12 +57,7 @@ RESPONSABLE_SUD_OPTIONS = [
 ]
 
 TAB_LABELS = ["➕ Nuevo Proceso", "SUD", "📋 Consulta"]
-SUD_TAB_LABEL = TAB_LABELS[1]
-TABS_STATE_KEY = "main_tabs"
 SUD_EXPANDERS_STATE_KEY = "sud_expanders_state"
-DEFAULT_TAB_INDEX = 0
-SUD_TAB_INDEX = TAB_LABELS.index(SUD_TAB_LABEL)
-_TAB_LABEL_TO_INDEX = {label: idx for idx, label in enumerate(TAB_LABELS)}
 
 _STATUS_LABELS = [
     "1. Revisión de scan",
@@ -237,12 +232,6 @@ def _resolve_option_data(
 
 
 def _ensure_ui_state_defaults() -> None:
-    current_tab = st.session_state.get(TABS_STATE_KEY, DEFAULT_TAB_INDEX)
-    if isinstance(current_tab, str):
-        current_tab = _TAB_LABEL_TO_INDEX.get(current_tab, DEFAULT_TAB_INDEX)
-    elif not isinstance(current_tab, int):
-        current_tab = DEFAULT_TAB_INDEX
-    st.session_state[TABS_STATE_KEY] = current_tab
     if SUD_EXPANDERS_STATE_KEY not in st.session_state:
         st.session_state[SUD_EXPANDERS_STATE_KEY] = {}
 
@@ -260,7 +249,6 @@ def _normalize_expander_key(row_index) -> str | None:
 
 
 def _focus_sud_tab(row_index=None) -> None:
-    st.session_state[TABS_STATE_KEY] = SUD_TAB_INDEX
     key = _normalize_expander_key(row_index)
     if key is None:
         return
@@ -498,7 +486,7 @@ st.title("🧪 Plataforma de Procesos – ARTTDLAB")
 
 _ensure_ui_state_defaults()
 
-tab1, tab_sud, tab2 = st.tabs(TAB_LABELS, key=TABS_STATE_KEY)
+tab1, tab_sud, tab2 = st.tabs(TAB_LABELS)
 
 # ➕ NUEVO PROCESO
 with tab1:
