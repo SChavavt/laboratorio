@@ -80,6 +80,7 @@ VENDEDOR_OPTIONS = [
     "JUAN",
     "MICHELLE",
     "IGNACIO",
+    "LESLY",
     "KAREN",
     "ALEJANDRA",
     "CARO",
@@ -91,7 +92,7 @@ SERVICIO_OPTIONS = [
     "PLANEACIÓN COMPLETA",
     "CONFECCIÓN",
     "PLANEACIÓN & CONFECCIÓN",
-    "DISEÑO & CONFECCION",
+    "DISEÑO & CONFECCIÓN",
     "PLANEACION",
 ]
 
@@ -107,6 +108,120 @@ PAGO_OPTIONS = [
     "SIN PAGO",
     "CANCELO",
 ]
+
+APARATO_DISPLAY = {
+    "MSE": "🟤 MSE",
+    "TIGER": "🟡 TIGER",
+    "REVERSE": "🟢 REVERSE",
+    "HYRAX": "🟠 HYRAX",
+    "TRAMPA LINGUAL": "⚪ TRAMPA LINGUAL",
+    "LEONE": "🔵 LEONE",
+    "DISTALIZADOR": "⚫ DISTALIZADOR",
+}
+
+STATUS_DISPLAY = {
+    "REVISION DE ARCHIVOS": "🔵 REVISION DE ARCHIVOS",
+    "EN PLANEACIÓN": "🟡 EN PLANEACIÓN",
+    "REVISIÓN DEL DISEÑO POR DR": "⚪ REVISIÓN DEL DISEÑO POR DR",
+    "SOLICITUD DE CAMBIOS": "🟤 SOLICITUD DE CAMBIOS",
+    "ELABORACIÓN PLATINA BANDAS": "🟣 ELABORACIÓN PLATINA BANDAS",
+    "ESPERANDO STL PSM": "🟨 ESPERANDO STL PSM",
+    "PDTE ENVIO PSM + GUIA": "🔴 PDTE ENVIO PSM + GUIA",
+    "LISTO P/SINTERIZADO": "⚪ LISTO P/SINTERIZADO",
+    "EN SINTERIZADO": "⚫ EN SINTERIZADO",
+    "LISTO P/CONFECCIÓN": "🌸 LISTO P/CONFECCIÓN",
+    "EN CONFECCIÓN": "🔴 EN CONFECCIÓN",
+    "LISTO P/ENVÍO": "🟢 LISTO P/ENVÍO",
+    "ENVIADO": "✅ ENVIADO",
+    "FALTA PAGO COMPLETO": "🟣 FALTA PAGO COMPLETO",
+    "CONFECCION EN PAUSA": "🚫 CONFECCION EN PAUSA",
+    "CANCELO": "🔵 CANCELO",
+}
+
+VENDEDOR_DISPLAY = {
+    "JIMENA": "👩 JIMENA",
+    "JUAN": "👨 JUAN",
+    "MICHELLE": "👩 MICHELLE",
+    "IGNACIO": "👨 IGNACIO",
+    "LESLY": "👩 LESLY",
+    "KAREN": "👩 KAREN",
+    "ALEJANDRA": "👩 ALEJANDRA",
+    "CARO": "👩 CARO",
+    "HECTOR": "👨 HECTOR",
+    "DANIELA": "👩 DANIELA",
+}
+
+SERVICIO_DISPLAY = {
+    "PLANEACIÓN COMPLETA": "📋 PLANEACIÓN COMPLETA",
+    "CONFECCIÓN": "🦷 CONFECCIÓN",
+    "PLANEACIÓN & CONFECCIÓN": "🔵 PLANEACIÓN & CONFECCIÓN",
+    "DISEÑO & CONFECCIÓN": "🟣 DISEÑO & CONFECCIÓN",
+    "DISEÑO & CONFECCION": "🟣 DISEÑO & CONFECCION",
+    "PLANEACION": "📄 PLANEACION",
+}
+
+ARCHIVOS_RECIBIDOS_DISPLAY = {
+    "STL": "📁 STL",
+    "TOMOGRAFÍA": "🩻 TOMOGRAFÍA",
+    "STL+TOMO": "📁🩻 STL+TOMO",
+}
+
+PAGO_DISPLAY = {
+    "ANTICIPO": "🔴 ANTICIPO",
+    "TOTAL": "🟢 TOTAL",
+    "SIN PAGO": "⚪ SIN PAGO",
+    "CANCELO": "🔵 CANCELO",
+}
+
+DISPLAY_OPTIONS_BY_COLUMN = {
+    "APARATO": APARATO_DISPLAY,
+    STATUS_COLUMN: STATUS_DISPLAY,
+    "VENDEDOR": VENDEDOR_DISPLAY,
+    "SERVICIO": SERVICIO_DISPLAY,
+    "ARCHIVOS RECIBIDOS": ARCHIVOS_RECIBIDOS_DISPLAY,
+    "PAGO": PAGO_DISPLAY,
+}
+
+FIELD_LABEL_DISPLAY = {
+    ID_COLUMN: "🆔 Columna 1",
+    "APARATO": "🦷 APARATO",
+    STATUS_COLUMN: "🚦 STATUS",
+    "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
+    "NOMBRE PACIENTE": "🙂 NOMBRE PACIENTE",
+    "DETALLE COMENTARIOS": "📝 DETALLE COMENTARIOS",
+    "DETALLES & COMENTARIOS FINALES": "🗒️ DETALLES & COMENTARIOS FINALES",
+    "VENDEDOR": "🤝 VENDEDOR",
+    "SERVICIO": "🛠️ SERVICIO",
+    "ARCHIVOS RECIBIDOS": "📁 ARCHIVOS RECIBIDOS",
+    "PAGO": "💳 PAGO",
+    "DÍAS DE ENTREGA": "📆 DÍAS DE ENTREGA",
+    "FECHA DE RECEPCIÓN": "📥 FECHA DE RECEPCIÓN",
+    "FECHA PAGO PLANEACION": "💳 FECHA PAGO PLANEACION",
+    "FECHA PAGO CONFECCION": "💳 FECHA PAGO CONFECCION",
+    "FECHA PARA ENTREGA": "📦 FECHA PARA ENTREGA",
+    "FECHA IMPRESIÓN": "🖨️ FECHA IMPRESIÓN",
+    "FECHA ENVÍO": "🚚 FECHA ENVÍO",
+    "FECHA/HORA ENVÍO STEFANO": "🚚 FECHA/HORA ENVÍO STEFANO",
+    "FECHA/HORA ENTREGA STEFANO": "📬 FECHA/HORA ENTREGA STEFANO",
+    "ID_LOG": "🔢 ID_LOG",
+    "FASE_ORDEN": "🧭 FASE_ORDEN",
+    "STATUS_SIGUIENTE": "➡️ STATUS_SIGUIENTE",
+    "RESPONSABLE": "🙋 RESPONSABLE",
+    "USUARIO": "👤 USUARIO",
+    "FECHA_INICIO": "▶️ FECHA_INICIO",
+    "HORA_INICIO": "🕒 HORA_INICIO",
+    "FECHA_FIN": "🏁 FECHA_FIN",
+    "HORA_FIN": "🕔 HORA_FIN",
+    "DURACION_HORAS": "⏳ DURACION_HORAS",
+    "TIEMPO_MAXIMO_HORAS": "⏱️ TIEMPO_MAXIMO_HORAS",
+    "ESTADO_ALERTA": "🚨 ESTADO_ALERTA",
+    "COMENTARIOS_CAMBIO": "💬 COMENTARIOS_CAMBIO",
+    "FECHA_REGISTRO_LOG": "🗓️ FECHA_REGISTRO_LOG",
+    "REGISTRO_ACTIVO": "🟢 REGISTRO_ACTIVO",
+    "ESTADO_ALERTA_VISUAL": "🚦 ESTADO_ALERTA_VISUAL",
+    "HORAS_TRANSCURRIDAS": "⌛ HORAS_TRANSCURRIDAS",
+    "Comentario del cambio": "📝 Comentario del cambio",
+}
 
 SELECTBOX_OPTIONS_BY_COLUMN = {
     "APARATO": APARATO_OPTIONS,
@@ -213,6 +328,55 @@ def build_selectbox_options(fixed_options: list[str], current_value: str) -> lis
     if current_value and current_value not in options:
         options.append(current_value)
     return options
+
+
+def clean_display_value(value: Any) -> str:
+    """Quita el emoji de una opción visual antes de guardar en Google Sheets."""
+
+    text = clean_cell(value).strip()
+    display_values = {
+        display_value
+        for display_options in DISPLAY_OPTIONS_BY_COLUMN.values()
+        for display_value in display_options.values()
+    }
+    return text.split(" ", 1)[1] if text in display_values and " " in text else text
+
+
+def display_selectbox_value(column: str, value: str) -> str:
+    """Devuelve el texto visual con emoji para una columna selectbox."""
+
+    cleaned_value = clean_display_value(clean_cell(value).strip())
+    if not cleaned_value:
+        return ""
+    display_options = DISPLAY_OPTIONS_BY_COLUMN.get(column, {})
+    return display_options.get(cleaned_value, cleaned_value)
+
+
+def build_display_selectbox_options(
+    column: str, fixed_options: list[str], current_value: str
+) -> list[str]:
+    """Construye opciones visuales con emoji manteniendo valores limpios internos."""
+
+    cleaned_current_value = clean_display_value(clean_cell(current_value).strip())
+    clean_options = build_selectbox_options(fixed_options, cleaned_current_value)
+    return [display_selectbox_value(column, option) for option in clean_options]
+
+
+def display_field_label(column: str, *, required: bool = False) -> str:
+    """Devuelve un encabezado de campo más visual sin cambiar el nombre real de columna."""
+
+    label = FIELD_LABEL_DISPLAY.get(column, column)
+    return f"{label} *" if required else label
+
+
+def build_dataframe_column_config(df: pd.DataFrame) -> dict[str, Any]:
+    """Configura encabezados visuales con emoji para tablas sin alterar el DataFrame."""
+
+    return {
+        column: st.column_config.Column(display_field_label(column))
+        for column in df.columns
+        if column in FIELD_LABEL_DISPLAY
+    }
 
 
 def clean_cell(value: Any) -> str:
@@ -702,28 +866,131 @@ def register_status_change(
 # ==============================
 # 🖥️ COMPONENTES STREAMLIT
 # ==============================
+def apply_custom_css() -> None:
+    """Aplica mejoras visuales globales para la app Streamlit."""
+
+    st.markdown(
+        """
+        <style>
+            .stApp {
+                background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 45%, #ffffff 100%);
+            }
+
+            h1, h2, h3 {
+                color: #123a63;
+                font-weight: 800 !important;
+                letter-spacing: -0.02em;
+            }
+
+            h1 {
+                padding-bottom: 0.35rem;
+                border-bottom: 3px solid #8ec5ff;
+            }
+
+            h2, h3 {
+                margin-top: 0.75rem;
+            }
+
+            div[data-testid="stCaptionContainer"],
+            .stMarkdown p {
+                color: #4f6478;
+                font-weight: 500;
+            }
+
+            label, div[data-testid="stWidgetLabel"] p {
+                color: #54708c !important;
+                font-weight: 700 !important;
+            }
+
+            div[data-testid="stForm"] {
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid #d8e7f7;
+                border-radius: 22px;
+                box-shadow: 0 16px 40px rgba(18, 58, 99, 0.10);
+                padding: 1.35rem 1.5rem 1.55rem;
+            }
+
+            div[data-baseweb="select"] > div,
+            div[data-baseweb="input"] > div,
+            textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stNumberInput"] input {
+                border-radius: 14px !important;
+                border-color: #b7cce1 !important;
+                background-color: #ffffff !important;
+            }
+
+            div[data-baseweb="select"] > div:hover,
+            div[data-baseweb="input"] > div:hover,
+            textarea:hover {
+                border-color: #4d9de0 !important;
+                box-shadow: 0 0 0 2px rgba(77, 157, 224, 0.12);
+            }
+
+            div[data-testid="stFormSubmitButton"] button {
+                background: linear-gradient(135deg, #0f7cdb 0%, #35c2ff 50%, #4fd1a5 100%);
+                border: 0;
+                border-radius: 999px;
+                color: #ffffff;
+                font-weight: 800;
+                padding: 0.65rem 1.25rem;
+                box-shadow: 0 10px 22px rgba(15, 124, 219, 0.28);
+                transition: transform 120ms ease, box-shadow 120ms ease;
+            }
+
+            div[data-testid="stFormSubmitButton"] button:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 14px 28px rgba(15, 124, 219, 0.34);
+            }
+
+            div[data-testid="stTabs"] button p {
+                color: #123a63;
+                font-weight: 700;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def apply_estatus_filters(df: pd.DataFrame) -> pd.DataFrame:
     """Renderiza filtros y devuelve la tabla filtrada."""
 
     filtered_df = df.copy()
-    col_aparato, col_status, col_vendedor, col_pago, col_search = st.columns([1, 1, 1, 1, 1.4])
+    col_aparato, col_status, col_vendedor, col_pago, col_search = st.columns(
+        [1, 1, 1, 1, 1.4]
+    )
 
     def options_for(column: str) -> list[str]:
         if column not in df.columns:
             return ["Todos"]
-        values = sorted({clean_cell(value).strip() for value in df[column] if clean_cell(value).strip()})
-        return ["Todos", *values]
+        values = sorted(
+            {
+                clean_display_value(clean_cell(value).strip())
+                for value in df[column]
+                if clean_cell(value).strip()
+            }
+        )
+        return ["Todos", *[display_selectbox_value(column, value) for value in values]]
 
     with col_aparato:
-        aparato_filter = st.selectbox("APARATO", options_for("APARATO"))
+        aparato_filter = clean_display_value(
+            st.selectbox(display_field_label("APARATO"), options_for("APARATO"))
+        )
     with col_status:
-        status_filter = st.selectbox("STATUS", options_for(STATUS_COLUMN))
+        status_filter = clean_display_value(
+            st.selectbox(display_field_label(STATUS_COLUMN), options_for(STATUS_COLUMN))
+        )
     with col_vendedor:
-        vendedor_filter = st.selectbox("VENDEDOR", options_for("VENDEDOR"))
+        vendedor_filter = clean_display_value(
+            st.selectbox(display_field_label("VENDEDOR"), options_for("VENDEDOR"))
+        )
     with col_pago:
-        pago_filter = st.selectbox("PAGO", options_for("PAGO"))
+        pago_filter = clean_display_value(
+            st.selectbox(display_field_label("PAGO"), options_for("PAGO"))
+        )
     with col_search:
-        search_text = st.text_input("Buscar", placeholder="Columna 1, doctor o paciente")
+        search_text = st.text_input("🔎 Buscar", placeholder="Columna 1, doctor o paciente")
 
     for column, selected in {
         "APARATO": aparato_filter,
@@ -732,7 +999,12 @@ def apply_estatus_filters(df: pd.DataFrame) -> pd.DataFrame:
         "PAGO": pago_filter,
     }.items():
         if selected != "Todos" and column in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df[column].astype(str) == selected]
+            filtered_df = filtered_df[
+                filtered_df[column].apply(
+                    lambda value: clean_display_value(clean_cell(value).strip())
+                )
+                == selected
+            ]
 
     if search_text:
         search_norm = normalize_text(search_text)
@@ -756,40 +1028,58 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
     text_value = clean_cell(value)
 
     if column == ID_COLUMN:
-        st.text_input(column, value=text_value, key=key, disabled=True)
+        st.text_input(
+            display_field_label(column), value=text_value, key=key, disabled=True
+        )
         return text_value
 
     if column in SELECTBOX_OPTIONS_BY_COLUMN:
-        options = build_selectbox_options(SELECTBOX_OPTIONS_BY_COLUMN[column], text_value)
-        index = options.index(text_value) if text_value in options else 0
-        return st.selectbox(column, options, index=index, key=key)
+        options = build_display_selectbox_options(
+            column, SELECTBOX_OPTIONS_BY_COLUMN[column], text_value
+        )
+        current_display_value = display_selectbox_value(column, text_value)
+        index = options.index(current_display_value) if current_display_value in options else 0
+        selected_value = st.selectbox(
+            display_field_label(column), options, index=index, key=key
+        )
+        return clean_display_value(selected_value)
 
     if column in DATE_COLUMNS:
         parsed_date = parse_simple_date(text_value)
         if parsed_date is not None:
-            selected_date = st.date_input(column, value=parsed_date, key=key)
+            selected_date = st.date_input(
+                display_field_label(column), value=parsed_date, key=key
+            )
             return text_value if selected_date == parsed_date else selected_date.isoformat()
-        return st.text_input(column, value=text_value, key=key)
+        return st.text_input(display_field_label(column), value=text_value, key=key)
 
     if column in TEXT_AREA_COLUMNS:
-        return st.text_area(column, value=text_value, key=key, height=100)
+        return st.text_area(
+            display_field_label(column), value=text_value, key=key, height=100
+        )
 
     if column == "DÍAS DE ENTREGA" and is_numeric_value(text_value):
         numeric_value = float(text_value.replace(",", "."))
         if numeric_value.is_integer():
-            return st.number_input(column, value=int(numeric_value), step=1, key=key)
-        return st.number_input(column, value=numeric_value, step=0.5, key=key)
+            return st.number_input(
+                display_field_label(column), value=int(numeric_value), step=1, key=key
+            )
+        return st.number_input(
+            display_field_label(column), value=numeric_value, step=0.5, key=key
+        )
 
-    return st.text_input(column, value=text_value, key=key)
+    return st.text_input(display_field_label(column), value=text_value, key=key)
 
 
 def render_optional_date_input(label: str, key: str) -> str:
     """Permite guardar una fecha opcional sin establecer defaults no deseados."""
 
-    enabled = st.checkbox(f"Agregar {label}", key=f"{key}_enabled")
+    enabled = st.checkbox(f"Agregar {display_field_label(label)}", key=f"{key}_enabled")
     if not enabled:
         return ""
-    return st.date_input(label, value=date.today(), key=key).isoformat()
+    return st.date_input(
+        display_field_label(label), value=date.today(), key=key
+    ).isoformat()
 
 
 def render_nuevo_pedido_tab() -> None:
@@ -800,18 +1090,36 @@ def render_nuevo_pedido_tab() -> None:
         col_left, col_right = st.columns(2)
 
         with col_left:
-            pedido_id = st.text_input("Columna 1 *")
-            aparato = st.selectbox("APARATO", ["", *APARATO_OPTIONS])
-            nombre_doctor = st.text_input("NOMBRE DOCTOR")
-            nombre_paciente = st.text_input("NOMBRE PACIENTE")
-            detalle_comentarios = st.text_area("DETALLE COMENTARIOS", height=100)
+            pedido_id = st.text_input(display_field_label(ID_COLUMN, required=True))
+            aparato = st.selectbox(
+                display_field_label("APARATO"),
+                build_display_selectbox_options("APARATO", APARATO_OPTIONS, ""),
+            )
+            nombre_doctor = st.text_input(display_field_label("NOMBRE DOCTOR"))
+            nombre_paciente = st.text_input(display_field_label("NOMBRE PACIENTE"))
+            detalle_comentarios = st.text_area(
+                display_field_label("DETALLE COMENTARIOS"), height=100
+            )
 
         with col_right:
-            vendedor = st.selectbox("VENDEDOR", ["", *VENDEDOR_OPTIONS])
-            servicio = st.selectbox("SERVICIO", ["", *SERVICIO_OPTIONS])
-            pago = st.selectbox("PAGO", ["", *PAGO_OPTIONS])
-            dias_entrega = st.number_input("DÍAS DE ENTREGA", min_value=0, value=0, step=1)
-            fecha_para_entrega = st.date_input("FECHA PARA ENTREGA", value=date.today())
+            vendedor = st.selectbox(
+                display_field_label("VENDEDOR"),
+                build_display_selectbox_options("VENDEDOR", VENDEDOR_OPTIONS, ""),
+            )
+            servicio = st.selectbox(
+                display_field_label("SERVICIO"),
+                build_display_selectbox_options("SERVICIO", SERVICIO_OPTIONS, ""),
+            )
+            pago = st.selectbox(
+                display_field_label("PAGO"),
+                build_display_selectbox_options("PAGO", PAGO_OPTIONS, ""),
+            )
+            dias_entrega = st.number_input(
+                display_field_label("DÍAS DE ENTREGA"), min_value=0, value=0, step=1
+            )
+            fecha_para_entrega = st.date_input(
+                display_field_label("FECHA PARA ENTREGA"), value=date.today()
+            )
 
         submitted = st.form_submit_button("💾 Guardar nuevo pedido")
 
@@ -827,15 +1135,20 @@ def render_nuevo_pedido_tab() -> None:
         st.error(f"Ya existe un pedido con Columna 1: {cleaned_identifier}")
         return
 
+    clean_aparato = clean_display_value(aparato)
+    clean_vendedor = clean_display_value(vendedor)
+    clean_servicio = clean_display_value(servicio)
+    clean_pago = clean_display_value(pago)
+
     row_dict = {
         ID_COLUMN: cleaned_identifier,
-        "APARATO": aparato,
+        "APARATO": clean_aparato,
         "NOMBRE DOCTOR": nombre_doctor,
         "NOMBRE PACIENTE": nombre_paciente,
         "DETALLE COMENTARIOS": detalle_comentarios,
-        "VENDEDOR": vendedor,
-        "SERVICIO": servicio,
-        "PAGO": pago,
+        "VENDEDOR": clean_vendedor,
+        "SERVICIO": clean_servicio,
+        "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
         "FECHA PARA ENTREGA": fecha_para_entrega.isoformat(),
     }
@@ -846,7 +1159,7 @@ def render_nuevo_pedido_tab() -> None:
         if default_status:
             register_status_change(
                 identifier=cleaned_identifier,
-                apparatus=aparato,
+                apparatus=clean_aparato,
                 previous_status="",
                 new_status=default_status,
                 change_comment="Registro inicial desde app",
@@ -874,7 +1187,12 @@ def render_estatus_tab() -> None:
 
     filtered_df = apply_estatus_filters(estatus_df)
     st.caption(f"Registros encontrados: {len(filtered_df)}")
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        filtered_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=build_dataframe_column_config(filtered_df),
+    )
 
     selectable_ids = [
         clean_cell(value).strip()
@@ -885,14 +1203,14 @@ def render_estatus_tab() -> None:
         st.warning("No hay registros con Columna 1 para seleccionar en el resultado filtrado.")
         return
 
-    selected_id = st.selectbox("Selecciona un registro por Columna 1", selectable_ids)
+    selected_id = st.selectbox("🆔 Selecciona un registro por Columna 1", selectable_ids)
     selected_rows = estatus_df[estatus_df[ID_COLUMN].astype(str).str.strip() == selected_id]
     if selected_rows.empty:
         st.warning("No se pudo encontrar el registro seleccionado.")
         return
 
     row = selected_rows.iloc[0]
-    st.markdown("### Editar registro seleccionado")
+    st.markdown("### 📝 Editar registro seleccionado")
     st.caption("Se actualizarán únicamente las columnas modificadas.")
 
     with st.form(f"edit_estatus_{selected_id}"):
@@ -909,7 +1227,7 @@ def render_estatus_tab() -> None:
                     )
 
         change_comment = st.text_area(
-            "Comentario del cambio",
+            display_field_label("Comentario del cambio"),
             value="",
             key=f"change_comment_{selected_id}",
             help="Solo se guarda en TIEMPOS_APARATOS cuando cambia el STATUS.",
@@ -918,17 +1236,21 @@ def render_estatus_tab() -> None:
 
     if submitted:
         changes = {
-            column: value
+            column: clean_display_value(clean_cell(value))
             for column, value in edited_values.items()
-            if column != ID_COLUMN and clean_cell(value) != clean_cell(row.get(column, ""))
+            if column != ID_COLUMN
+            and clean_display_value(clean_cell(value))
+            != clean_display_value(clean_cell(row.get(column, "")))
         }
         if not changes:
             st.info("No se detectaron cambios para guardar.")
             return
 
-        previous_status = clean_cell(row.get(STATUS_COLUMN, ""))
-        new_status = clean_cell(changes.get(STATUS_COLUMN, previous_status))
-        apparatus = clean_cell(changes.get("APARATO", row.get("APARATO", "")))
+        previous_status = clean_display_value(clean_cell(row.get(STATUS_COLUMN, "")))
+        new_status = clean_display_value(clean_cell(changes.get(STATUS_COLUMN, previous_status)))
+        apparatus = clean_display_value(
+            clean_cell(changes.get("APARATO", row.get("APARATO", "")))
+        )
 
         if update_row_by_columna_1(selected_id, changes):
             if STATUS_COLUMN in changes and previous_status != new_status:
@@ -986,13 +1308,18 @@ def render_tiempos_tab() -> None:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "ESTADO_ALERTA_VISUAL": st.column_config.TextColumn("Estado alerta visual"),
-            "HORAS_TRANSCURRIDAS": st.column_config.TextColumn("Horas transcurridas"),
+            **build_dataframe_column_config(ordered_df),
+            "ESTADO_ALERTA_VISUAL": st.column_config.Column(
+                display_field_label("ESTADO_ALERTA_VISUAL")
+            ),
+            "HORAS_TRANSCURRIDAS": st.column_config.Column(
+                display_field_label("HORAS_TRANSCURRIDAS")
+            ),
         },
     )
 
     counts = ordered_df["ESTADO_ALERTA_VISUAL"].value_counts().to_dict()
-    st.markdown("#### Resumen")
+    st.markdown("#### 📊 Resumen")
     summary_cols = st.columns(4)
     for container, label in zip(
         summary_cols,
@@ -1008,13 +1335,19 @@ def render_procesos_tab() -> None:
         st.info("La hoja PROCESOS POR APARATO no tiene datos para mostrar.")
         return
     st.caption("Consulta de procesos y tiempos configurados. Esta hoja no se edita en esta versión.")
-    st.dataframe(procesos_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        procesos_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=build_dataframe_column_config(procesos_df),
+    )
 
 
 # ==============================
 # 🚀 APP STREAMLIT
 # ==============================
 st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
+apply_custom_css()
 st.title("🦷 Control de Aparatos – ARTTDLAB")
 st.caption("Primera versión para edición manual de estatus y registro automático de tiempos.")
 
