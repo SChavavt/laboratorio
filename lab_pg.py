@@ -1084,10 +1084,7 @@ def render_optional_date_input(label: str, key: str) -> str:
 
 def render_nuevo_pedido_tab() -> None:
     st.subheader("➕ Nuevo pedido")
-    st.caption(
-        "Captura los datos principales en ESTATUS APARATOS; "
-        "TIEMPOS_APARATOS solo recibe el log complementario para tiempos y alertas."
-    )
+    st.caption("Captura únicamente los datos iniciales del pedido.")
 
     with st.form("form_nuevo_pedido"):
         col_left, col_right = st.columns(2)
@@ -1143,12 +1140,9 @@ def render_nuevo_pedido_tab() -> None:
     clean_servicio = clean_display_value(servicio)
     clean_pago = clean_display_value(pago)
 
-    default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
-
     row_dict = {
         ID_COLUMN: cleaned_identifier,
         "APARATO": clean_aparato,
-        STATUS_COLUMN: default_status,
         "NOMBRE DOCTOR": nombre_doctor,
         "NOMBRE PACIENTE": nombre_paciente,
         "DETALLE COMENTARIOS": detalle_comentarios,
@@ -1161,6 +1155,7 @@ def render_nuevo_pedido_tab() -> None:
 
     try:
         append_estatus_row(row_dict)
+        default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
         if default_status:
             register_status_change(
                 identifier=cleaned_identifier,
@@ -1175,9 +1170,7 @@ def render_nuevo_pedido_tab() -> None:
         return
 
     st.cache_data.clear()
-    st.success(
-        "Nuevo pedido guardado en ESTATUS APARATOS y log inicial registrado en TIEMPOS_APARATOS."
-    )
+    st.success("Nuevo pedido capturado en la primera fila disponible.")
     st.rerun()
 
 
