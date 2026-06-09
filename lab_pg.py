@@ -421,35 +421,6 @@ def ensure_unique_column_names(columns: list[str]) -> list[str]:
     return unique_columns
 
 
-def canonical_header_key(value: Any) -> str:
-    """Normaliza encabezados de Sheets ignorando saltos de línea y espacios extra."""
-
-    return " ".join(normalize_text(value).split())
-
-
-def build_header_positions(headers: list[str]) -> dict[str, int]:
-    """Mapea encabezados a posiciones 1-based con comparación flexible."""
-
-    positions: dict[str, int] = {}
-    for index, header in enumerate(headers, start=1):
-        cleaned_header = clean_cell(header).strip()
-        if cleaned_header and cleaned_header not in positions:
-            positions[cleaned_header] = index
-
-        canonical_header = canonical_header_key(header)
-        if canonical_header and canonical_header not in positions:
-            positions[canonical_header] = index
-
-    return positions
-
-
-def get_header_position(headers: list[str], column: str) -> int | None:
-    """Devuelve la posición 1-based de una columna aceptando encabezados con saltos."""
-
-    positions = build_header_positions(headers)
-    return positions.get(column) or positions.get(canonical_header_key(column))
-
-
 def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
     """Intenta construir un datetime desde fecha y hora de la hoja de tiempos."""
 
@@ -624,11 +595,10 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
         return False
 
     headers = values[1]
-    id_position = get_header_position(headers, ID_COLUMN)
-    if id_position is None:
+    if ID_COLUMN not in headers:
         return False
 
-    id_index = id_position - 1
+    id_index = headers.index(ID_COLUMN)
     target_row_number: int | None = None
     for row_number, row in enumerate(values[2:], start=3):
         row_identifier = row[id_index] if id_index < len(row) else ""
@@ -639,14 +609,12 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
     if target_row_number is None:
         return False
 
-    updates = []
-    for column, value in changes.items():
-        column_position = get_header_position(headers, column)
-        if column_position is None:
-            continue
-        updates.append(
-            Cell(target_row_number, column_position, prepare_sheet_value(value))
-        )
+    column_positions = {column: index + 1 for index, column in enumerate(headers)}
+    updates = [
+        Cell(target_row_number, column_positions[column], prepare_sheet_value(value))
+        for column, value in changes.items()
+        if column in column_positions
+    ]
     if not updates:
         return False
 
@@ -655,64 +623,64 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
 
 
 
-NEW_ORDER_ESTATUS_FIELDS = [
-    ID_COLUMN,
-    "APARATO",
-    STATUS_COLUMN,
-    "NOMBRE DOCTOR",
-    "NOMBRE PACIENTE",
-    "DETALLE COMENTARIOS",
-    "VENDEDOR",
-    "SERVICIO",
-    "ARCHIVOS RECIBIDOS",
-    "PAGO",
-    "DÍAS DE ENTREGA",
-    "FECHA DE RECEPCIÓN",
-    "FECHA PARA ENTREGA",
-]
 
+def find_first_empty_estatus_row() -> int:
+    """Encuentra la primera fila de ESTATUS APARATOS con Columna 1 vacía."""
 
-def find_first_available_estatus_row(values: list[list[str]], headers: list[str]) -> int:
-    """Encuentra la primera fila donde Columna 1 esté vacía."""
+    worksheet = get_worksheet(SHEET_ESTATUS)
+    values = worksheet.get_all_values()
 
-    id_position = get_header_position(headers, ID_COLUMN)
-    if id_position is None:
+    if len(values) < 2:
+        raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
+
+    headers = values[1]
+    if ID_COLUMN not in headers:
         raise ValueError(f"No se encontró la columna {ID_COLUMN} en ESTATUS APARATOS.")
 
-    id_index = id_position - 1
+    id_col_index = headers.index(ID_COLUMN)
     for row_number, row in enumerate(values[2:], start=3):
-        current_id = row[id_index] if id_index < len(row) else ""
+        current_id = row[id_col_index] if id_col_index < len(row) else ""
         if not clean_cell(current_id).strip():
             return row_number
 
     return len(values) + 1
 
 
-def append_estatus_row(row_dict: dict[str, Any]) -> int:
-    """Escribe un nuevo pedido en ESTATUS APARATOS y devuelve el renglón usado."""
+def append_estatus_row(row_dict: dict[str, Any]) -> None:
+    """Escribe un nuevo pedido en el primer renglón disponible de ESTATUS APARATOS."""
 
     worksheet = get_worksheet(SHEET_ESTATUS)
-    values = worksheet.get_all_values()
-    if len(values) < 2:
+    headers = worksheet.row_values(2)
+    if not headers:
         raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
 
-    headers = values[1]
-    target_row = find_first_available_estatus_row(values, headers)
+    target_row = find_first_empty_estatus_row()
+    allowed_new_order_fields = {
+        ID_COLUMN,
+        "APARATO",
+        STATUS_COLUMN,
+        "NOMBRE DOCTOR",
+        "NOMBRE PACIENTE",
+        "DETALLE COMENTARIOS",
+        "VENDEDOR",
+        "SERVICIO",
+        "PAGO",
+        "DÍAS DE ENTREGA",
+        "FECHA PARA ENTREGA",
+    }
+    column_positions = {header: index + 1 for index, header in enumerate(headers)}
 
     updates = []
-    for column in NEW_ORDER_ESTATUS_FIELDS:
-        if column not in row_dict:
+    for column, value in row_dict.items():
+        if column not in allowed_new_order_fields:
             continue
-
-        column_position = get_header_position(headers, column)
-        if column_position is None:
+        if column not in column_positions:
             continue
-
         updates.append(
             Cell(
                 row=target_row,
-                col=column_position,
-                value=prepare_sheet_value(row_dict[column]),
+                col=column_positions[column],
+                value=prepare_sheet_value(value),
             )
         )
 
@@ -720,7 +688,6 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
         raise ValueError("No hay campos válidos para guardar en ESTATUS APARATOS.")
 
     worksheet.update_cells(updates, value_input_option="USER_ENTERED")
-    return target_row
 
 
 def columna_1_exists(identifier: str) -> bool:
@@ -731,14 +698,10 @@ def columna_1_exists(identifier: str) -> bool:
         return False
 
     values = get_worksheet(SHEET_ESTATUS).get_all_values()
-    if len(values) < 2:
+    if len(values) < 2 or ID_COLUMN not in values[1]:
         return False
 
-    id_position = get_header_position(values[1], ID_COLUMN)
-    if id_position is None:
-        return False
-
-    id_index = id_position - 1
+    id_index = values[1].index(ID_COLUMN)
     for row in values[2:]:
         existing_identifier = row[id_index] if id_index < len(row) else ""
         if clean_cell(existing_identifier).strip() == cleaned_identifier:
@@ -1119,36 +1082,9 @@ def render_optional_date_input(label: str, key: str) -> str:
     ).isoformat()
 
 
-def render_success_feedback(
-    message_key: str, celebrate_key: str, clear_button_key: str
-) -> None:
-    """Muestra éxito persistente con toast, globos y botón para limpiar."""
-
-    message = st.session_state.get(message_key)
-    if not message:
-        return
-
-    if st.session_state.pop(celebrate_key, False):
-        st.toast(message, icon="✅")
-        st.balloons()
-
-    st.success(message)
-    if st.button("✅ Aceptar y limpiar mensaje", key=clear_button_key):
-        st.session_state.pop(message_key, None)
-        st.rerun()
-
-
 def render_nuevo_pedido_tab() -> None:
     st.subheader("➕ Nuevo pedido")
-    st.caption(
-        "Captura los datos principales en ESTATUS APARATOS; "
-        "TIEMPOS_APARATOS solo recibe el log complementario para tiempos y alertas."
-    )
-    render_success_feedback(
-        "nuevo_pedido_success_message",
-        "nuevo_pedido_show_celebration",
-        "clear_nuevo_pedido_success",
-    )
+    st.caption("Captura únicamente los datos iniciales del pedido.")
 
     with st.form("form_nuevo_pedido"):
         col_left, col_right = st.columns(2)
@@ -1174,18 +1110,9 @@ def render_nuevo_pedido_tab() -> None:
                 display_field_label("SERVICIO"),
                 build_display_selectbox_options("SERVICIO", SERVICIO_OPTIONS, ""),
             )
-            archivos_recibidos = st.selectbox(
-                display_field_label("ARCHIVOS RECIBIDOS"),
-                build_display_selectbox_options(
-                    "ARCHIVOS RECIBIDOS", ARCHIVOS_RECIBIDOS_OPTIONS, ""
-                ),
-            )
             pago = st.selectbox(
                 display_field_label("PAGO"),
                 build_display_selectbox_options("PAGO", PAGO_OPTIONS, ""),
-            )
-            fecha_recepcion = st.date_input(
-                display_field_label("FECHA DE RECEPCIÓN"), value=date.today()
             )
             dias_entrega = st.number_input(
                 display_field_label("DÍAS DE ENTREGA"), min_value=0, value=0, step=1
@@ -1211,37 +1138,25 @@ def render_nuevo_pedido_tab() -> None:
     clean_aparato = clean_display_value(aparato)
     clean_vendedor = clean_display_value(vendedor)
     clean_servicio = clean_display_value(servicio)
-    clean_archivos_recibidos = clean_display_value(archivos_recibidos)
     clean_pago = clean_display_value(pago)
-
-    default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
 
     row_dict = {
         ID_COLUMN: cleaned_identifier,
         "APARATO": clean_aparato,
-        STATUS_COLUMN: default_status,
         "NOMBRE DOCTOR": nombre_doctor,
         "NOMBRE PACIENTE": nombre_paciente,
         "DETALLE COMENTARIOS": detalle_comentarios,
         "VENDEDOR": clean_vendedor,
         "SERVICIO": clean_servicio,
-        "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
         "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
-        "FECHA DE RECEPCIÓN": fecha_recepcion.isoformat(),
         "FECHA PARA ENTREGA": fecha_para_entrega.isoformat(),
     }
 
     try:
-        target_row = append_estatus_row(row_dict)
-    except Exception as exc:
-        st.error("No se pudo guardar el nuevo pedido en ESTATUS APARATOS.")
-        st.exception(exc)
-        return
-
-    timing_log_saved = False
-    if default_status:
-        try:
+        append_estatus_row(row_dict)
+        default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
+        if default_status:
             register_status_change(
                 identifier=cleaned_identifier,
                 apparatus=clean_aparato,
@@ -1249,25 +1164,13 @@ def render_nuevo_pedido_tab() -> None:
                 new_status=default_status,
                 change_comment="Registro inicial desde app",
             )
-            timing_log_saved = True
-        except Exception as exc:
-            st.warning(
-                "El pedido sí se guardó en ESTATUS APARATOS, "
-                "pero no se pudo registrar el log inicial en TIEMPOS_APARATOS."
-            )
-            st.exception(exc)
+    except Exception as exc:
+        st.error("No se pudo guardar el nuevo pedido.")
+        st.exception(exc)
+        return
 
     st.cache_data.clear()
-    log_text = (
-        "y también se registró el log inicial en TIEMPOS_APARATOS"
-        if timing_log_saved
-        else "pero quedó pendiente el log inicial en TIEMPOS_APARATOS"
-    )
-    st.session_state["nuevo_pedido_success_message"] = (
-        f"Pedido {cleaned_identifier} guardado en ESTATUS APARATOS "
-        f"en la fila {target_row}; {log_text}."
-    )
-    st.session_state["nuevo_pedido_show_celebration"] = True
+    st.success("Nuevo pedido capturado en la primera fila disponible.")
     st.rerun()
 
 
