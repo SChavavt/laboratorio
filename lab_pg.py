@@ -360,6 +360,67 @@ def parse_simple_date(value: Any) -> date | None:
     return parsed.date()
 
 
+def parse_spanish_datetime(value: Any) -> datetime | None:
+    """Convierte textos como '23 DICIEMBRE 9:00 AM' a datetime cuando sea posible."""
+
+    text = " ".join(clean_cell(value).strip().split())
+    if not text:
+        return None
+
+    normalized = normalize_text(text).replace("/", "-")
+    parts = normalized.split()
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1] in SPANISH_MONTHS:
+        day = int(parts[0])
+        month = SPANISH_MONTHS[parts[1]]
+        year = datetime.now().year
+        time_parts = parts[2:]
+        if time_parts and time_parts[0].isdigit() and len(time_parts[0]) == 4:
+            year = int(time_parts[0])
+            time_parts = time_parts[1:]
+
+        parsed_time = datetime.min.time()
+        if time_parts:
+            time_text = " ".join(time_parts)
+            parsed_time_candidate = pd.to_datetime(
+                time_text, errors="coerce"
+            )
+            if not pd.isna(parsed_time_candidate):
+                parsed_time = parsed_time_candidate.time().replace(
+                    second=0, microsecond=0
+                )
+
+        try:
+            return datetime.combine(date(year, month, day), parsed_time)
+        except ValueError:
+            return None
+
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime().replace(second=0, microsecond=0)
+
+
+def format_spanish_date(value: date) -> str:
+    """Formatea una fecha con mes en español para mantener lectura familiar."""
+
+    month_name = next(
+        month
+        for month, number in SPANISH_MONTHS.items()
+        if number == value.month and month != "SETIEMBRE"
+    )
+    return f"{value.day} {month_name}"
+
+
+def format_spanish_datetime(value: datetime) -> str:
+    """Formatea fecha/hora como '23 DICIEMBRE 9:00 AM'."""
+
+    hour_12 = value.strftime("%I").lstrip("0") or "12"
+    return (
+        f"{format_spanish_date(value.date())} "
+        f"{hour_12}:{value.strftime('%M')} {value.strftime('%p')}"
+    )
+
+
 def is_numeric_value(value: Any) -> bool:
     """Indica si un valor de celda puede editarse como número."""
 
@@ -1190,12 +1251,52 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
 
     if column in DATE_COLUMNS:
         parsed_date = parse_simple_date(text_value)
-        if parsed_date is not None:
-            selected_date = st.date_input(
-                display_field_label(column), value=parsed_date, key=key
+        initial_date = parsed_date or date.today()
+        selected_date = st.date_input(
+            display_field_label(column), value=initial_date, key=key
+        )
+        if parsed_date is None and text_value.strip():
+            st.caption(
+                "Valor anterior no reconocido; se conserva si no eliges otra fecha: "
+                f"{text_value}"
             )
-            return text_value if selected_date == parsed_date else selected_date.isoformat()
-        return st.text_input(display_field_label(column), value=text_value, key=key)
+            return selected_date.isoformat() if selected_date != initial_date else text_value
+        return text_value if selected_date == initial_date else selected_date.isoformat()
+
+    if column in DATETIME_TEXT_COLUMNS:
+        parsed_datetime = parse_spanish_datetime(text_value)
+        initial_datetime = parsed_datetime or datetime.combine(
+            date.today(), datetime.now().time()
+        ).replace(second=0, microsecond=0)
+        date_col, time_col = st.columns([1, 1])
+        with date_col:
+            selected_date = st.date_input(
+                display_field_label(column),
+                value=initial_datetime.date(),
+                key=f"{key}_date",
+            )
+        with time_col:
+            selected_time = st.time_input(
+                "🕒 Hora", value=initial_datetime.time(), key=f"{key}_time"
+            )
+        selected_datetime = datetime.combine(selected_date, selected_time).replace(
+            second=0, microsecond=0
+        )
+        if parsed_datetime is None and text_value.strip():
+            st.caption(
+                "Valor anterior no reconocido; se conserva si no eliges otra fecha/hora: "
+                f"{text_value}"
+            )
+            return (
+                format_spanish_datetime(selected_datetime)
+                if selected_datetime != initial_datetime
+                else text_value
+            )
+        return (
+            text_value
+            if selected_datetime == initial_datetime
+            else format_spanish_datetime(selected_datetime)
+        )
 
     if column in TEXT_AREA_COLUMNS:
         return st.text_area(
@@ -1435,7 +1536,32 @@ def render_estatus_tab() -> None:
         st.warning("No hay registros con Columna 1 para seleccionar en el resultado filtrado.")
         return
 
-    selected_id = st.selectbox("🆔 Selecciona un registro por Columna 1", selectable_ids)
+    selection_labels = {}
+    for _, option_row in filtered_df.iterrows():
+        option_id = clean_cell(option_row.get(ID_COLUMN, "")).strip()
+        if not option_id or option_id in selection_labels:
+            continue
+        label_parts = [f"🆔 {option_id}"]
+        status = display_selectbox_value(
+            STATUS_COLUMN, clean_cell(option_row.get(STATUS_COLUMN, "")).strip()
+        )
+        doctor = clean_cell(option_row.get("NOMBRE DOCTOR", "")).strip()
+        vendedor = display_selectbox_value(
+            "VENDEDOR", clean_cell(option_row.get("VENDEDOR", "")).strip()
+        )
+        if status:
+            label_parts.append(f"🚦 {status}")
+        if doctor:
+            label_parts.append(f"👩‍⚕️ {doctor}")
+        if vendedor:
+            label_parts.append(f"🤝 {vendedor}")
+        selection_labels[option_id] = " | ".join(label_parts)
+
+    selected_id = st.selectbox(
+        "🆔 Selecciona un registro por Columna 1, STATUS, doctor o vendedor",
+        selectable_ids,
+        format_func=lambda option: selection_labels.get(option, option),
+    )
     selected_rows = estatus_df[estatus_df[ID_COLUMN].astype(str).str.strip() == selected_id]
     if selected_rows.empty:
         st.warning("No se pudo encontrar el registro seleccionado.")
