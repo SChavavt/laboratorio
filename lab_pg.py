@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
+from gspread.utils import rowcol_to_a1
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -181,6 +182,57 @@ DISPLAY_OPTIONS_BY_COLUMN = {
     "ARCHIVOS RECIBIDOS": ARCHIVOS_RECIBIDOS_DISPLAY,
     "PAGO": PAGO_DISPLAY,
 }
+
+SHEET_STYLE_COLORS = {
+    "APARATO": {
+        "MSE": ("#7B3F0A", "#FFFFFF"),
+        "TIGER": ("#C99A2E", "#FFFFFF"),
+        "REVERSE": ("#A8B94B", "#FFFFFF"),
+        "HYRAX": ("#FF6A2A", "#FFFFFF"),
+        "TRAMPA LINGUAL": ("#E6E6E6", "#333333"),
+        "LEONE": ("#2D6373", "#FFFFFF"),
+        "DISTALIZADOR": ("#444444", "#FFFFFF"),
+    },
+    STATUS_COLUMN: {
+        "REVISION DE ARCHIVOS": ("#C9E6EC", "#2A5964"),
+        "EN PLANEACIÓN": ("#FFE86A", "#000000"),
+        "REVISIÓN DEL DISEÑO POR DR": ("#E6E6E6", "#333333"),
+        "SOLICITUD DE CAMBIOS": ("#6B4B17", "#FFFFFF"),
+        "ELABORACIÓN PLATINA BANDAS": ("#DCC4F4", "#6A3D8E"),
+        "ESPERANDO STL PSM": ("#FAD98A", "#6B4B17"),
+        "PDTE ENVIO PSM + GUIA": ("#FFA7A0", "#B00000"),
+        "LISTO P/SINTERIZADO": ("#E6E6E6", "#333333"),
+        "EN SINTERIZADO": ("#E6E6E6", "#333333"),
+        "LISTO P/CONFECCIÓN": ("#F7A7C3", "#7A1740"),
+        "EN CONFECCIÓN": ("#FF6B6B", "#000000"),
+        "LISTO P/ENVÍO": ("#8FD84A", "#000000"),
+        "ENVIADO": ("#7BE84D", "#000000"),
+        "FALTA PAGO COMPLETO": ("#5D3B93", "#FFFFFF"),
+        "CONFECCION EN PAUSA": ("#B80F0F", "#FFFFFF"),
+        "CANCELO": ("#1F6DD1", "#000000"),
+    },
+    "SERVICIO": {
+        "PLANEACIÓN COMPLETA": ("#FAD98A", "#6B4B17"),
+        "CONFECCIÓN": ("#F6C09B", "#8A3F16"),
+        "PLANEACIÓN & CONFECCIÓN": ("#9DD7FF", "#005EA8"),
+        "DISEÑO & CONFECCIÓN": ("#DCC4F4", "#6A3D8E"),
+        "DISEÑO & CONFECCION": ("#DCC4F4", "#6A3D8E"),
+        "PLANEACION": ("#E6E6E6", "#333333"),
+    },
+    "ARCHIVOS RECIBIDOS": {
+        "STL": ("#B80F0F", "#FFFFFF"),
+        "TOMOGRAFÍA": ("#B80F0F", "#FFFFFF"),
+        "STL+TOMO": ("#7BE84D", "#000000"),
+    },
+    "PAGO": {
+        "ANTICIPO": ("#B80F0F", "#FFFFFF"),
+        "TOTAL": ("#7BE84D", "#000000"),
+        "SIN PAGO": ("#E6E6E6", "#333333"),
+        "CANCELO": ("#1F6DD1", "#FFFFFF"),
+    },
+}
+
+STYLE_COLUMNS = set(SHEET_STYLE_COLORS)
 
 FIELD_LABEL_DISPLAY = {
     ID_COLUMN: "🆔 Columna 1",
@@ -421,6 +473,88 @@ def ensure_unique_column_names(columns: list[str]) -> list[str]:
     return unique_columns
 
 
+def canonical_header_key(value: Any) -> str:
+    """Normaliza encabezados de Sheets ignorando saltos de línea y espacios extra."""
+
+    return " ".join(normalize_text(value).split())
+
+
+def build_header_positions(headers: list[str]) -> dict[str, int]:
+    """Mapea encabezados a posiciones 1-based con comparación flexible."""
+
+    positions: dict[str, int] = {}
+    for index, header in enumerate(headers, start=1):
+        cleaned_header = clean_cell(header).strip()
+        if cleaned_header and cleaned_header not in positions:
+            positions[cleaned_header] = index
+
+        canonical_header = canonical_header_key(header)
+        if canonical_header and canonical_header not in positions:
+            positions[canonical_header] = index
+
+    return positions
+
+
+def get_header_position(headers: list[str], column: str) -> int | None:
+    """Devuelve la posición 1-based de una columna aceptando encabezados con saltos."""
+
+    positions = build_header_positions(headers)
+    return positions.get(column) or positions.get(canonical_header_key(column))
+
+
+def hex_to_sheets_color(hex_color: str) -> dict[str, float]:
+    """Convierte color hexadecimal a formato RGB decimal de Google Sheets."""
+
+    cleaned = hex_color.lstrip("#")
+    return {
+        "red": int(cleaned[0:2], 16) / 255,
+        "green": int(cleaned[2:4], 16) / 255,
+        "blue": int(cleaned[4:6], 16) / 255,
+    }
+
+
+def build_cell_style(background_hex: str, text_hex: str) -> dict[str, Any]:
+    """Construye formato visual para simular chips de colores en Sheets."""
+
+    return {
+        "backgroundColor": hex_to_sheets_color(background_hex),
+        "textFormat": {
+            "foregroundColor": hex_to_sheets_color(text_hex),
+            "bold": True,
+        },
+        "horizontalAlignment": "CENTER",
+        "verticalAlignment": "MIDDLE",
+    }
+
+
+def apply_estatus_row_styles(
+    worksheet: gspread.Worksheet,
+    headers: list[str],
+    row_number: int,
+    row_dict: dict[str, Any],
+) -> None:
+    """Aplica colores en ESTATUS APARATOS según el valor guardado."""
+
+    formats = []
+    for column in STYLE_COLUMNS:
+        value = clean_display_value(clean_cell(row_dict.get(column, "")).strip())
+        color_pair = SHEET_STYLE_COLORS[column].get(value)
+        column_position = get_header_position(headers, column)
+        if not value or color_pair is None or column_position is None:
+            continue
+
+        background_hex, text_hex = color_pair
+        formats.append(
+            {
+                "range": rowcol_to_a1(row_number, column_position),
+                "format": build_cell_style(background_hex, text_hex),
+            }
+        )
+
+    if formats:
+        worksheet.batch_format(formats)
+
+
 def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
     """Intenta construir un datetime desde fecha y hora de la hoja de tiempos."""
 
@@ -595,10 +729,11 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
         return False
 
     headers = values[1]
-    if ID_COLUMN not in headers:
+    id_position = get_header_position(headers, ID_COLUMN)
+    if id_position is None:
         return False
 
-    id_index = headers.index(ID_COLUMN)
+    id_index = id_position - 1
     target_row_number: int | None = None
     for row_number, row in enumerate(values[2:], start=3):
         row_identifier = row[id_index] if id_index < len(row) else ""
@@ -609,78 +744,81 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
     if target_row_number is None:
         return False
 
-    column_positions = {column: index + 1 for index, column in enumerate(headers)}
-    updates = [
-        Cell(target_row_number, column_positions[column], prepare_sheet_value(value))
-        for column, value in changes.items()
-        if column in column_positions
-    ]
+    updates = []
+    for column, value in changes.items():
+        column_position = get_header_position(headers, column)
+        if column_position is None:
+            continue
+        updates.append(
+            Cell(target_row_number, column_position, prepare_sheet_value(value))
+        )
     if not updates:
         return False
 
     worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    apply_estatus_row_styles(worksheet, headers, target_row_number, changes)
     return True
 
 
 
+NEW_ORDER_ESTATUS_FIELDS = [
+    ID_COLUMN,
+    "APARATO",
+    STATUS_COLUMN,
+    "NOMBRE DOCTOR",
+    "NOMBRE PACIENTE",
+    "DETALLE COMENTARIOS",
+    "VENDEDOR",
+    "SERVICIO",
+    "ARCHIVOS RECIBIDOS",
+    "PAGO",
+    "DÍAS DE ENTREGA",
+    "FECHA DE RECEPCIÓN",
+    "FECHA PARA ENTREGA",
+]
 
-def find_first_empty_estatus_row() -> int:
-    """Encuentra la primera fila de ESTATUS APARATOS con Columna 1 vacía."""
 
-    worksheet = get_worksheet(SHEET_ESTATUS)
-    values = worksheet.get_all_values()
+def find_first_available_estatus_row(values: list[list[str]], headers: list[str]) -> int:
+    """Encuentra la primera fila donde Columna 1 esté vacía."""
 
-    if len(values) < 2:
-        raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
-
-    headers = values[1]
-    if ID_COLUMN not in headers:
+    id_position = get_header_position(headers, ID_COLUMN)
+    if id_position is None:
         raise ValueError(f"No se encontró la columna {ID_COLUMN} en ESTATUS APARATOS.")
 
-    id_col_index = headers.index(ID_COLUMN)
+    id_index = id_position - 1
     for row_number, row in enumerate(values[2:], start=3):
-        current_id = row[id_col_index] if id_col_index < len(row) else ""
+        current_id = row[id_index] if id_index < len(row) else ""
         if not clean_cell(current_id).strip():
             return row_number
 
     return len(values) + 1
 
 
-def append_estatus_row(row_dict: dict[str, Any]) -> None:
-    """Escribe un nuevo pedido en el primer renglón disponible de ESTATUS APARATOS."""
+def append_estatus_row(row_dict: dict[str, Any]) -> int:
+    """Escribe un nuevo pedido en ESTATUS APARATOS y devuelve el renglón usado."""
 
     worksheet = get_worksheet(SHEET_ESTATUS)
-    headers = worksheet.row_values(2)
-    if not headers:
+    values = worksheet.get_all_values()
+    if len(values) < 2:
         raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
 
-    target_row = find_first_empty_estatus_row()
-    allowed_new_order_fields = {
-        ID_COLUMN,
-        "APARATO",
-        STATUS_COLUMN,
-        "NOMBRE DOCTOR",
-        "NOMBRE PACIENTE",
-        "DETALLE COMENTARIOS",
-        "VENDEDOR",
-        "SERVICIO",
-        "PAGO",
-        "DÍAS DE ENTREGA",
-        "FECHA PARA ENTREGA",
-    }
-    column_positions = {header: index + 1 for index, header in enumerate(headers)}
+    headers = values[1]
+    target_row = find_first_available_estatus_row(values, headers)
 
     updates = []
-    for column, value in row_dict.items():
-        if column not in allowed_new_order_fields:
+    for column in NEW_ORDER_ESTATUS_FIELDS:
+        if column not in row_dict:
             continue
-        if column not in column_positions:
+
+        column_position = get_header_position(headers, column)
+        if column_position is None:
             continue
+
         updates.append(
             Cell(
                 row=target_row,
-                col=column_positions[column],
-                value=prepare_sheet_value(value),
+                col=column_position,
+                value=prepare_sheet_value(row_dict[column]),
             )
         )
 
@@ -688,6 +826,8 @@ def append_estatus_row(row_dict: dict[str, Any]) -> None:
         raise ValueError("No hay campos válidos para guardar en ESTATUS APARATOS.")
 
     worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    apply_estatus_row_styles(worksheet, headers, target_row, row_dict)
+    return target_row
 
 
 def columna_1_exists(identifier: str) -> bool:
@@ -698,10 +838,14 @@ def columna_1_exists(identifier: str) -> bool:
         return False
 
     values = get_worksheet(SHEET_ESTATUS).get_all_values()
-    if len(values) < 2 or ID_COLUMN not in values[1]:
+    if len(values) < 2:
         return False
 
-    id_index = values[1].index(ID_COLUMN)
+    id_position = get_header_position(values[1], ID_COLUMN)
+    if id_position is None:
+        return False
+
+    id_index = id_position - 1
     for row in values[2:]:
         existing_identifier = row[id_index] if id_index < len(row) else ""
         if clean_cell(existing_identifier).strip() == cleaned_identifier:
@@ -1082,43 +1226,106 @@ def render_optional_date_input(label: str, key: str) -> str:
     ).isoformat()
 
 
+def render_success_feedback(
+    message_key: str, celebrate_key: str, clear_button_key: str
+) -> None:
+    """Muestra éxito persistente con toast, globos y botón para limpiar."""
+
+    message = st.session_state.get(message_key)
+    if not message:
+        return
+
+    if st.session_state.pop(celebrate_key, False):
+        st.toast(message, icon="✅")
+        st.balloons()
+
+    st.success(message)
+    if st.button("✅ Aceptar y limpiar mensaje", key=clear_button_key):
+        st.session_state.pop(message_key, None)
+        st.rerun()
+
+
 def render_nuevo_pedido_tab() -> None:
     st.subheader("➕ Nuevo pedido")
-    st.caption("Captura únicamente los datos iniciales del pedido.")
+    st.caption(
+        "Captura los datos principales en ESTATUS APARATOS; "
+        "TIEMPOS_APARATOS solo recibe el log complementario para tiempos y alertas."
+    )
+    render_success_feedback(
+        "nuevo_pedido_success_message",
+        "nuevo_pedido_show_celebration",
+        "clear_nuevo_pedido_success",
+    )
 
-    with st.form("form_nuevo_pedido"):
+    form_version = st.session_state.get("nuevo_pedido_form_version", 0)
+    form_key = f"form_nuevo_pedido_{form_version}"
+
+    with st.form(form_key):
         col_left, col_right = st.columns(2)
 
         with col_left:
-            pedido_id = st.text_input(display_field_label(ID_COLUMN, required=True))
+            pedido_id = st.text_input(
+                display_field_label(ID_COLUMN, required=True),
+                key=f"nuevo_pedido_id_{form_version}",
+            )
             aparato = st.selectbox(
                 display_field_label("APARATO"),
                 build_display_selectbox_options("APARATO", APARATO_OPTIONS, ""),
+                key=f"nuevo_pedido_aparato_{form_version}",
             )
-            nombre_doctor = st.text_input(display_field_label("NOMBRE DOCTOR"))
-            nombre_paciente = st.text_input(display_field_label("NOMBRE PACIENTE"))
+            nombre_doctor = st.text_input(
+                display_field_label("NOMBRE DOCTOR"),
+                key=f"nuevo_pedido_doctor_{form_version}",
+            )
+            nombre_paciente = st.text_input(
+                display_field_label("NOMBRE PACIENTE"),
+                key=f"nuevo_pedido_paciente_{form_version}",
+            )
             detalle_comentarios = st.text_area(
-                display_field_label("DETALLE COMENTARIOS"), height=100
+                display_field_label("DETALLE COMENTARIOS"),
+                height=100,
+                key=f"nuevo_pedido_comentarios_{form_version}",
             )
 
         with col_right:
             vendedor = st.selectbox(
                 display_field_label("VENDEDOR"),
                 build_display_selectbox_options("VENDEDOR", VENDEDOR_OPTIONS, ""),
+                key=f"nuevo_pedido_vendedor_{form_version}",
             )
             servicio = st.selectbox(
                 display_field_label("SERVICIO"),
                 build_display_selectbox_options("SERVICIO", SERVICIO_OPTIONS, ""),
+                key=f"nuevo_pedido_servicio_{form_version}",
+            )
+            archivos_recibidos = st.selectbox(
+                display_field_label("ARCHIVOS RECIBIDOS"),
+                build_display_selectbox_options(
+                    "ARCHIVOS RECIBIDOS", ARCHIVOS_RECIBIDOS_OPTIONS, ""
+                ),
+                key=f"nuevo_pedido_archivos_{form_version}",
             )
             pago = st.selectbox(
                 display_field_label("PAGO"),
                 build_display_selectbox_options("PAGO", PAGO_OPTIONS, ""),
+                key=f"nuevo_pedido_pago_{form_version}",
+            )
+            fecha_recepcion = st.date_input(
+                display_field_label("FECHA DE RECEPCIÓN"),
+                value=date.today(),
+                key=f"nuevo_pedido_fecha_recepcion_{form_version}",
             )
             dias_entrega = st.number_input(
-                display_field_label("DÍAS DE ENTREGA"), min_value=0, value=0, step=1
+                display_field_label("DÍAS DE ENTREGA"),
+                min_value=0,
+                value=0,
+                step=1,
+                key=f"nuevo_pedido_dias_entrega_{form_version}",
             )
             fecha_para_entrega = st.date_input(
-                display_field_label("FECHA PARA ENTREGA"), value=date.today()
+                display_field_label("FECHA PARA ENTREGA"),
+                value=date.today(),
+                key=f"nuevo_pedido_fecha_entrega_{form_version}",
             )
 
         submitted = st.form_submit_button("💾 Guardar nuevo pedido")
@@ -1138,25 +1345,37 @@ def render_nuevo_pedido_tab() -> None:
     clean_aparato = clean_display_value(aparato)
     clean_vendedor = clean_display_value(vendedor)
     clean_servicio = clean_display_value(servicio)
+    clean_archivos_recibidos = clean_display_value(archivos_recibidos)
     clean_pago = clean_display_value(pago)
+
+    default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
 
     row_dict = {
         ID_COLUMN: cleaned_identifier,
         "APARATO": clean_aparato,
+        STATUS_COLUMN: default_status,
         "NOMBRE DOCTOR": nombre_doctor,
         "NOMBRE PACIENTE": nombre_paciente,
         "DETALLE COMENTARIOS": detalle_comentarios,
         "VENDEDOR": clean_vendedor,
         "SERVICIO": clean_servicio,
+        "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
         "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
+        "FECHA DE RECEPCIÓN": fecha_recepcion.isoformat(),
         "FECHA PARA ENTREGA": fecha_para_entrega.isoformat(),
     }
 
     try:
-        append_estatus_row(row_dict)
-        default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
-        if default_status:
+        target_row = append_estatus_row(row_dict)
+    except Exception as exc:
+        st.error("No se pudo guardar el nuevo pedido en ESTATUS APARATOS.")
+        st.exception(exc)
+        return
+
+    timing_log_saved = False
+    if default_status:
+        try:
             register_status_change(
                 identifier=cleaned_identifier,
                 apparatus=clean_aparato,
@@ -1164,13 +1383,26 @@ def render_nuevo_pedido_tab() -> None:
                 new_status=default_status,
                 change_comment="Registro inicial desde app",
             )
-    except Exception as exc:
-        st.error("No se pudo guardar el nuevo pedido.")
-        st.exception(exc)
-        return
+            timing_log_saved = True
+        except Exception as exc:
+            st.warning(
+                "El pedido sí se guardó en ESTATUS APARATOS, "
+                "pero no se pudo registrar el log inicial en TIEMPOS_APARATOS."
+            )
+            st.exception(exc)
 
     st.cache_data.clear()
-    st.success("Nuevo pedido capturado en la primera fila disponible.")
+    log_text = (
+        "y también se registró el log inicial en TIEMPOS_APARATOS"
+        if timing_log_saved
+        else "pero quedó pendiente el log inicial en TIEMPOS_APARATOS"
+    )
+    st.session_state["nuevo_pedido_success_message"] = (
+        f"Pedido {cleaned_identifier} guardado en ESTATUS APARATOS "
+        f"en la fila {target_row}; {log_text}."
+    )
+    st.session_state["nuevo_pedido_form_version"] = form_version + 1
+    st.session_state["nuevo_pedido_show_celebration"] = True
     st.rerun()
 
 
