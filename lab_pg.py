@@ -272,7 +272,6 @@ FIELD_LABEL_DISPLAY = {
     "REGISTRO_ACTIVO": "🟢 REGISTRO_ACTIVO",
     "ESTADO_ALERTA_VISUAL": "🚦 ESTADO_ALERTA_VISUAL",
     "HORAS_TRANSCURRIDAS": "⌛ HORAS_TRANSCURRIDAS",
-    "Comentario del cambio": "📝 Comentario del cambio",
 }
 
 SELECTBOX_OPTIONS_BY_COLUMN = {
@@ -1676,12 +1675,6 @@ def render_estatus_tab() -> None:
                         key=f"field_{selected_id}_{column}",
                     )
 
-        change_comment = st.text_area(
-            display_field_label("Comentario del cambio"),
-            value="",
-            key=f"change_comment_{selected_id}",
-            help="Solo se guarda en TIEMPOS_APARATOS cuando cambia el STATUS.",
-        )
         submitted = st.form_submit_button("💾 Guardar cambios")
 
     if submitted:
@@ -1719,7 +1712,6 @@ def render_estatus_tab() -> None:
                     previous_status=previous_status,
                     new_status=new_status,
                     previous_identifier=selected_id,
-                    change_comment=change_comment,
                 )
             st.cache_data.clear()
             saved_columns = ", ".join(
