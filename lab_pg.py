@@ -400,26 +400,16 @@ def parse_spanish_datetime(value: Any) -> datetime | None:
     return parsed.to_pydatetime().replace(second=0, microsecond=0)
 
 
-def format_spanish_date(value: date) -> str:
-    """Formatea una fecha con mes en español para mantener lectura familiar."""
+def format_sheet_date(value: date) -> str:
+    """Formatea fechas como texto YYYY/MM/DD para que Sheets las muestre establemente."""
 
-    month_name = next(
-        month
-        for month, number in SPANISH_MONTHS.items()
-        if number == value.month and month != "SETIEMBRE"
-    )
-    return f"{value.day} {month_name}"
+    return value.strftime("%Y/%m/%d")
 
 
-def format_spanish_datetime(value: datetime) -> str:
-    """Formatea fecha/hora como '23 DICIEMBRE 9:00 AM'."""
+def format_sheet_datetime(value: datetime) -> str:
+    """Formatea fecha/hora como texto YYYY/MM/DD HH:MM para columnas combinadas."""
 
-    hour_12 = value.strftime("%I").lstrip("0") or "12"
-    return (
-        f"{format_spanish_date(value.date())} "
-        f"{hour_12}:{value.strftime('%M')} {value.strftime('%p')}"
-    )
-
+    return value.strftime("%Y/%m/%d %H:%M")
 
 def is_numeric_value(value: Any) -> bool:
     """Indica si un valor de celda puede editarse como número."""
@@ -1260,8 +1250,16 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
                 "Valor anterior no reconocido; se conserva si no eliges otra fecha: "
                 f"{text_value}"
             )
-            return selected_date.isoformat() if selected_date != initial_date else text_value
-        return text_value if selected_date == initial_date else selected_date.isoformat()
+            return (
+                format_sheet_date(selected_date)
+                if selected_date != initial_date
+                else text_value
+            )
+        return (
+            text_value
+            if selected_date == initial_date
+            else format_sheet_date(selected_date)
+        )
 
     if column in DATETIME_TEXT_COLUMNS:
         parsed_datetime = parse_spanish_datetime(text_value)
@@ -1288,14 +1286,14 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
                 f"{text_value}"
             )
             return (
-                format_spanish_datetime(selected_datetime)
+                format_sheet_datetime(selected_datetime)
                 if selected_datetime != initial_datetime
                 else text_value
             )
         return (
             text_value
             if selected_datetime == initial_datetime
-            else format_spanish_datetime(selected_datetime)
+            else format_sheet_datetime(selected_datetime)
         )
 
     if column in TEXT_AREA_COLUMNS:
@@ -1463,8 +1461,8 @@ def render_nuevo_pedido_tab() -> None:
         "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
         "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
-        "FECHA DE RECEPCIÓN": fecha_recepcion.isoformat(),
-        "FECHA PARA ENTREGA": fecha_para_entrega.isoformat(),
+        "FECHA DE RECEPCIÓN": format_sheet_date(fecha_recepcion),
+        "FECHA PARA ENTREGA": format_sheet_date(fecha_para_entrega),
     }
 
     try:
