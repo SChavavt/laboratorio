@@ -272,7 +272,6 @@ FIELD_LABEL_DISPLAY = {
     "REGISTRO_ACTIVO": "🟢 REGISTRO_ACTIVO",
     "ESTADO_ALERTA_VISUAL": "🚦 ESTADO_ALERTA_VISUAL",
     "HORAS_TRANSCURRIDAS": "⌛ HORAS_TRANSCURRIDAS",
-    "Comentario del cambio": "📝 Comentario del cambio",
 }
 
 SELECTBOX_OPTIONS_BY_COLUMN = {
@@ -400,26 +399,16 @@ def parse_spanish_datetime(value: Any) -> datetime | None:
     return parsed.to_pydatetime().replace(second=0, microsecond=0)
 
 
-def format_spanish_date(value: date) -> str:
-    """Formatea una fecha con mes en español para mantener lectura familiar."""
+def format_sheet_date(value: date) -> str:
+    """Formatea fechas como texto YYYY/MM/DD para que Sheets las muestre establemente."""
 
-    month_name = next(
-        month
-        for month, number in SPANISH_MONTHS.items()
-        if number == value.month and month != "SETIEMBRE"
-    )
-    return f"{value.day} {month_name}"
+    return value.strftime("%Y/%m/%d")
 
 
-def format_spanish_datetime(value: datetime) -> str:
-    """Formatea fecha/hora como '23 DICIEMBRE 9:00 AM'."""
+def format_sheet_datetime(value: datetime) -> str:
+    """Formatea fecha/hora como texto YYYY/MM/DD HH:MM para columnas combinadas."""
 
-    hour_12 = value.strftime("%I").lstrip("0") or "12"
-    return (
-        f"{format_spanish_date(value.date())} "
-        f"{hour_12}:{value.strftime('%M')} {value.strftime('%p')}"
-    )
-
+    return value.strftime("%Y/%m/%d %H:%M")
 
 def is_numeric_value(value: Any) -> bool:
     """Indica si un valor de celda puede editarse como número."""
@@ -461,7 +450,7 @@ def display_selectbox_value(column: str, value: str) -> str:
     cleaned_value = clean_display_value(clean_cell(value).strip())
     if not cleaned_value:
         return ""
-    display_options = DISPLAY_OPTIONS_BY_COLUMN.get(column, {})
+    display_options = DISPLAY_OPTIONS_BY_COLUMN.get(canonical_column_name(column), {})
     return display_options.get(cleaned_value, cleaned_value)
 
 
@@ -470,15 +459,17 @@ def build_display_selectbox_options(
 ) -> list[str]:
     """Construye opciones visuales con emoji manteniendo valores limpios internos."""
 
+    canonical_column = canonical_column_name(column)
     cleaned_current_value = clean_display_value(clean_cell(current_value).strip())
     clean_options = build_selectbox_options(fixed_options, cleaned_current_value)
-    return [display_selectbox_value(column, option) for option in clean_options]
+    return [display_selectbox_value(canonical_column, option) for option in clean_options]
 
 
 def display_field_label(column: str, *, required: bool = False) -> str:
     """Devuelve un encabezado de campo más visual sin cambiar el nombre real de columna."""
 
-    label = FIELD_LABEL_DISPLAY.get(column, column)
+    canonical_column = canonical_column_name(column)
+    label = FIELD_LABEL_DISPLAY.get(canonical_column, clean_cell(column).strip())
     return f"{label} *" if required else label
 
 
@@ -561,6 +552,66 @@ def get_header_position(headers: list[str], column: str) -> int | None:
 
     positions = build_header_positions(headers)
     return positions.get(column) or positions.get(canonical_header_key(column))
+
+
+def known_estatus_columns() -> set[str]:
+    """Columnas conocidas de ESTATUS APARATOS para tratar encabezados con espacios."""
+
+    return {
+        *FIELD_LABEL_DISPLAY,
+        *SELECTBOX_OPTIONS_BY_COLUMN,
+        *DATE_COLUMNS,
+        *DATETIME_TEXT_COLUMNS,
+        *TEXT_AREA_COLUMNS,
+    }
+
+
+def canonical_column_name(column: str) -> str:
+    """Devuelve el nombre esperado de una columna aunque Sheets traiga espacios extra."""
+
+    column_key = canonical_header_key(column)
+    for known_column in known_estatus_columns():
+        if canonical_header_key(known_column) == column_key:
+            return known_column
+    return clean_cell(column).strip()
+
+
+def values_equivalent_for_column(column: str, old_value: Any, new_value: Any) -> bool:
+    """Compara valores editados sin marcar cambios falsos por formato visual de fecha."""
+
+    canonical_column = canonical_column_name(column)
+    old_text = clean_display_value(clean_cell(old_value)).strip()
+    new_text = clean_display_value(clean_cell(new_value)).strip()
+
+    if canonical_column in DATE_COLUMNS:
+        old_date = parse_simple_date(old_text)
+        new_date = parse_simple_date(new_text)
+        if old_date is not None and new_date is not None:
+            return old_date == new_date
+
+    if canonical_column in DATETIME_TEXT_COLUMNS:
+        old_datetime = parse_spanish_datetime(old_text)
+        new_datetime = parse_spanish_datetime(new_text)
+        if old_datetime is not None and new_datetime is not None:
+            return old_datetime == new_datetime
+
+    return old_text == new_text
+
+
+def get_row_value_by_column(row: pd.Series, column: str, default: Any = "") -> Any:
+    """Lee una celda de DataFrame aceptando encabezados con espacios extra."""
+
+    canonical_column = canonical_column_name(column)
+    for row_column in row.index:
+        if canonical_column_name(row_column) == canonical_column:
+            return row.get(row_column, default)
+    return default
+
+
+def build_canonical_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    """Mapea cambios por nombre canónico para consultar STATUS/APARATO sin espacios."""
+
+    return {canonical_column_name(column): value for column, value in changes.items()}
 
 
 def hex_to_sheets_color(hex_color: str) -> dict[str, float]:
@@ -775,24 +826,31 @@ def read_sheet_values(sheet_name: str) -> list[list[str]]:
     return get_worksheet(sheet_name).get_all_values()
 
 
-def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
+def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[str, Any]:
     """Actualiza solo las celdas modificadas de ESTATUS APARATOS por Columna 1."""
 
+    result = {"success": False, "updated_columns": [], "skipped_columns": [], "error": ""}
     if not changes:
-        return False
+        return result
 
     worksheet = get_worksheet(SHEET_ESTATUS)
     values = worksheet.get_all_values()
     if not values:
-        return False
+        result["skipped_columns"] = list(changes)
+        result["error"] = "La hoja ESTATUS APARATOS está vacía."
+        return result
 
     if len(values) < 2:
-        return False
+        result["skipped_columns"] = list(changes)
+        result["error"] = "No encontré la fila de encabezados en ESTATUS APARATOS."
+        return result
 
     headers = values[1]
     id_position = get_header_position(headers, ID_COLUMN)
     if id_position is None:
-        return False
+        result["skipped_columns"] = list(changes)
+        result["error"] = f"No encontré la columna obligatoria {ID_COLUMN}."
+        return result
 
     id_index = id_position - 1
     target_row_number: int | None = None
@@ -803,22 +861,38 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> bool:
             break
 
     if target_row_number is None:
-        return False
+        result["skipped_columns"] = list(changes)
+        result["error"] = f"No encontré el registro con {ID_COLUMN} {identifier}."
+        return result
 
     updates = []
+    canonical_changes: dict[str, Any] = {}
     for column, value in changes.items():
         column_position = get_header_position(headers, column)
         if column_position is None:
+            result["skipped_columns"].append(column)
             continue
         updates.append(
             Cell(target_row_number, column_position, prepare_sheet_value(value))
         )
-    if not updates:
-        return False
+        result["updated_columns"].append(column)
+        canonical_changes[canonical_column_name(column)] = value
 
-    worksheet.update_cells(updates, value_input_option="USER_ENTERED")
-    apply_estatus_row_styles(worksheet, headers, target_row_number, changes)
-    return True
+    if not updates:
+        result["error"] = "No encontré encabezados válidos para las columnas modificadas."
+        return result
+
+    try:
+        worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    except Exception as exc:
+        result["skipped_columns"] = [*result["updated_columns"], *result["skipped_columns"]]
+        result["updated_columns"] = []
+        result["error"] = f"Google Sheets rechazó la actualización: {exc}"
+        return result
+
+    apply_estatus_row_styles(worksheet, headers, target_row_number, canonical_changes)
+    result["success"] = True
+    return result
 
 
 
@@ -1231,26 +1305,33 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
     """Renderiza un input seguro según la columna real de ESTATUS APARATOS."""
 
     text_value = clean_cell(value)
+    canonical_column = canonical_column_name(column)
 
-    if column == ID_COLUMN:
+    if canonical_column == ID_COLUMN:
         st.text_input(
             display_field_label(column), value=text_value, key=key, disabled=True
         )
         return text_value
 
-    if column in SELECTBOX_OPTIONS_BY_COLUMN:
+    if canonical_column in SELECTBOX_OPTIONS_BY_COLUMN:
         options = build_display_selectbox_options(
-            column, SELECTBOX_OPTIONS_BY_COLUMN[column], text_value
+            canonical_column, SELECTBOX_OPTIONS_BY_COLUMN[canonical_column], text_value
         )
-        current_display_value = display_selectbox_value(column, text_value)
+        current_display_value = display_selectbox_value(canonical_column, text_value)
         index = options.index(current_display_value) if current_display_value in options else 0
         selected_value = st.selectbox(
             display_field_label(column), options, index=index, key=key
         )
         return clean_display_value(selected_value)
 
-    if column in DATE_COLUMNS:
+    if canonical_column in DATE_COLUMNS:
         parsed_date = parse_simple_date(text_value)
+        if parsed_date is None and not text_value.strip():
+            selected_date = st.date_input(
+                display_field_label(column), value=None, key=key
+            )
+            return format_sheet_date(selected_date) if selected_date else ""
+
         initial_date = parsed_date or date.today()
         selected_date = st.date_input(
             display_field_label(column), value=initial_date, key=key
@@ -1260,10 +1341,14 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
                 "Valor anterior no reconocido; se conserva si no eliges otra fecha: "
                 f"{text_value}"
             )
-            return selected_date.isoformat() if selected_date != initial_date else text_value
-        return text_value if selected_date == initial_date else selected_date.isoformat()
+            return (
+                format_sheet_date(selected_date)
+                if selected_date != initial_date
+                else text_value
+            )
+        return format_sheet_date(selected_date)
 
-    if column in DATETIME_TEXT_COLUMNS:
+    if canonical_column in DATETIME_TEXT_COLUMNS:
         parsed_datetime = parse_spanish_datetime(text_value)
         initial_datetime = parsed_datetime or datetime.combine(
             date.today(), datetime.now().time()
@@ -1272,13 +1357,20 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
         with date_col:
             selected_date = st.date_input(
                 display_field_label(column),
-                value=initial_datetime.date(),
+                value=(
+                    initial_datetime.date()
+                    if parsed_datetime or text_value.strip()
+                    else None
+                ),
                 key=f"{key}_date",
             )
         with time_col:
             selected_time = st.time_input(
                 "🕒 Hora", value=initial_datetime.time(), key=f"{key}_time"
             )
+        if selected_date is None and not text_value.strip():
+            return ""
+
         selected_datetime = datetime.combine(selected_date, selected_time).replace(
             second=0, microsecond=0
         )
@@ -1288,22 +1380,18 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
                 f"{text_value}"
             )
             return (
-                format_spanish_datetime(selected_datetime)
+                format_sheet_datetime(selected_datetime)
                 if selected_datetime != initial_datetime
                 else text_value
             )
-        return (
-            text_value
-            if selected_datetime == initial_datetime
-            else format_spanish_datetime(selected_datetime)
-        )
+        return format_sheet_datetime(selected_datetime)
 
-    if column in TEXT_AREA_COLUMNS:
+    if canonical_column in TEXT_AREA_COLUMNS:
         return st.text_area(
             display_field_label(column), value=text_value, key=key, height=100
         )
 
-    if column == "DÍAS DE ENTREGA" and is_numeric_value(text_value):
+    if canonical_column == "DÍAS DE ENTREGA" and is_numeric_value(text_value):
         numeric_value = float(text_value.replace(",", "."))
         if numeric_value.is_integer():
             return st.number_input(
@@ -1342,6 +1430,19 @@ def render_success_feedback(
 
     st.success(message)
     if st.button("✅ Aceptar y limpiar mensaje", key=clear_button_key):
+        st.session_state.pop(message_key, None)
+        st.rerun()
+
+
+def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
+    """Muestra una advertencia persistente hasta que el usuario la limpie."""
+
+    message = st.session_state.get(message_key)
+    if not message:
+        return
+
+    st.warning(message)
+    if st.button("⚠️ Aceptar y limpiar advertencia", key=clear_button_key):
         st.session_state.pop(message_key, None)
         st.rerun()
 
@@ -1463,8 +1564,8 @@ def render_nuevo_pedido_tab() -> None:
         "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
         "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
-        "FECHA DE RECEPCIÓN": fecha_recepcion.isoformat(),
-        "FECHA PARA ENTREGA": fecha_para_entrega.isoformat(),
+        "FECHA DE RECEPCIÓN": format_sheet_date(fecha_recepcion),
+        "FECHA PARA ENTREGA": format_sheet_date(fecha_para_entrega),
     }
 
     try:
@@ -1509,6 +1610,14 @@ def render_nuevo_pedido_tab() -> None:
 
 def render_estatus_tab() -> None:
     st.subheader("📋 Seguimiento de pedidos")
+    render_success_feedback(
+        "estatus_success_message",
+        "estatus_show_success_toast",
+        "clear_estatus_success_message",
+    )
+    render_warning_feedback(
+        "estatus_warning_message", "clear_estatus_warning_message"
+    )
     estatus_df = read_sheet_df(SHEET_ESTATUS)
 
     if estatus_df.empty:
@@ -1584,47 +1693,73 @@ def render_estatus_tab() -> None:
                         key=f"field_{selected_id}_{column}",
                     )
 
-        change_comment = st.text_area(
-            display_field_label("Comentario del cambio"),
-            value="",
-            key=f"change_comment_{selected_id}",
-            help="Solo se guarda en TIEMPOS_APARATOS cuando cambia el STATUS.",
-        )
         submitted = st.form_submit_button("💾 Guardar cambios")
 
     if submitted:
         changes = {
             column: clean_display_value(clean_cell(value))
             for column, value in edited_values.items()
-            if column != ID_COLUMN
-            and clean_display_value(clean_cell(value))
-            != clean_display_value(clean_cell(row.get(column, "")))
+            if canonical_column_name(column) != ID_COLUMN
+            and not values_equivalent_for_column(column, row.get(column, ""), value)
         }
         if not changes:
             st.info("No se detectaron cambios para guardar.")
             return
 
-        previous_status = clean_display_value(clean_cell(row.get(STATUS_COLUMN, "")))
-        new_status = clean_display_value(clean_cell(changes.get(STATUS_COLUMN, previous_status)))
+        canonical_changes = build_canonical_changes(changes)
+        previous_status = clean_display_value(
+            clean_cell(get_row_value_by_column(row, STATUS_COLUMN, ""))
+        )
+        new_status = clean_display_value(
+            clean_cell(canonical_changes.get(STATUS_COLUMN, previous_status))
+        )
         apparatus = clean_display_value(
-            clean_cell(changes.get("APARATO", row.get("APARATO", "")))
+            clean_cell(
+                canonical_changes.get(
+                    "APARATO", get_row_value_by_column(row, "APARATO", "")
+                )
+            )
         )
 
-        if update_row_by_columna_1(selected_id, changes):
-            if STATUS_COLUMN in changes and previous_status != new_status:
+        update_result = update_row_by_columna_1(selected_id, changes)
+        if update_result["success"]:
+            if STATUS_COLUMN in canonical_changes and previous_status != new_status:
                 register_status_change(
                     identifier=clean_cell(changes.get(ID_COLUMN, selected_id)).strip(),
                     apparatus=apparatus,
                     previous_status=previous_status,
                     new_status=new_status,
                     previous_identifier=selected_id,
-                    change_comment=change_comment,
                 )
             st.cache_data.clear()
-            st.success("Registro actualizado correctamente.")
+            saved_columns = ", ".join(
+                display_field_label(column) for column in update_result["updated_columns"]
+            )
+            st.session_state["estatus_success_message"] = (
+                f"Registro actualizado correctamente. Columnas guardadas: {saved_columns}."
+            )
+            st.session_state["estatus_show_success_toast"] = True
+            if update_result["skipped_columns"]:
+                skipped_columns = ", ".join(
+                    display_field_label(column) for column in update_result["skipped_columns"]
+                )
+                st.session_state["estatus_warning_message"] = (
+                    "No se guardaron estas columnas porque no encontré su encabezado "
+                    f"en Google Sheets: {skipped_columns}."
+                )
+            else:
+                st.session_state.pop("estatus_warning_message", None)
             st.rerun()
         else:
-            st.error("No se pudo actualizar el registro. Revisa que Columna 1 sea única y exista en la hoja.")
+            skipped_columns = ", ".join(
+                display_field_label(column) for column in update_result["skipped_columns"]
+            )
+            detail = f" Columnas sin guardar: {skipped_columns}." if skipped_columns else ""
+            reason = f" Motivo: {update_result['error']}" if update_result["error"] else ""
+            st.error(
+                "No se pudo actualizar el registro. Revisa que Columna 1 sea única "
+                f"y exista en la hoja.{detail}{reason}"
+            )
 
 
 def render_tiempos_tab() -> None:
