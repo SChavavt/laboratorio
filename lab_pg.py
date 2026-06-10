@@ -1437,6 +1437,19 @@ def render_success_feedback(
         st.rerun()
 
 
+def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
+    """Muestra una advertencia persistente hasta que el usuario la limpie."""
+
+    message = st.session_state.get(message_key)
+    if not message:
+        return
+
+    st.warning(message)
+    if st.button("⚠️ Aceptar y limpiar advertencia", key=clear_button_key):
+        st.session_state.pop(message_key, None)
+        st.rerun()
+
+
 def render_nuevo_pedido_tab() -> None:
     st.subheader("➕ Nuevo pedido")
     st.caption(
@@ -1600,6 +1613,14 @@ def render_nuevo_pedido_tab() -> None:
 
 def render_estatus_tab() -> None:
     st.subheader("📋 Seguimiento de pedidos")
+    render_success_feedback(
+        "estatus_success_message",
+        "estatus_show_success_toast",
+        "clear_estatus_success_message",
+    )
+    render_warning_feedback(
+        "estatus_warning_message", "clear_estatus_warning_message"
+    )
     estatus_df = read_sheet_df(SHEET_ESTATUS)
 
     if estatus_df.empty:
@@ -1717,15 +1738,20 @@ def render_estatus_tab() -> None:
             saved_columns = ", ".join(
                 display_field_label(column) for column in update_result["updated_columns"]
             )
-            st.success(f"Registro actualizado correctamente: {saved_columns}.")
+            st.session_state["estatus_success_message"] = (
+                f"Registro actualizado correctamente. Columnas guardadas: {saved_columns}."
+            )
+            st.session_state["estatus_show_success_toast"] = True
             if update_result["skipped_columns"]:
                 skipped_columns = ", ".join(
                     display_field_label(column) for column in update_result["skipped_columns"]
                 )
-                st.warning(
+                st.session_state["estatus_warning_message"] = (
                     "No se guardaron estas columnas porque no encontré su encabezado "
                     f"en Google Sheets: {skipped_columns}."
                 )
+            else:
+                st.session_state.pop("estatus_warning_message", None)
             st.rerun()
         else:
             skipped_columns = ", ".join(
