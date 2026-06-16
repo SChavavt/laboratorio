@@ -1,7 +1,7 @@
 import json
 import math
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import gspread
@@ -21,9 +21,9 @@ SCOPE = [
 ]
 
 SHEET_ESTATUS = "ESTATUS APARATOS"
-SHEET_PROCESOS = "PROCESOS POR APARATO"
 SHEET_TIEMPOS = "TIEMPOS_APARATOS"
 ID_COLUMN = "Columna 1"
+APARATO_COLUMN = "APARATO"
 STATUS_COLUMN = "STATUS"
 
 TIEMPOS_HEADERS = [
@@ -37,9 +37,12 @@ TIEMPOS_HEADERS = [
     "USUARIO",
     "FECHA_INICIO",
     "HORA_INICIO",
+    "FECHA_LIMITE",
+    "HORA_LIMITE",
     "FECHA_FIN",
     "HORA_FIN",
     "DURACION_HORAS",
+    "TIEMPO_CONFIGURADO",
     "TIEMPO_MAXIMO_HORAS",
     "ESTADO_ALERTA",
     "COMENTARIOS_CAMBIO",
@@ -58,22 +61,100 @@ APARATO_OPTIONS = [
     "DISTALIZADOR",
 ]
 
-STATUS_OPTIONS = [
-    "REVISION DE ARCHIVOS",
-    "EN PLANEACIÓN",
-    "REVISIÓN DEL DISEÑO POR DR",
-    "SOLICITUD DE CAMBIOS",
-    "ELABORACIÓN PLATINA BANDAS",
-    "ESPERANDO STL PSM",
-    "PDTE ENVIO PSM + GUIA",
-    "LISTO P/SINTERIZADO",
-    "EN SINTERIZADO",
-    "LISTO P/CONFECCIÓN",
-    "EN CONFECCIÓN",
-    "LISTO P/ENVÍO",
-    "ENVIADO",
-    "FALTA PAGO COMPLETO",
-    "CONFECCION EN PAUSA",
+DISTALIZADOR_FLOW = [
+    ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+    ("ESCANEO MAL (EN REPETICIÓN)", None),
+    ("PAGO PLANEACIÓN", None),
+    ("EN PLANEACIÓN", "<3 dias"),
+    ("REVISIÓN DISEÑO DOCTOR", None),
+    ("SOLICITUD DE CAMBIOS", "<3 dias"),
+    ("VOBO/ACEPTACIÓN PLANEACIÓN", None),
+    ("SOLICITUD GUIA PSM + PSM", "<2 hrs"),
+    ("PDTE ENVIAR GUIA PSM + PSM", "<1 dia"),
+    ("GUIA PSM + PSM ENVIADA", "<1 hr"),
+    ("ESPERANDO STL PSM DOCTOR", None),
+    ("STL PSM ENVIADO", None),
+    ("EN DISEÑO", "<3 dias"),
+    ("PAGO CONFECCIÓN", None),
+    ("LISTO P/SINTERIZADO", "<1 dia"),
+    ("ELABORACIÓN PLATINA", "<1 hr"),
+    ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
+    ("LISTO P/CONFECCIÓN", "<1 dia"),
+    ("PULIDO / EN CONFECCIÓN", "<3 hrs"),
+    ("SOLDADURA / EN CONFECCIÓN", "<3 hrs"),
+    ("ARENADO / EN CONFECCIÓN", "<1 hr"),
+    ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
+    ("LISTO P/EMPAQUETADO", "<1 hr"),
+    ("GENERACIÓN DE GUÍA", "<1 hr"),
+    ("EMPACADO/LISTO P/ENVIO", "<1 hr"),
+    ("PRODUCTO ENVIADO", "<1 hr"),
+    ("ENVIO DE ENCUESTA", "<3 dias"),
+]
+
+PROCESS_CONFIG = {
+    "PIEZA SINTERIZADA": [
+        ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+        ("ESCANEO MAL (EN REPETICIÓN)", None),
+        ("PAGO CONFECCIÓN", None),
+        ("EN PLANEACIÓN", "<3 dias"),
+        ("LISTO P/SINTERIZADO", "<1 dia"),
+        ("ELABORACIÓN PLATINA", "<1 hr"),
+        ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
+        ("LISTO P/CONFECCIÓN", "<1 dia"),
+        ("PULIDO (EN CONFECCIÓN)", "<3 hrs"),
+        ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
+        ("ARENADO (EN CONFECCIÓN)", "<1 hr"),
+        ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
+        ("LISTO P/EMPAQUETADO", "<1 hr"),
+        ("GENERACIÓN DE GUÍA", "<1 hr"),
+        ("EMPACADO/LISTO P/ENVIO", "<1 hr"),
+        ("PRODUCTO ENVIADO", "<1 hr"),
+        ("ENVIO DE ENCUESTA", "<3 dias"),
+    ],
+    "MSE": [
+        ("REVISIÓN DE ARCHIVOS", "<5 hrs"), ("ESCANEO MAL (EN REPETICIÓN)", None),
+        ("PAGO PLANEACIÓN", None), ("EN PLANEACIÓN", "<3 dias"),
+        ("REVISIÓN DISEÑO DOCTOR", None), ("SOLICITUD DE CAMBIOS", "<3 dias"),
+        ("VOBO/ACEPTACIÓN PLANEACIÓN", None), ("PAGO CONFECCIÓN", None),
+        ("LISTO P/SINTERIZADO", "<1 dia"), ("ELABORACIÓN PLATINA", "<1 hr"),
+        ("EN SINTERIZADO Y HORNEADO", "<1 dia"), ("LISTO P/CONFECCIÓN", "<1 dia"),
+        ("PULIDO (EN CONFECCIÓN)", "<3 hrs"), ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
+        ("ARENADO (EN CONFECCIÓN)", "<1 hr"), ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
+        ("LISTO P/EMPAQUETADO", "<1 hr"), ("GENERACIÓN DE GUÍA", "<1 hr"),
+        ("EMPACADO/LISTO P/ENVIO", "<1 hr"), ("PRODUCTO ENVIADO", "<1 hr"),
+        ("ENVIO DE ENCUESTA", "<3 dias"),
+    ],
+    "DISTALIZADOR": DISTALIZADOR_FLOW,
+    "TIGER": DISTALIZADOR_FLOW,
+    "LEONE": DISTALIZADOR_FLOW,
+    "REVERSE": [
+        ("REVISIÓN DE ARCHIVOS", "<5 hrs"), ("ESCANEO MAL (EN REPETICIÓN)", None),
+        ("PAGO PLANEACIÓN", None), ("EN PLANEACIÓN", "<3 dias"),
+        ("REVISIÓN DISEÑO DOCTOR", None), ("SOLICITUD DE CAMBIOS", "<3 dias"),
+        ("VOBO/ACEPTACIÓN PLANEACIÓN", None), ("PAGO CONFECCIÓN", None),
+        ("LISTO P/SINTERIZADO", "<1 dia"), ("ELABORACIÓN PLATINA", "<1 hr"),
+        ("EN SINTERIZADO Y HORNEADO", "<1 dia"), ("LISTO P/CONFECCIÓN", "<1 dia"),
+        ("PULIDO / EN CONFECCIÓN", "<3 hrs"), ("SOLDADURA / EN CONFECCIÓN", "<3 hrs"),
+        ("ARENADO / EN CONFECCIÓN", "<1 hr"), ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
+        ("LISTO P/EMPAQUETADO", "<1 hr"), ("GENERACIÓN DE GUÍA", "<1 hr"),
+        ("EMPACADO/LISTO P/ENVIO", "<1 hr"), ("PRODUCTO ENVIADO", "<1 hr"),
+        ("ENVIO DE ENCUESTA", "<3 dias"),
+    ],
+}
+
+PROCESS_ALIASES = {"HYRAX": "PIEZA SINTERIZADA", "TRAMPA LINGUAL": "PIEZA SINTERIZADA"}
+STATUS_ALIASES = {
+    "REVISION DE ARCHIVOS": "REVISIÓN DE ARCHIVOS",
+    "REVISIÓN DEL DISEÑO POR DR": "REVISIÓN DISEÑO DOCTOR",
+    "ELABORACIÓN PLATINA BANDAS": "ELABORACIÓN PLATINA",
+    "PDTE ENVIO PSM + GUIA": "PDTE ENVIAR GUIA PSM + PSM",
+    "LISTO P/ENVÍO": "EMPACADO/LISTO P/ENVIO",
+    "ENVIADO": "PRODUCTO ENVIADO",
+    "ESPERANDO STL PSM": "ESPERANDO STL PSM DOCTOR",
+}
+TERMINAL_STATUSES = {"PRODUCTO ENVIADO", "CANCELO"}
+PROCESS_STATUS_VALUES = [
+    *list(dict.fromkeys(status for flow in PROCESS_CONFIG.values() for status, _ in flow)),
     "CANCELO",
 ]
 
@@ -122,23 +203,41 @@ APARATO_DISPLAY = {
 }
 
 STATUS_DISPLAY = {
-    "REVISION DE ARCHIVOS": "🔵 REVISION DE ARCHIVOS",
+    "REVISIÓN DE ARCHIVOS": "🔵 REVISIÓN DE ARCHIVOS",
+    "ESCANEO MAL (EN REPETICIÓN)": "🔴 ESCANEO MAL (EN REPETICIÓN)",
+    "PAGO PLANEACIÓN": "💳 PAGO PLANEACIÓN",
     "EN PLANEACIÓN": "🟡 EN PLANEACIÓN",
-    "REVISIÓN DEL DISEÑO POR DR": "⚪ REVISIÓN DEL DISEÑO POR DR",
+    "REVISIÓN DISEÑO DOCTOR": "⚪ REVISIÓN DISEÑO DOCTOR",
     "SOLICITUD DE CAMBIOS": "🟤 SOLICITUD DE CAMBIOS",
-    "ELABORACIÓN PLATINA BANDAS": "🟣 ELABORACIÓN PLATINA BANDAS",
-    "ESPERANDO STL PSM": "🟨 ESPERANDO STL PSM",
-    "PDTE ENVIO PSM + GUIA": "🔴 PDTE ENVIO PSM + GUIA",
+    "VOBO/ACEPTACIÓN PLANEACIÓN": "✅ VOBO/ACEPTACIÓN PLANEACIÓN",
+    "SOLICITUD GUIA PSM + PSM": "📩 SOLICITUD GUIA PSM + PSM",
+    "PDTE ENVIAR GUIA PSM + PSM": "🔴 PDTE ENVIAR GUIA PSM + PSM",
+    "GUIA PSM + PSM ENVIADA": "📤 GUIA PSM + PSM ENVIADA",
+    "ESPERANDO STL PSM DOCTOR": "🟨 ESPERANDO STL PSM DOCTOR",
+    "STL PSM ENVIADO": "📁 STL PSM ENVIADO",
+    "EN DISEÑO": "🎨 EN DISEÑO",
+    "PAGO CONFECCIÓN": "💳 PAGO CONFECCIÓN",
     "LISTO P/SINTERIZADO": "⚪ LISTO P/SINTERIZADO",
-    "EN SINTERIZADO": "⚫ EN SINTERIZADO",
+    "ELABORACIÓN PLATINA": "🟣 ELABORACIÓN PLATINA",
+    "EN SINTERIZADO Y HORNEADO": "⚫ EN SINTERIZADO Y HORNEADO",
     "LISTO P/CONFECCIÓN": "🌸 LISTO P/CONFECCIÓN",
-    "EN CONFECCIÓN": "🔴 EN CONFECCIÓN",
-    "LISTO P/ENVÍO": "🟢 LISTO P/ENVÍO",
-    "ENVIADO": "✅ ENVIADO",
+    "PULIDO (EN CONFECCIÓN)": "✨ PULIDO (EN CONFECCIÓN)",
+    "SOLDADURA (EN CONFECCIÓN)": "🔥 SOLDADURA (EN CONFECCIÓN)",
+    "ARENADO (EN CONFECCIÓN)": "💨 ARENADO (EN CONFECCIÓN)",
+    "PULIDO / EN CONFECCIÓN": "✨ PULIDO / EN CONFECCIÓN",
+    "SOLDADURA / EN CONFECCIÓN": "🔥 SOLDADURA / EN CONFECCIÓN",
+    "ARENADO / EN CONFECCIÓN": "💨 ARENADO / EN CONFECCIÓN",
+    "CONTROL DE CALIDAD Y FOTOEVIDENCIA": "📸 CONTROL DE CALIDAD Y FOTOEVIDENCIA",
+    "LISTO P/EMPAQUETADO": "📦 LISTO P/EMPAQUETADO",
+    "GENERACIÓN DE GUÍA": "🧾 GENERACIÓN DE GUÍA",
+    "EMPACADO/LISTO P/ENVIO": "🟢 EMPACADO/LISTO P/ENVIO",
+    "PRODUCTO ENVIADO": "✅ PRODUCTO ENVIADO",
+    "ENVIO DE ENCUESTA": "📝 ENVIO DE ENCUESTA",
     "FALTA PAGO COMPLETO": "🟣 FALTA PAGO COMPLETO",
     "CONFECCION EN PAUSA": "🚫 CONFECCION EN PAUSA",
     "CANCELO": "🔵 CANCELO",
 }
+
 
 VENDEDOR_DISPLAY = {
     "JIMENA": "👩 JIMENA",
@@ -176,7 +275,7 @@ PAGO_DISPLAY = {
 }
 
 DISPLAY_OPTIONS_BY_COLUMN = {
-    "APARATO": APARATO_DISPLAY,
+    APARATO_COLUMN: APARATO_DISPLAY,
     STATUS_COLUMN: STATUS_DISPLAY,
     "VENDEDOR": VENDEDOR_DISPLAY,
     "SERVICIO": SERVICIO_DISPLAY,
@@ -185,7 +284,7 @@ DISPLAY_OPTIONS_BY_COLUMN = {
 }
 
 SHEET_STYLE_COLORS = {
-    "APARATO": {
+    APARATO_COLUMN: {
         "MSE": ("#7B3F0A", "#FFFFFF"),
         "TIGER": ("#C99A2E", "#FFFFFF"),
         "REVERSE": ("#A8B94B", "#FFFFFF"),
@@ -195,19 +294,36 @@ SHEET_STYLE_COLORS = {
         "DISTALIZADOR": ("#444444", "#FFFFFF"),
     },
     STATUS_COLUMN: {
-        "REVISION DE ARCHIVOS": ("#C9E6EC", "#2A5964"),
+        "REVISIÓN DE ARCHIVOS": ("#C9E6EC", "#2A5964"),
+        "ESCANEO MAL (EN REPETICIÓN)": ("#F8B4B4", "#8A0000"),
+        "PAGO PLANEACIÓN": ("#E9D8FD", "#553C9A"),
         "EN PLANEACIÓN": ("#FFE86A", "#000000"),
-        "REVISIÓN DEL DISEÑO POR DR": ("#E6E6E6", "#333333"),
+        "REVISIÓN DISEÑO DOCTOR": ("#E6E6E6", "#333333"),
         "SOLICITUD DE CAMBIOS": ("#6B4B17", "#FFFFFF"),
-        "ELABORACIÓN PLATINA BANDAS": ("#DCC4F4", "#6A3D8E"),
-        "ESPERANDO STL PSM": ("#FAD98A", "#6B4B17"),
-        "PDTE ENVIO PSM + GUIA": ("#FFA7A0", "#B00000"),
+        "VOBO/ACEPTACIÓN PLANEACIÓN": ("#B7F7C1", "#145A20"),
+        "SOLICITUD GUIA PSM + PSM": ("#BDE7FF", "#005EA8"),
+        "PDTE ENVIAR GUIA PSM + PSM": ("#FFA7A0", "#B00000"),
+        "GUIA PSM + PSM ENVIADA": ("#B7F7C1", "#145A20"),
+        "ESPERANDO STL PSM DOCTOR": ("#FAD98A", "#6B4B17"),
+        "STL PSM ENVIADO": ("#CDEAFE", "#0B4F6C"),
+        "EN DISEÑO": ("#DCC4F4", "#6A3D8E"),
+        "PAGO CONFECCIÓN": ("#E9D8FD", "#553C9A"),
         "LISTO P/SINTERIZADO": ("#E6E6E6", "#333333"),
-        "EN SINTERIZADO": ("#E6E6E6", "#333333"),
+        "ELABORACIÓN PLATINA": ("#DCC4F4", "#6A3D8E"),
+        "EN SINTERIZADO Y HORNEADO": ("#444444", "#FFFFFF"),
         "LISTO P/CONFECCIÓN": ("#F7A7C3", "#7A1740"),
-        "EN CONFECCIÓN": ("#FF6B6B", "#000000"),
-        "LISTO P/ENVÍO": ("#8FD84A", "#000000"),
-        "ENVIADO": ("#7BE84D", "#000000"),
+        "PULIDO (EN CONFECCIÓN)": ("#D6F5D6", "#1B5E20"),
+        "SOLDADURA (EN CONFECCIÓN)": ("#FFCCBC", "#BF360C"),
+        "ARENADO (EN CONFECCIÓN)": ("#D7CCC8", "#4E342E"),
+        "PULIDO / EN CONFECCIÓN": ("#D6F5D6", "#1B5E20"),
+        "SOLDADURA / EN CONFECCIÓN": ("#FFCCBC", "#BF360C"),
+        "ARENADO / EN CONFECCIÓN": ("#D7CCC8", "#4E342E"),
+        "CONTROL DE CALIDAD Y FOTOEVIDENCIA": ("#B3E5FC", "#01579B"),
+        "LISTO P/EMPAQUETADO": ("#C8E6C9", "#1B5E20"),
+        "GENERACIÓN DE GUÍA": ("#FFF9C4", "#795548"),
+        "EMPACADO/LISTO P/ENVIO": ("#8FD84A", "#000000"),
+        "PRODUCTO ENVIADO": ("#7BE84D", "#000000"),
+        "ENVIO DE ENCUESTA": ("#BBDEFB", "#0D47A1"),
         "FALTA PAGO COMPLETO": ("#5D3B93", "#FFFFFF"),
         "CONFECCION EN PAUSA": ("#B80F0F", "#FFFFFF"),
         "CANCELO": ("#1F6DD1", "#000000"),
@@ -237,7 +353,7 @@ STYLE_COLUMNS = set(SHEET_STYLE_COLORS)
 
 FIELD_LABEL_DISPLAY = {
     ID_COLUMN: "🆔 Columna 1",
-    "APARATO": "🦷 APARATO",
+    APARATO_COLUMN: "🦷 APARATO",
     STATUS_COLUMN: "🚦 STATUS",
     "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
     "NOMBRE PACIENTE": "🙂 NOMBRE PACIENTE",
@@ -263,9 +379,12 @@ FIELD_LABEL_DISPLAY = {
     "USUARIO": "👤 USUARIO",
     "FECHA_INICIO": "▶️ FECHA_INICIO",
     "HORA_INICIO": "🕒 HORA_INICIO",
+    "FECHA_LIMITE": "📅 FECHA_LIMITE",
+    "HORA_LIMITE": "⏰ HORA_LIMITE",
     "FECHA_FIN": "🏁 FECHA_FIN",
     "HORA_FIN": "🕔 HORA_FIN",
     "DURACION_HORAS": "⏳ DURACION_HORAS",
+    "TIEMPO_CONFIGURADO": "⚙️ TIEMPO_CONFIGURADO",
     "TIEMPO_MAXIMO_HORAS": "⏱️ TIEMPO_MAXIMO_HORAS",
     "ESTADO_ALERTA": "🚨 ESTADO_ALERTA",
     "COMENTARIOS_CAMBIO": "💬 COMENTARIOS_CAMBIO",
@@ -276,8 +395,8 @@ FIELD_LABEL_DISPLAY = {
 }
 
 SELECTBOX_OPTIONS_BY_COLUMN = {
-    "APARATO": APARATO_OPTIONS,
-    STATUS_COLUMN: STATUS_OPTIONS,
+    APARATO_COLUMN: APARATO_OPTIONS,
+    STATUS_COLUMN: PROCESS_STATUS_VALUES,
     "VENDEDOR": VENDEDOR_OPTIONS,
     "SERVICIO": SERVICIO_OPTIONS,
     "ARCHIVOS RECIBIDOS": ARCHIVOS_RECIBIDOS_OPTIONS,
@@ -448,10 +567,13 @@ def clean_display_value(value: Any) -> str:
 def display_selectbox_value(column: str, value: str) -> str:
     """Devuelve el texto visual con emoji para una columna selectbox."""
 
+    canonical_column = canonical_column_name(column)
     cleaned_value = clean_display_value(clean_cell(value).strip())
+    if canonical_column == STATUS_COLUMN:
+        cleaned_value = normalize_status_alias(cleaned_value)
     if not cleaned_value:
         return ""
-    display_options = DISPLAY_OPTIONS_BY_COLUMN.get(canonical_column_name(column), {})
+    display_options = DISPLAY_OPTIONS_BY_COLUMN.get(canonical_column, {})
     return display_options.get(cleaned_value, cleaned_value)
 
 
@@ -651,6 +773,8 @@ def apply_estatus_row_styles(
     formats = []
     for column in STYLE_COLUMNS:
         value = clean_display_value(clean_cell(row_dict.get(column, "")).strip())
+        if column == STATUS_COLUMN:
+            value = normalize_status_alias(value)
         color_pair = SHEET_STYLE_COLORS[column].get(value)
         column_position = get_header_position(headers, column)
         if not value or color_pair is None or column_position is None:
@@ -667,6 +791,165 @@ def apply_estatus_row_styles(
     if formats:
         worksheet.batch_format(formats)
 
+
+
+def is_business_day(value: datetime | date) -> bool:
+    """Indica si la fecha cae en lunes-viernes."""
+
+    current_date = value.date() if isinstance(value, datetime) else value
+    return current_date.weekday() < 5
+
+
+def parse_time_limit_to_business_hours(text: Any) -> float | None:
+    """Convierte textos como '<5 hrs' o '<3 dias' a horas hábiles equivalentes."""
+
+    cleaned = normalize_text(clean_cell(text)).replace("<", " ").strip()
+    if not cleaned:
+        return None
+    parts = cleaned.split()
+    if not parts:
+        return None
+    try:
+        amount = float(parts[0].replace(",", "."))
+    except ValueError:
+        return None
+    unit = parts[1] if len(parts) > 1 else ""
+    if unit.startswith("DIA"):
+        return amount * 24
+    if unit.startswith("HR") or unit.startswith("HORA"):
+        return amount
+    return None
+
+
+def add_business_time(start_datetime: datetime, time_text: Any) -> tuple[str, str]:
+    """Suma horas o días hábiles, sin contar sábados ni domingos."""
+
+    if not time_text:
+        return "", ""
+
+    cleaned = normalize_text(clean_cell(time_text))
+    parts = cleaned.replace("<", " ").split()
+    if not parts:
+        return "", ""
+    try:
+        amount = int(float(parts[0].replace(",", ".")))
+    except ValueError:
+        return "", ""
+    unit = parts[1] if len(parts) > 1 else ""
+
+    current = start_datetime
+    if not is_business_day(current):
+        while not is_business_day(current):
+            current = datetime.combine(current.date() + timedelta(days=1), current.time())
+
+    if unit.startswith("DIA"):
+        added_days = 0
+        while added_days < amount:
+            current = current + timedelta(days=1)
+            if is_business_day(current):
+                added_days += 1
+    else:
+        remaining_hours = amount
+        while remaining_hours > 0:
+            current = current + timedelta(hours=1)
+            if is_business_day(current):
+                remaining_hours -= 1
+
+    return current.strftime("%Y-%m-%d"), current.strftime("%H:%M:%S")
+
+
+def business_hours_elapsed(start_datetime: datetime, now: datetime) -> float:
+    """Calcula horas transcurridas entre dos datetimes contando solo lunes-viernes."""
+
+    if now <= start_datetime:
+        return 0.0
+    current = start_datetime
+    elapsed = 0.0
+    while current < now:
+        next_step = min(current + timedelta(hours=1), now)
+        if is_business_day(current):
+            elapsed += (next_step - current).total_seconds() / 3600
+        current = next_step
+    return elapsed
+
+
+def normalize_status_alias(status: Any) -> str:
+    """Normaliza status antiguos de ESTATUS APARATOS al nombre programado vigente."""
+
+    cleaned_status = clean_display_value(clean_cell(status).strip())
+    status_norm = normalize_text(cleaned_status)
+    for old_status, new_status in STATUS_ALIASES.items():
+        if normalize_text(old_status) == status_norm:
+            return new_status
+    return cleaned_status
+
+
+def get_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
+    """Regresa el flujo programado para el aparato."""
+
+    apparatus_key = PROCESS_ALIASES.get(normalize_text(apparatus), normalize_text(apparatus))
+    for configured_apparatus, flow in PROCESS_CONFIG.items():
+        if normalize_text(configured_apparatus) == apparatus_key:
+            return flow
+    return []
+
+
+def get_time_limit(apparatus: str, status: str) -> str | None:
+    """Regresa el tiempo configurado para el status de un aparato."""
+
+    normalized_status = normalize_status_alias(status)
+    status_norm = normalize_text(normalized_status)
+    for configured_status, time_limit in get_process_flow(apparatus):
+        if normalize_text(configured_status) == status_norm:
+            return time_limit
+    return None
+
+
+SPECIAL_TRANSITIONS = {
+    "REVISIÓN DE ARCHIVOS": ["ESCANEO MAL (EN REPETICIÓN)", "PAGO PLANEACIÓN", "PAGO CONFECCIÓN", "EN PLANEACIÓN"],
+    "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR", "SOLICITUD DE CAMBIOS", "LISTO P/SINTERIZADO", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+    "REVISIÓN DISEÑO DOCTOR": ["SOLICITUD DE CAMBIOS", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+    "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+    "VOBO/ACEPTACIÓN PLANEACIÓN": ["PAGO CONFECCIÓN", "SOLICITUD GUIA PSM + PSM", "LISTO P/SINTERIZADO"],
+    "SOLICITUD GUIA PSM + PSM": ["PDTE ENVIAR GUIA PSM + PSM"],
+    "PDTE ENVIAR GUIA PSM + PSM": ["GUIA PSM + PSM ENVIADA"],
+    "GUIA PSM + PSM ENVIADA": ["ESPERANDO STL PSM DOCTOR"],
+    "ESPERANDO STL PSM DOCTOR": ["STL PSM ENVIADO"],
+    "STL PSM ENVIADO": ["EN DISEÑO"],
+    "EN DISEÑO": ["PAGO CONFECCIÓN"],
+}
+
+
+def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
+    """Regresa status actual y transiciones permitidas según el flujo programado."""
+
+    normalized_current_status = normalize_status_alias(current_status)
+    flow = get_process_flow(apparatus)
+    statuses = [status for status, _ in flow]
+    if not statuses:
+        return [normalized_current_status] if normalized_current_status else []
+
+    current_norm = normalize_text(normalized_current_status)
+    current_index = next((i for i, status in enumerate(statuses) if normalize_text(status) == current_norm), None)
+    if current_index is None:
+        return [normalized_current_status, statuses[0]] if normalized_current_status else [statuses[0]]
+
+    allowed = [statuses[current_index]]
+    if current_index + 1 < len(statuses):
+        allowed.append(statuses[current_index + 1])
+
+    special_targets = SPECIAL_TRANSITIONS.get(statuses[current_index], [])
+    valid_by_norm = {normalize_text(status): status for status in statuses}
+    for target in special_targets:
+        configured_target = valid_by_norm.get(normalize_text(target))
+        if configured_target and configured_target not in allowed:
+            allowed.append(configured_target)
+
+    if normalize_text(statuses[current_index]) not in {
+        normalize_text(status) for status in TERMINAL_STATUSES
+    } and "CANCELO" not in allowed:
+        allowed.append("CANCELO")
+    return allowed
 
 def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
     """Intenta construir un datetime desde fecha y hora de la hoja de tiempos."""
@@ -686,14 +969,12 @@ def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
 
 
 def calculate_duration_hours(start_dt: datetime | None, end_dt: datetime | None = None) -> str:
-    """Calcula duración decimal en horas entre dos momentos."""
+    """Calcula duración decimal en horas hábiles entre dos momentos."""
 
     if start_dt is None:
         return ""
     end_dt = end_dt or datetime.now()
-    duration = end_dt - start_dt
-    hours = duration.total_seconds() / 3600
-    return f"{max(hours, 0):.2f}"
+    return f"{business_hours_elapsed(start_dt, end_dt):.2f}"
 
 
 def calculate_alert_state(
@@ -703,17 +984,15 @@ def calculate_alert_state(
     *,
     now: datetime | None = None,
 ) -> str:
-    """Calcula el estado visual de alerta para un registro activo."""
+    """Calcula el estado visual de alerta para un registro activo en tiempo hábil."""
 
     max_time_text = clean_cell(tiempo_maximo_horas).strip()
     if not max_time_text:
         return "Sin tiempo configurado"
-
     try:
         max_hours = float(max_time_text.replace(",", "."))
     except ValueError:
         return "Sin tiempo configurado"
-
     if max_hours <= 0:
         return "Sin tiempo configurado"
 
@@ -721,8 +1000,7 @@ def calculate_alert_state(
     if start_dt is None:
         return "Sin fecha de inicio"
 
-    now = now or datetime.now()
-    elapsed_hours = (now - start_dt).total_seconds() / 3600
+    elapsed_hours = business_hours_elapsed(start_dt, now or datetime.now())
     if elapsed_hours >= max_hours:
         return "Atrasado"
     if elapsed_hours >= max_hours * 0.8:
@@ -1001,56 +1279,10 @@ def get_next_log_id(tiempos_df: pd.DataFrame) -> int:
 
 
 def find_tiempo_maximo_horas(apparatus: str, status: str) -> str:
-    """Busca de forma flexible el tiempo máximo en PROCESOS POR APARATO."""
+    """Compatibilidad: devuelve horas hábiles desde PROCESS_CONFIG, no desde Excel."""
 
-    values = read_sheet_values(SHEET_PROCESOS)
-    if not values or not apparatus or not status:
-        return ""
-
-    apparatus_norm = normalize_text(apparatus)
-    status_norm = normalize_text(status)
-    header = values[0]
-
-    for start_index, header_value in enumerate(header):
-        if apparatus_norm and apparatus_norm not in normalize_text(header_value):
-            continue
-
-        next_group_index = len(header)
-        for candidate_index in range(start_index + 1, len(header)):
-            candidate = normalize_text(header[candidate_index])
-            if candidate and "FASE" not in candidate and "TIEMPO" not in candidate:
-                next_group_index = candidate_index
-                break
-
-        group_headers = header[start_index:next_group_index]
-        phase_offsets = [
-            offset for offset, column in enumerate(group_headers) if "FASE" in normalize_text(column)
-        ]
-        time_offsets = [
-            offset for offset, column in enumerate(group_headers) if "TIEMPO" in normalize_text(column)
-        ]
-        if not phase_offsets or not time_offsets:
-            phase_offsets = [0]
-            time_offsets = [1] if next_group_index - start_index > 1 else []
-
-        for row in values[1:]:
-            for phase_offset in phase_offsets:
-                phase_index = start_index + phase_offset
-                phase_value = row[phase_index] if phase_index < len(row) else ""
-                if normalize_text(phase_value) != status_norm:
-                    continue
-
-                time_index = None
-                later_times = [offset for offset in time_offsets if offset > phase_offset]
-                if later_times:
-                    time_index = start_index + later_times[0]
-                elif time_offsets:
-                    time_index = start_index + time_offsets[0]
-
-                if time_index is not None and time_index < len(row):
-                    return clean_cell(row[time_index]).strip()
-    return ""
-
+    return_value = parse_time_limit_to_business_hours(get_time_limit(apparatus, status))
+    return "" if return_value is None else f"{return_value:g}"
 
 def close_previous_active_time(identifier: str) -> bool:
     """Cierra el registro activo anterior de TIEMPOS_APARATOS, si existe."""
@@ -1106,13 +1338,24 @@ def register_status_change(
 ) -> None:
     """Registra el cambio de STATUS y abre un nuevo tiempo activo."""
 
+    new_status = normalize_status_alias(new_status)
+    previous_status = normalize_status_alias(previous_status)
+
     ensure_tiempos_headers()
     close_previous_active_time(previous_identifier or identifier)
     st.cache_data.clear()
 
+    if normalize_text(new_status) in {normalize_text(status) for status in TERMINAL_STATUSES}:
+        return
+
     tiempos_df = read_sheet_df(SHEET_TIEMPOS)
     now = datetime.now()
-    tiempo_maximo = find_tiempo_maximo_horas(apparatus, new_status)
+    tiempo_configurado = get_time_limit(apparatus, new_status)
+    tiempo_maximo = parse_time_limit_to_business_hours(tiempo_configurado)
+    fecha_limite, hora_limite = add_business_time(now, tiempo_configurado)
+    estado_alerta = (
+        "Sin tiempo configurado" if tiempo_maximo is None else "En tiempo"
+    )
     default_comment = (
         f"Cambio de status desde app: {previous_status or 'Sin status'} → {new_status}"
     )
@@ -1127,11 +1370,14 @@ def register_status_change(
         "USUARIO": ACTIVE_USER_LABEL,
         "FECHA_INICIO": now.strftime("%Y-%m-%d"),
         "HORA_INICIO": now.strftime("%H:%M:%S"),
+        "FECHA_LIMITE": fecha_limite,
+        "HORA_LIMITE": hora_limite,
         "FECHA_FIN": "",
         "HORA_FIN": "",
         "DURACION_HORAS": "",
-        "TIEMPO_MAXIMO_HORAS": tiempo_maximo,
-        "ESTADO_ALERTA": "En tiempo",
+        "TIEMPO_CONFIGURADO": tiempo_configurado or "",
+        "TIEMPO_MAXIMO_HORAS": "" if tiempo_maximo is None else f"{tiempo_maximo:g}",
+        "ESTADO_ALERTA": estado_alerta,
         "COMENTARIOS_CAMBIO": change_comment.strip() or default_comment,
         "FECHA_REGISTRO_LOG": now.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -1302,11 +1548,20 @@ def apply_estatus_filters(df: pd.DataFrame) -> pd.DataFrame:
     return filtered_df
 
 
-def render_edit_field(column: str, value: Any, key: str) -> Any:
+def render_edit_field(
+    column: str,
+    value: Any,
+    key: str,
+    *,
+    apparatus: str = "",
+    current_status: str = "",
+) -> Any:
     """Renderiza un input seguro según la columna real de ESTATUS APARATOS."""
 
     text_value = clean_cell(value)
     canonical_column = canonical_column_name(column)
+    if canonical_column == STATUS_COLUMN:
+        text_value = normalize_status_alias(text_value)
 
     if canonical_column == ID_COLUMN:
         st.text_input(
@@ -1315,15 +1570,31 @@ def render_edit_field(column: str, value: Any, key: str) -> Any:
         return text_value
 
     if canonical_column in SELECTBOX_OPTIONS_BY_COLUMN:
+        fixed_options = SELECTBOX_OPTIONS_BY_COLUMN[canonical_column]
+        if canonical_column == APARATO_COLUMN:
+            options = build_display_selectbox_options(
+                canonical_column, fixed_options, text_value
+            )
+            current_display_value = display_selectbox_value(canonical_column, text_value)
+            index = options.index(current_display_value) if current_display_value in options else 0
+            st.selectbox(
+                display_field_label(column), options, index=index, key=key, disabled=True
+            )
+            return text_value
+        if canonical_column == STATUS_COLUMN:
+            fixed_options = get_allowed_next_statuses(
+                apparatus, normalize_status_alias(current_status or text_value)
+            )
         options = build_display_selectbox_options(
-            canonical_column, SELECTBOX_OPTIONS_BY_COLUMN[canonical_column], text_value
+            canonical_column, fixed_options, text_value
         )
         current_display_value = display_selectbox_value(canonical_column, text_value)
         index = options.index(current_display_value) if current_display_value in options else 0
         selected_value = st.selectbox(
             display_field_label(column), options, index=index, key=key
         )
-        return clean_display_value(selected_value)
+        selected_clean_value = clean_display_value(selected_value)
+        return normalize_status_alias(selected_clean_value) if canonical_column == STATUS_COLUMN else selected_clean_value
 
     if canonical_column in DATE_COLUMNS:
         parsed_date = parse_simple_date(text_value)
@@ -1573,7 +1844,8 @@ def render_nuevo_pedido_tab() -> None:
     clean_archivos_recibidos = clean_display_value(archivos_recibidos)
     clean_pago = clean_display_value(pago)
 
-    default_status = STATUS_OPTIONS[0] if STATUS_OPTIONS else ""
+    default_flow = get_process_flow(clean_aparato)
+    default_status = default_flow[0][0] if default_flow else ""
 
     row_dict = {
         ID_COLUMN: cleaned_identifier,
@@ -1715,6 +1987,12 @@ def render_estatus_tab() -> None:
                         column,
                         row.get(column, ""),
                         key=f"field_{selected_id}_{column}",
+                        apparatus=clean_display_value(
+                            clean_cell(get_row_value_by_column(row, "APARATO", ""))
+                        ),
+                        current_status=clean_display_value(
+                            clean_cell(get_row_value_by_column(row, STATUS_COLUMN, ""))
+                        ),
                     )
 
         submitted = st.form_submit_button("💾 Guardar cambios")
@@ -1731,10 +2009,10 @@ def render_estatus_tab() -> None:
             return
 
         canonical_changes = build_canonical_changes(changes)
-        previous_status = clean_display_value(
+        previous_status = normalize_status_alias(
             clean_cell(get_row_value_by_column(row, STATUS_COLUMN, ""))
         )
-        new_status = clean_display_value(
+        new_status = normalize_status_alias(
             clean_cell(canonical_changes.get(STATUS_COLUMN, previous_status))
         )
         apparatus = clean_display_value(
@@ -1744,6 +2022,16 @@ def render_estatus_tab() -> None:
                 )
             )
         )
+
+        if STATUS_COLUMN in canonical_changes and previous_status != new_status:
+            allowed_statuses = get_allowed_next_statuses(apparatus, previous_status)
+            if new_status not in allowed_statuses:
+                allowed_text = ", ".join(allowed_statuses)
+                st.error(
+                    f"STATUS no permitido para {apparatus}: {previous_status} → {new_status}. "
+                    f"Opciones permitidas: {allowed_text}."
+                )
+                return
 
         update_result = update_row_by_columna_1(selected_id, changes)
         if update_result["success"]:
@@ -1848,11 +2136,22 @@ def render_tiempos_tab() -> None:
 
 def render_procesos_tab() -> None:
     st.subheader("⚙️ Procesos por Aparato")
-    procesos_df = read_sheet_df(SHEET_PROCESOS)
-    if procesos_df.empty:
-        st.info("La hoja PROCESOS POR APARATO no tiene datos para mostrar.")
-        return
-    st.caption("Consulta de procesos y tiempos configurados. Esta hoja no se edita en esta versión.")
+    rows = []
+    for apparatus in APARATO_OPTIONS:
+        for order, (status, time_limit) in enumerate(get_process_flow(apparatus), start=1):
+            rows.append(
+                {
+                    "APARATO": apparatus,
+                    "FASE_ORDEN": order,
+                    "STATUS": status,
+                    "TIEMPO_CONFIGURADO": time_limit or "",
+                    "TIEMPO_MAXIMO_HORAS": ""
+                    if parse_time_limit_to_business_hours(time_limit) is None
+                    else f"{parse_time_limit_to_business_hours(time_limit):g}",
+                }
+            )
+    procesos_df = pd.DataFrame(rows)
+    st.caption("Consulta de procesos y tiempos programados en el código. No se leen desde Excel.")
     st.dataframe(
         procesos_df,
         use_container_width=True,
