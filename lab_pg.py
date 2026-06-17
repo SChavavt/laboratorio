@@ -2,6 +2,7 @@ import json
 import math
 import unicodedata
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import gspread
@@ -25,6 +26,9 @@ SHEET_TIEMPOS = "TIEMPOS_APARATOS"
 ID_COLUMN = "Columna 1"
 APARATO_COLUMN = "APARATO"
 STATUS_COLUMN = "STATUS"
+APP_TIMEZONE_NAME = "America/Mexico_City"
+APP_TIMEZONE_LABEL = "Ciudad de México"
+APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
 
 TIEMPOS_HEADERS = [
     "ID_LOG",
@@ -442,6 +446,22 @@ SPANISH_MONTHS = {
 # ==============================
 # 🧰 UTILIDADES GENERALES
 # ==============================
+def app_now() -> datetime:
+    """Devuelve la fecha/hora actual de la app en horario de Ciudad de México.
+
+    Se regresa sin tzinfo para mantener compatibilidad con los valores existentes
+    guardados en Google Sheets, pero la fuente siempre es America/Mexico_City.
+    """
+
+    return datetime.now(APP_TIMEZONE).replace(tzinfo=None)
+
+
+def app_today() -> date:
+    """Devuelve la fecha actual de Ciudad de México para defaults de formularios."""
+
+    return app_now().date()
+
+
 def normalize_text(value: Any) -> str:
     """Normaliza texto para comparaciones tolerantes a mayúsculas y acentos."""
 
@@ -465,7 +485,7 @@ def parse_simple_date(value: Any) -> date | None:
     normalized = normalize_text(text).replace("/", "-")
     parts = normalized.split()
     if len(parts) >= 2 and parts[0].isdigit() and parts[1] in SPANISH_MONTHS:
-        year = datetime.now().year
+        year = app_today().year
         if len(parts) >= 3 and parts[2].isdigit():
             year = int(parts[2])
         try:
@@ -491,7 +511,7 @@ def parse_spanish_datetime(value: Any) -> datetime | None:
     if len(parts) >= 2 and parts[0].isdigit() and parts[1] in SPANISH_MONTHS:
         day = int(parts[0])
         month = SPANISH_MONTHS[parts[1]]
-        year = datetime.now().year
+        year = app_today().year
         time_parts = parts[2:]
         if time_parts and time_parts[0].isdigit() and len(time_parts[0]) == 4:
             year = int(time_parts[0])
@@ -973,7 +993,7 @@ def calculate_duration_hours(start_dt: datetime | None, end_dt: datetime | None 
 
     if start_dt is None:
         return ""
-    end_dt = end_dt or datetime.now()
+    end_dt = end_dt or app_now()
     return f"{business_hours_elapsed(start_dt, end_dt):.2f}"
 
 
@@ -1000,7 +1020,7 @@ def calculate_alert_state(
     if start_dt is None:
         return "Sin fecha de inicio"
 
-    elapsed_hours = business_hours_elapsed(start_dt, now or datetime.now())
+    elapsed_hours = business_hours_elapsed(start_dt, now or app_now())
     if elapsed_hours >= max_hours:
         return "Atrasado"
     if elapsed_hours >= max_hours * 0.8:
@@ -1313,7 +1333,7 @@ def close_previous_active_time(identifier: str) -> bool:
     if target_row_number is None or target_row is None:
         return False
 
-    end_dt = datetime.now()
+    end_dt = app_now()
     start_dt = parse_start_datetime(
         target_row[headers.index("FECHA_INICIO")] if headers.index("FECHA_INICIO") < len(target_row) else "",
         target_row[headers.index("HORA_INICIO")] if headers.index("HORA_INICIO") < len(target_row) else "",
@@ -1349,7 +1369,7 @@ def register_status_change(
         return
 
     tiempos_df = read_sheet_df(SHEET_TIEMPOS)
-    now = datetime.now()
+    now = app_now()
     tiempo_configurado = get_time_limit(apparatus, new_status)
     tiempo_maximo = parse_time_limit_to_business_hours(tiempo_configurado)
     fecha_limite, hora_limite = add_business_time(now, tiempo_configurado)
@@ -1604,7 +1624,7 @@ def render_edit_field(
             )
             return format_sheet_date(selected_date) if selected_date else ""
 
-        initial_date = parsed_date or date.today()
+        initial_date = parsed_date or app_today()
         selected_date = st.date_input(
             display_field_label(column), value=initial_date, key=key
         )
@@ -1623,7 +1643,7 @@ def render_edit_field(
     if canonical_column in DATETIME_TEXT_COLUMNS:
         parsed_datetime = parse_spanish_datetime(text_value)
         initial_datetime = parsed_datetime or datetime.combine(
-            date.today(), datetime.now().time()
+            app_today(), app_now().time()
         ).replace(second=0, microsecond=0)
         date_col, time_col = st.columns([1, 1])
         with date_col:
@@ -1683,7 +1703,7 @@ def render_optional_date_input(label: str, key: str) -> str:
     if not enabled:
         return ""
     return st.date_input(
-        display_field_label(label), value=date.today(), key=key
+        display_field_label(label), value=app_today(), key=key
     ).isoformat()
 
 
@@ -1808,7 +1828,7 @@ def render_nuevo_pedido_tab() -> None:
             )
             fecha_recepcion = st.date_input(
                 display_field_label("FECHA DE RECEPCIÓN"),
-                value=date.today(),
+                value=app_today(),
                 key=f"nuevo_pedido_fecha_recepcion_{form_version}",
             )
             dias_entrega = st.number_input(
@@ -1820,7 +1840,7 @@ def render_nuevo_pedido_tab() -> None:
             )
             fecha_para_entrega = st.date_input(
                 display_field_label("FECHA PARA ENTREGA"),
-                value=date.today(),
+                value=app_today(),
                 key=f"nuevo_pedido_fecha_entrega_{form_version}",
             )
 
@@ -2166,7 +2186,11 @@ def render_procesos_tab() -> None:
 st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
 apply_custom_css()
 st.title("🦷 Control de Aparatos – ARTTDLAB")
-st.caption("Primera versión para edición manual de estatus y registro automático de tiempos.")
+st.caption(
+    "Primera versión para edición manual de estatus y registro automático de tiempos. "
+    f"Fechas y horas calculadas con zona horaria de {APP_TIMEZONE_LABEL} "
+    f"({APP_TIMEZONE_NAME})."
+)
 
 if st.button("🔄 Recargar datos", type="secondary"):
     st.cache_data.clear()
