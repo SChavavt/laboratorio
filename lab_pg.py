@@ -2346,12 +2346,7 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
                 "después del texto automático del cambio de STATUS. También se muestra "
                 "en la tabla de esta pestaña para auditoría."
             ),
-        )
-        st.info(
-            "COMENTARIOS_CAMBIO siempre conserva el texto automático del movimiento "
-            "(por ejemplo: Cambio de status desde app...). Si escribes aquí, se agrega "
-            "abajo como Comentario extra; NO modifica DETALLE COMENTARIOS del pedido."
-        )
+
         submitted = st.form_submit_button("💾 Actualizar pedido en alerta")
 
     if submitted:
