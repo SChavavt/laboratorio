@@ -1409,6 +1409,68 @@ def register_status_change(
     )
 
 
+def build_tiempos_runtime_df() -> pd.DataFrame:
+    """Lee TIEMPOS_APARATOS y agrega columnas visuales calculadas para la app."""
+
+    tiempos_df = read_sheet_df(SHEET_TIEMPOS)
+    if tiempos_df.empty:
+        return tiempos_df
+
+    for column in TIEMPOS_HEADERS:
+        if column not in tiempos_df.columns:
+            tiempos_df[column] = ""
+
+    active_mask = tiempos_df["FECHA_FIN"].astype(str).str.strip() == ""
+    tiempos_df["REGISTRO_ACTIVO"] = active_mask.map({True: "Sí", False: "No"})
+    tiempos_df["ESTADO_ALERTA_VISUAL"] = tiempos_df.apply(
+        lambda row: calculate_alert_state(
+            row.get("FECHA_INICIO", ""),
+            row.get("HORA_INICIO", ""),
+            row.get("TIEMPO_MAXIMO_HORAS", ""),
+        )
+        if clean_cell(row.get("FECHA_FIN", "")).strip() == ""
+        else "Cerrado",
+        axis=1,
+    )
+    tiempos_df["HORAS_TRANSCURRIDAS"] = tiempos_df.apply(
+        lambda row: calculate_duration_hours(
+            parse_start_datetime(row.get("FECHA_INICIO", ""), row.get("HORA_INICIO", ""))
+        )
+        if clean_cell(row.get("FECHA_FIN", "")).strip() == ""
+        else clean_cell(row.get("DURACION_HORAS", "")),
+        axis=1,
+    )
+    return tiempos_df
+
+
+def add_estatus_details(tiempos_df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega doctor, paciente, vendedor y servicio desde ESTATUS APARATOS."""
+
+    if tiempos_df.empty or ID_COLUMN not in tiempos_df.columns:
+        return tiempos_df
+
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    detail_columns = [
+        ID_COLUMN,
+        "NOMBRE DOCTOR",
+        "NOMBRE PACIENTE",
+        "VENDEDOR",
+        "SERVICIO",
+        "DETALLE COMENTARIOS",
+    ]
+    available_columns = [column for column in detail_columns if column in estatus_df.columns]
+    if estatus_df.empty or ID_COLUMN not in available_columns:
+        return tiempos_df
+
+    details_df = estatus_df[available_columns].copy()
+    details_df[ID_COLUMN] = details_df[ID_COLUMN].astype(str).str.strip()
+    details_df = details_df.drop_duplicates(subset=[ID_COLUMN], keep="first")
+
+    merged_df = tiempos_df.copy()
+    merged_df[ID_COLUMN] = merged_df[ID_COLUMN].astype(str).str.strip()
+    return merged_df.merge(details_df, on=ID_COLUMN, how="left")
+
+
 # ==============================
 # 🖥️ COMPONENTES STREAMLIT
 # ==============================
@@ -2097,44 +2159,22 @@ def render_estatus_tab() -> None:
 
 def render_tiempos_tab() -> None:
     st.subheader("⏱️ Tiempos y Alertas")
-    tiempos_df = read_sheet_df(SHEET_TIEMPOS)
+    tiempos_df = build_tiempos_runtime_df()
 
     if tiempos_df.empty:
         st.info("TIEMPOS_APARATOS aún no tiene registros de cambios de status.")
         return
 
-    for column in TIEMPOS_HEADERS:
-        if column not in tiempos_df.columns:
-            tiempos_df[column] = ""
-
     active_mask = tiempos_df["FECHA_FIN"].astype(str).str.strip() == ""
-    tiempos_df["REGISTRO_ACTIVO"] = active_mask.map({True: "Sí", False: "No"})
-    tiempos_df["ESTADO_ALERTA_VISUAL"] = tiempos_df.apply(
-        lambda row: calculate_alert_state(
-            row.get("FECHA_INICIO", ""),
-            row.get("HORA_INICIO", ""),
-            row.get("TIEMPO_MAXIMO_HORAS", ""),
-        )
-        if clean_cell(row.get("FECHA_FIN", "")).strip() == ""
-        else clean_cell(row.get("ESTADO_ALERTA", "")) or "Cerrado",
-        axis=1,
-    )
-    tiempos_df["HORAS_TRANSCURRIDAS"] = tiempos_df.apply(
-        lambda row: calculate_duration_hours(
-            parse_start_datetime(row.get("FECHA_INICIO", ""), row.get("HORA_INICIO", ""))
-        )
-        if clean_cell(row.get("FECHA_FIN", "")).strip() == ""
-        else clean_cell(row.get("DURACION_HORAS", "")),
-        axis=1,
-    )
-
     ordered_df = pd.concat([tiempos_df[active_mask], tiempos_df[~active_mask]], ignore_index=True)
+    hidden_columns = ["FASE_ORDEN", "STATUS_SIGUIENTE", "RESPONSABLE", "ESTADO_ALERTA"]
+    display_df = ordered_df.drop(columns=[column for column in hidden_columns if column in ordered_df.columns])
     st.dataframe(
-        ordered_df,
+        display_df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            **build_dataframe_column_config(ordered_df),
+            **build_dataframe_column_config(display_df),
             "ESTADO_ALERTA_VISUAL": st.column_config.Column(
                 display_field_label("ESTADO_ALERTA_VISUAL")
             ),
@@ -2144,14 +2184,140 @@ def render_tiempos_tab() -> None:
         },
     )
 
-    counts = ordered_df["ESTADO_ALERTA_VISUAL"].value_counts().to_dict()
-    st.markdown("#### 📊 Resumen")
+    render_alert_order_updater(tiempos_df)
+
+
+def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
+    """Permite abrir un pedido en alerta y avanzar su siguiente status."""
+
+    alert_states = {"Próximo a vencer", "Atrasado"}
+    alert_df = tiempos_df[
+        (tiempos_df["REGISTRO_ACTIVO"] == "Sí")
+        & (tiempos_df["ESTADO_ALERTA_VISUAL"].isin(alert_states))
+    ].copy()
+    if alert_df.empty:
+        st.success("No hay pedidos activos próximos a vencer o atrasados.")
+        return
+
+    alert_df = add_estatus_details(alert_df)
+    st.markdown("#### 🚨 Atender pedidos en alerta")
+    st.caption("Solo se muestran registros activos con alerta para cambiar su STATUS desde aquí.")
+
+    option_ids = [clean_cell(value).strip() for value in alert_df[ID_COLUMN].tolist() if clean_cell(value).strip()]
+    option_ids = list(dict.fromkeys(option_ids))
+    labels = {}
+    for _, row in alert_df.iterrows():
+        identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+        if not identifier or identifier in labels:
+            continue
+        labels[identifier] = (
+            f"🆔 {identifier} | 🦷 {clean_cell(row.get('APARATO', ''))} | "
+            f"🚦 {clean_cell(row.get('STATUS', ''))} | 🚨 {clean_cell(row.get('ESTADO_ALERTA_VISUAL', ''))} | "
+            f"⌛ {clean_cell(row.get('HORAS_TRANSCURRIDAS', ''))} h | "
+            f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', ''))}"
+        )
+
+    selected_id = st.selectbox(
+        "Selecciona un pedido en alerta",
+        option_ids,
+        format_func=lambda option: labels.get(option, option),
+        key="alert_order_selector",
+    )
+    selected_row = alert_df[alert_df[ID_COLUMN].astype(str).str.strip() == selected_id].iloc[0]
+    apparatus = clean_cell(selected_row.get("APARATO", "")).strip()
+    current_status = normalize_status_alias(clean_cell(selected_row.get("STATUS", "")).strip())
+    allowed_statuses = get_allowed_next_statuses(apparatus, current_status)
+
+    info_cols = st.columns(4)
+    info_cols[0].metric("Pedido", selected_id)
+    info_cols[1].metric("Aparato", apparatus or "-")
+    info_cols[2].metric("Estado alerta", clean_cell(selected_row.get("ESTADO_ALERTA_VISUAL", "")) or "-")
+    info_cols[3].metric("Horas", clean_cell(selected_row.get("HORAS_TRANSCURRIDAS", "")) or "-")
+    st.caption(
+        " | ".join(
+            part for part in [
+                f"Doctor: {clean_cell(selected_row.get('NOMBRE DOCTOR', ''))}",
+                f"Paciente: {clean_cell(selected_row.get('NOMBRE PACIENTE', ''))}",
+                f"Servicio: {clean_cell(selected_row.get('SERVICIO', ''))}",
+            ] if part.split(': ', 1)[1]
+        )
+    )
+
+    with st.form(f"alert_update_{selected_id}"):
+        new_status = st.selectbox(
+            "Siguiente estado / actualización",
+            allowed_statuses,
+            format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option),
+            key=f"alert_status_{selected_id}",
+        )
+        comment = st.text_area("Comentario del cambio", key=f"alert_comment_{selected_id}")
+        submitted = st.form_submit_button("💾 Actualizar pedido en alerta")
+
+    if submitted:
+        if new_status == current_status:
+            st.info("Selecciona un status diferente para actualizar el pedido.")
+            return
+        result = update_row_by_columna_1(selected_id, {STATUS_COLUMN: new_status})
+        if not result["success"]:
+            st.error(result["error"] or "No se pudo actualizar el pedido.")
+            return
+        register_status_change(
+            identifier=selected_id,
+            apparatus=apparatus,
+            previous_status=current_status,
+            new_status=new_status,
+            change_comment=comment,
+        )
+        st.cache_data.clear()
+        st.success(f"Pedido {selected_id} actualizado a {new_status}.")
+        st.rerun()
+
+
+def render_global_alert_dashboard() -> None:
+    """Muestra métricas y avisos de tiempos fuera de las pestañas."""
+
+    tiempos_df = build_tiempos_runtime_df()
+    if tiempos_df.empty:
+        st.info("⏱️ Aún no hay registros de tiempos para resumir.")
+        return
+
+    active_df = tiempos_df[tiempos_df["REGISTRO_ACTIVO"] == "Sí"].copy()
+    counts = active_df["ESTADO_ALERTA_VISUAL"].value_counts().to_dict() if not active_df.empty else {}
+    st.markdown("### 📊 Resumen general de tiempos")
     summary_cols = st.columns(4)
     for container, label in zip(
         summary_cols,
         ["En tiempo", "Próximo a vencer", "Atrasado", "Sin tiempo configurado"],
     ):
         container.metric(label, counts.get(label, 0))
+
+    delayed_df = active_df[active_df["ESTADO_ALERTA_VISUAL"] == "Atrasado"].copy()
+    if delayed_df.empty:
+        st.success("✅ No hay pedidos atrasados activos en este momento.")
+        return
+
+    delayed_df = add_estatus_details(delayed_df)
+    delayed_df["HORAS_NUM"] = pd.to_numeric(delayed_df["HORAS_TRANSCURRIDAS"], errors="coerce")
+    delayed_df = delayed_df.sort_values("HORAS_NUM", ascending=False).head(5)
+    st.warning(f"🚨 Hay {len(active_df[active_df['ESTADO_ALERTA_VISUAL'] == 'Atrasado'])} pedido(s) atrasado(s) activos.")
+    notice_rows = []
+    for _, row in delayed_df.iterrows():
+        notice_rows.append(
+            {
+                "PEDIDO": clean_cell(row.get(ID_COLUMN, "")),
+                "APARATO": clean_cell(row.get("APARATO", "")),
+                "PROCESO": clean_cell(row.get("STATUS", "")),
+                "DOCTOR": clean_cell(row.get("NOMBRE DOCTOR", "")),
+                "HORAS_TRANSCURRIDAS": clean_cell(row.get("HORAS_TRANSCURRIDAS", "")),
+                "LÍMITE": clean_cell(row.get("TIEMPO_CONFIGURADO", "")),
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(notice_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config=build_dataframe_column_config(pd.DataFrame(notice_rows)),
+    )
 
 
 def render_procesos_tab() -> None:
@@ -2199,6 +2365,7 @@ if st.button("🔄 Recargar datos", type="secondary"):
 
 try:
     ensure_tiempos_headers()
+    render_global_alert_dashboard()
     tab_nuevo, tab_seguimiento, tab_tiempos, tab_procesos = st.tabs(
         [
             "➕ Nuevo pedido",
