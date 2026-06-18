@@ -1379,6 +1379,12 @@ def register_status_change(
     default_comment = (
         f"Cambio de status desde app: {previous_status or 'Sin status'} → {new_status}"
     )
+    extra_comment = change_comment.strip()
+    combined_comment = (
+        f"{default_comment}\nComentario extra: {extra_comment}"
+        if extra_comment
+        else default_comment
+    )
     row = {
         "ID_LOG": get_next_log_id(tiempos_df),
         ID_COLUMN: identifier,
@@ -1398,7 +1404,7 @@ def register_status_change(
         "TIEMPO_CONFIGURADO": tiempo_configurado or "",
         "TIEMPO_MAXIMO_HORAS": "" if tiempo_maximo is None else f"{tiempo_maximo:g}",
         "ESTADO_ALERTA": estado_alerta,
-        "COMENTARIOS_CAMBIO": change_comment.strip() or default_comment,
+        "COMENTARIOS_CAMBIO": combined_comment,
         "FECHA_REGISTRO_LOG": now.strftime("%Y-%m-%d %H:%M:%S"),
     }
     tiempos_worksheet = get_worksheet(SHEET_TIEMPOS)
@@ -2187,6 +2193,48 @@ def render_tiempos_tab() -> None:
     render_alert_order_updater(tiempos_df)
 
 
+def get_alert_context_fields(
+    estatus_row: pd.Series, apparatus: str, current_status: str, new_status: str
+) -> list[str]:
+    """Sugiere campos extra para atender una alerta según aparato/status.
+
+    Los campos se guardan en ESTATUS APARATOS solo si la columna existe en la hoja;
+    el comentario operativo del cambio se guarda en TIEMPOS_APARATOS.COMENTARIOS_CAMBIO.
+    """
+
+    available_by_canonical = {
+        canonical_column_name(column): column for column in estatus_row.index
+    }
+    status_norm = normalize_text(new_status or current_status)
+    suggestions = [
+        "DETALLE COMENTARIOS",
+        "VENDEDOR",
+        "SERVICIO",
+        "PAGO",
+        "FECHA PARA ENTREGA",
+    ]
+
+    if "PAGO" in status_norm:
+        suggestions.extend(["FECHA PAGO PLANEACION", "FECHA PAGO CONFECCION"])
+    if any(keyword in status_norm for keyword in ["STL", "ARCHIVO", "ESCANEO"]):
+        suggestions.append("ARCHIVOS RECIBIDOS")
+    if any(
+        keyword in status_norm
+        for keyword in ["GUIA", "ENVIO", "ENVIADO", "EMPAQUETADO"]
+    ):
+        suggestions.extend(["FECHA ENVÍO", "FECHA/HORA ENVÍO STEFANO"])
+    if any(keyword in status_norm for keyword in ["SINTERIZADO", "PLATINA"]):
+        suggestions.append("FECHA IMPRESIÓN")
+    if normalize_text(apparatus) in {"DISTALIZADOR", "TIGER", "LEONE"}:
+        suggestions.append("DETALLES & COMENTARIOS FINALES")
+
+    fields: list[str] = []
+    for canonical_column in suggestions:
+        sheet_column = available_by_canonical.get(canonical_column)
+        if sheet_column and sheet_column not in fields:
+            fields.append(sheet_column)
+    return fields
+
 def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
     """Permite abrir un pedido en alerta y avanzar su siguiente status."""
 
@@ -2243,6 +2291,18 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
         )
     )
 
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    estatus_matches = (
+        estatus_df[estatus_df[ID_COLUMN].astype(str).str.strip() == selected_id]
+        if not estatus_df.empty and ID_COLUMN in estatus_df.columns
+        else pd.DataFrame()
+    )
+    estatus_row = (
+        estatus_matches.iloc[0]
+        if not estatus_matches.empty
+        else pd.Series(dtype=object)
+    )
+
     with st.form(f"alert_update_{selected_id}"):
         new_status = st.selectbox(
             "Siguiente estado / actualización",
@@ -2250,14 +2310,60 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
             format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option),
             key=f"alert_status_{selected_id}",
         )
-        comment = st.text_area("Comentario del cambio", key=f"alert_comment_{selected_id}")
+        st.caption(
+            "Campos sugeridos para completar la atención de la alerta. "
+            "Solo se guardan si existe esa columna en ESTATUS APARATOS."
+        )
+        extra_values: dict[str, Any] = {}
+        context_fields = get_alert_context_fields(
+            estatus_row, apparatus, current_status, new_status
+        )
+        if context_fields:
+            for start in range(0, len(context_fields), 2):
+                left, right = st.columns(2)
+                for container, column in zip(
+                    (left, right), context_fields[start : start + 2]
+                ):
+                    with container:
+                        extra_values[column] = render_edit_field(
+                            column,
+                            estatus_row.get(column, "") if not estatus_row.empty else "",
+                            key=f"alert_extra_{selected_id}_{column}",
+                            apparatus=apparatus,
+                            current_status=current_status,
+                        )
+        else:
+            st.info(
+                "No encontré columnas extra disponibles en ESTATUS APARATOS "
+                "para este pedido."
+            )
+
+        comment = st.text_area(
+            "Comentario adicional del cambio",
+            key=f"alert_comment_{selected_id}",
+            help=(
+                "Se suma en TIEMPOS_APARATOS, columna COMENTARIOS_CAMBIO, "
+                "después del texto automático del cambio de STATUS. También se muestra "
+                "en la tabla de esta pestaña para auditoría."
+            ),
+        )
+        st.info(
+            "COMENTARIOS_CAMBIO siempre conserva el texto automático del movimiento "
+            "(por ejemplo: Cambio de status desde app...). Si escribes aquí, se agrega "
+            "abajo como Comentario extra; NO modifica DETALLE COMENTARIOS del pedido."
+        )
         submitted = st.form_submit_button("💾 Actualizar pedido en alerta")
 
     if submitted:
         if new_status == current_status:
             st.info("Selecciona un status diferente para actualizar el pedido.")
             return
-        result = update_row_by_columna_1(selected_id, {STATUS_COLUMN: new_status})
+        changes: dict[str, Any] = {STATUS_COLUMN: new_status}
+        for column, value in extra_values.items():
+            previous_value = estatus_row.get(column, "") if not estatus_row.empty else ""
+            if not values_equivalent_for_column(column, previous_value, value):
+                changes[column] = clean_display_value(clean_cell(value))
+        result = update_row_by_columna_1(selected_id, changes)
         if not result["success"]:
             st.error(result["error"] or "No se pudo actualizar el pedido.")
             return
