@@ -51,9 +51,48 @@ TIEMPOS_HEADERS = [
     "ESTADO_ALERTA",
     "COMENTARIOS_CAMBIO",
     "FECHA_REGISTRO_LOG",
+    "PAGO_REQUERIDO",
+    "TIPO_PAGO_REQUERIDO",
+    "PAGO_ESTADO",
+    "PAGO_FECHA",
+    "PAGO_COMPROBANTE",
+    "PAGO_VALIDADO_POR",
+    "PUEDE_AVANZAR",
+    "MOTIVO_BLOQUEO",
+    "ARCHIVOS_ESTEFANO_URL",
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
+PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
+USER_TAB_STATUSES = {
+    "Estefano": ["REVISIÓN DE ARCHIVOS", "SOLICITUD DE CAMBIOS"],
+    "Xime": [
+        "EN PLANEACIÓN",
+        "REVISIÓN DISEÑO DOCTOR",
+        "SOLICITUD DE CAMBIOS",
+        "VOBO/ACEPTACIÓN PLANEACIÓN",
+    ],
+    "Pagos": ["PAGO PLANEACIÓN", "PAGO CONFECCIÓN"],
+    "Lesly": ["ELABORACIÓN PLATINA", "LISTO P/SINTERIZADO"],
+}
+USER_ALLOWED_TRANSITIONS = {
+    "Estefano": {
+        "REVISIÓN DE ARCHIVOS": ["EN PLANEACIÓN"],
+        "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN"],
+    },
+    "Xime": {
+        "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR"],
+        "REVISIÓN DISEÑO DOCTOR": ["SOLICITUD DE CAMBIOS", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+    },
+    "Pagos": {
+        "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
+        "PAGO CONFECCIÓN": [],
+    },
+    "Lesly": {
+        "ELABORACIÓN PLATINA": ["LISTO P/SINTERIZADO"],
+        "LISTO P/SINTERIZADO": ["EN SINTERIZADO Y HORNEADO"],
+    },
+}
 
 APARATO_OPTIONS = [
     "MSE",
@@ -393,6 +432,15 @@ FIELD_LABEL_DISPLAY = {
     "ESTADO_ALERTA": "🚨 ESTADO_ALERTA",
     "COMENTARIOS_CAMBIO": "💬 COMENTARIOS_CAMBIO",
     "FECHA_REGISTRO_LOG": "🗓️ FECHA_REGISTRO_LOG",
+    "PAGO_REQUERIDO": "💳 PAGO_REQUERIDO",
+    "TIPO_PAGO_REQUERIDO": "🏷️ TIPO_PAGO_REQUERIDO",
+    "PAGO_ESTADO": "✅ PAGO_ESTADO",
+    "PAGO_FECHA": "📅 PAGO_FECHA",
+    "PAGO_COMPROBANTE": "🔗 PAGO_COMPROBANTE",
+    "PAGO_VALIDADO_POR": "👤 PAGO_VALIDADO_POR",
+    "PUEDE_AVANZAR": "➡️ PUEDE_AVANZAR",
+    "MOTIVO_BLOQUEO": "⛔ MOTIVO_BLOQUEO",
+    "ARCHIVOS_ESTEFANO_URL": "📁 ARCHIVOS_ESTEFANO_URL",
     "REGISTRO_ACTIVO": "🟢 REGISTRO_ACTIVO",
     "ESTADO_ALERTA_VISUAL": "🚦 ESTADO_ALERTA_VISUAL",
     "HORAS_TRANSCURRIDAS": "⌛ HORAS_TRANSCURRIDAS",
@@ -937,7 +985,11 @@ SPECIAL_TRANSITIONS = {
     "ESPERANDO STL PSM DOCTOR": ["STL PSM ENVIADO"],
     "STL PSM ENVIADO": ["EN DISEÑO"],
     "EN DISEÑO": ["PAGO CONFECCIÓN"],
+    "ELABORACIÓN PLATINA": ["LISTO P/SINTERIZADO"],
+    "LISTO P/SINTERIZADO": ["EN SINTERIZADO Y HORNEADO"],
+    "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
 }
+
 
 
 def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
@@ -970,6 +1022,183 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
     } and "CANCELO" not in allowed:
         allowed.append("CANCELO")
     return allowed
+
+
+
+def get_current_user() -> str:
+    """Devuelve el usuario seleccionado en sidebar."""
+
+    return st.session_state.get("current_user", ACTIVE_USER_LABEL)
+
+
+def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
+    """Admin puede editar todo; cada usuario solo su pestaña."""
+
+    return current_user == "Admin" or current_user == tab_owner
+
+
+def is_transition_allowed_for_user(
+    current_user: str,
+    previous_status: str,
+    new_status: str,
+    apparatus: str,
+) -> bool:
+    """Valida si el usuario tiene permiso operativo para cambiar STATUS."""
+
+    previous_status = normalize_status_alias(previous_status)
+    new_status = normalize_status_alias(new_status)
+    if current_user == "Admin" or previous_status == new_status:
+        return True
+
+    user_rules = USER_ALLOWED_TRANSITIONS.get(current_user, {})
+    allowed_targets = list(user_rules.get(previous_status, []))
+    if current_user == "Pagos" and previous_status == "PAGO CONFECCIÓN":
+        allowed_targets = get_allowed_next_statuses(apparatus, previous_status)
+    return new_status in allowed_targets
+
+
+def get_payment_defaults(status: str) -> dict[str, str]:
+    """Define los campos de pago que se guardan en TIEMPOS_APARATOS."""
+
+    normalized_status = normalize_status_alias(status)
+    if normalized_status == "PAGO PLANEACIÓN":
+        return {
+            "PAGO_REQUERIDO": "Sí",
+            "TIPO_PAGO_REQUERIDO": "Planeación",
+            "PAGO_ESTADO": "Pendiente",
+            "PAGO_FECHA": "",
+            "PAGO_COMPROBANTE": "",
+            "PAGO_VALIDADO_POR": "",
+            "PUEDE_AVANZAR": "No",
+            "MOTIVO_BLOQUEO": "Pendiente pago de planeación",
+            "ARCHIVOS_ESTEFANO_URL": "",
+        }
+    if normalized_status == "PAGO CONFECCIÓN":
+        return {
+            "PAGO_REQUERIDO": "Sí",
+            "TIPO_PAGO_REQUERIDO": "Confección",
+            "PAGO_ESTADO": "Pendiente",
+            "PAGO_FECHA": "",
+            "PAGO_COMPROBANTE": "",
+            "PAGO_VALIDADO_POR": "",
+            "PUEDE_AVANZAR": "No",
+            "MOTIVO_BLOQUEO": "Pendiente pago de confección",
+            "ARCHIVOS_ESTEFANO_URL": "",
+        }
+    return {
+        "PAGO_REQUERIDO": "No",
+        "TIPO_PAGO_REQUERIDO": "",
+        "PAGO_ESTADO": "",
+        "PAGO_FECHA": "",
+        "PAGO_COMPROBANTE": "",
+        "PAGO_VALIDADO_POR": "",
+        "PUEDE_AVANZAR": "Sí",
+        "MOTIVO_BLOQUEO": "",
+        "ARCHIVOS_ESTEFANO_URL": "",
+    }
+
+
+def get_active_tiempo_row(identifier: str) -> tuple[int | None, dict[str, Any]]:
+    """Busca el registro activo de TIEMPOS_APARATOS para Columna 1."""
+
+    worksheet = get_worksheet(SHEET_TIEMPOS)
+    values = worksheet.get_all_values()
+    if len(values) <= 1:
+        return None, {}
+    headers = values[0]
+    id_position = get_header_position(headers, ID_COLUMN)
+    fecha_fin_position = get_header_position(headers, "FECHA_FIN")
+    if id_position is None or fecha_fin_position is None:
+        return None, {}
+    for row_number, row in enumerate(values[1:], start=2):
+        row_identifier = row[id_position - 1] if id_position - 1 < len(row) else ""
+        fecha_fin = row[fecha_fin_position - 1] if fecha_fin_position - 1 < len(row) else ""
+        if clean_cell(row_identifier).strip() == clean_cell(identifier).strip() and not clean_cell(fecha_fin).strip():
+            return row_number, {
+                header: row[index] if index < len(row) else ""
+                for index, header in enumerate(headers)
+            }
+    return None, {}
+
+
+def update_active_tiempo_row(identifier: str, changes: dict[str, Any]) -> bool:
+    """Actualiza columnas del registro activo en TIEMPOS_APARATOS."""
+
+    ensure_tiempos_headers()
+    worksheet = get_worksheet(SHEET_TIEMPOS)
+    values = worksheet.get_all_values()
+    if len(values) <= 1:
+        return False
+    headers = values[0]
+    row_number, _ = get_active_tiempo_row(identifier)
+    if row_number is None:
+        return False
+    updates = []
+    for column, value in changes.items():
+        column_position = get_header_position(headers, column)
+        if column_position is not None:
+            updates.append(Cell(row_number, column_position, prepare_sheet_value(value)))
+    if not updates:
+        return False
+    worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    st.cache_data.clear()
+    return True
+
+
+def can_advance_from_payment(identifier: str, current_status: str) -> tuple[bool, str]:
+    """Bloquea avances desde pagos si no están aprobados en TIEMPOS_APARATOS."""
+
+    if normalize_status_alias(current_status) not in PAYMENT_STATUSES:
+        return True, ""
+    _, active_row = get_active_tiempo_row(identifier)
+    if not active_row:
+        return False, "No encontré el registro activo de pago en TIEMPOS_APARATOS."
+    if clean_cell(active_row.get("PAGO_ESTADO", "")).strip() != "Aprobado" or clean_cell(active_row.get("PUEDE_AVANZAR", "")).strip() != "Sí":
+        return False, "No puedes avanzar este caso porque el pago sigue pendiente o rechazado."
+    return True, ""
+
+
+def validate_status_change(
+    *,
+    identifier: str,
+    apparatus: str,
+    previous_status: str,
+    new_status: str,
+    current_user: str,
+) -> tuple[bool, str]:
+    """Aplica flujo, permisos y bloqueo por pagos antes de guardar STATUS."""
+
+    previous_status = normalize_status_alias(previous_status)
+    new_status = normalize_status_alias(new_status)
+    if new_status == previous_status:
+        return True, ""
+    allowed_statuses = get_allowed_next_statuses(apparatus, previous_status)
+    if new_status not in allowed_statuses:
+        return False, (
+            f"STATUS no permitido para {apparatus}: {previous_status} → {new_status}. "
+            f"Opciones permitidas: {', '.join(allowed_statuses)}."
+        )
+    if not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
+        return False, "El usuario actual no tiene permiso para realizar este cambio de STATUS."
+    can_advance, reason = can_advance_from_payment(identifier, previous_status)
+    if not can_advance:
+        return False, reason
+    return True, ""
+
+
+def get_latest_estefano_files(identifier: str) -> str:
+    """Devuelve el último link de archivos de Estefano guardado en TIEMPOS_APARATOS."""
+
+    tiempos_df = read_sheet_df(SHEET_TIEMPOS)
+    if tiempos_df.empty or ID_COLUMN not in tiempos_df.columns or "ARCHIVOS_ESTEFANO_URL" not in tiempos_df.columns:
+        return ""
+    matches = tiempos_df[
+        (tiempos_df[ID_COLUMN].astype(str).str.strip() == clean_cell(identifier).strip())
+        & (tiempos_df["ARCHIVOS_ESTEFANO_URL"].astype(str).str.strip() != "")
+    ]
+    if matches.empty:
+        return ""
+    return clean_cell(matches.iloc[-1].get("ARCHIVOS_ESTEFANO_URL", "")).strip()
 
 def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
     """Intenta construir un datetime desde fecha y hora de la hoja de tiempos."""
@@ -1393,7 +1622,7 @@ def register_status_change(
         "STATUS": new_status,
         "STATUS_SIGUIENTE": "",
         "RESPONSABLE": "",
-        "USUARIO": ACTIVE_USER_LABEL,
+        "USUARIO": get_current_user(),
         "FECHA_INICIO": now.strftime("%Y-%m-%d"),
         "HORA_INICIO": now.strftime("%H:%M:%S"),
         "FECHA_LIMITE": fecha_limite,
@@ -1406,6 +1635,7 @@ def register_status_change(
         "ESTADO_ALERTA": estado_alerta,
         "COMENTARIOS_CAMBIO": combined_comment,
         "FECHA_REGISTRO_LOG": now.strftime("%Y-%m-%d %H:%M:%S"),
+        **get_payment_defaults(new_status),
     }
     tiempos_worksheet = get_worksheet(SHEET_TIEMPOS)
     current_headers = tiempos_worksheet.row_values(1) or TIEMPOS_HEADERS
@@ -1991,7 +2221,7 @@ def render_nuevo_pedido_tab() -> None:
     st.rerun()
 
 
-def render_estatus_tab() -> None:
+def render_estatus_tab(current_user: str = "Admin") -> None:
     st.subheader("📋 Seguimiento de pedidos")
     scroll_to_feedback_anchor("estatus_scroll_to_feedback", "estatus-feedback-anchor")
     render_success_feedback(
@@ -2112,13 +2342,15 @@ def render_estatus_tab() -> None:
         )
 
         if STATUS_COLUMN in canonical_changes and previous_status != new_status:
-            allowed_statuses = get_allowed_next_statuses(apparatus, previous_status)
-            if new_status not in allowed_statuses:
-                allowed_text = ", ".join(allowed_statuses)
-                st.error(
-                    f"STATUS no permitido para {apparatus}: {previous_status} → {new_status}. "
-                    f"Opciones permitidas: {allowed_text}."
-                )
+            is_valid, validation_message = validate_status_change(
+                identifier=selected_id,
+                apparatus=apparatus,
+                previous_status=previous_status,
+                new_status=new_status,
+                current_user=current_user,
+            )
+            if not is_valid:
+                st.error(validation_message)
                 return
 
         update_result = update_row_by_columna_1(selected_id, changes)
@@ -2163,7 +2395,7 @@ def render_estatus_tab() -> None:
             )
 
 
-def render_tiempos_tab() -> None:
+def render_tiempos_tab(current_user: str = "Admin") -> None:
     st.subheader("⏱️ Tiempos y Alertas")
     tiempos_df = build_tiempos_runtime_df()
 
@@ -2190,7 +2422,7 @@ def render_tiempos_tab() -> None:
         },
     )
 
-    render_alert_order_updater(tiempos_df)
+    render_alert_order_updater(tiempos_df, current_user)
 
 
 def get_alert_context_fields(
@@ -2235,7 +2467,7 @@ def get_alert_context_fields(
             fields.append(sheet_column)
     return fields
 
-def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
+def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Admin") -> None:
     """Permite abrir un pedido en alerta y avanzar su siguiente status."""
 
     alert_states = {"Próximo a vencer", "Atrasado"}
@@ -2359,6 +2591,16 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame) -> None:
             previous_value = estatus_row.get(column, "") if not estatus_row.empty else ""
             if not values_equivalent_for_column(column, previous_value, value):
                 changes[column] = clean_display_value(clean_cell(value))
+        is_valid, validation_message = validate_status_change(
+            identifier=selected_id,
+            apparatus=apparatus,
+            previous_status=current_status,
+            new_status=new_status,
+            current_user=current_user,
+        )
+        if not is_valid:
+            st.error(validation_message)
+            return
         result = update_row_by_columna_1(selected_id, changes)
         if not result["success"]:
             st.error(result["error"] or "No se pudo actualizar el pedido.")
@@ -2448,6 +2690,210 @@ def render_procesos_tab() -> None:
     )
 
 
+
+
+def filter_estatus_by_status(statuses: list[str]) -> pd.DataFrame:
+    """Filtra ESTATUS APARATOS por una lista canónica de STATUS."""
+
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    if estatus_df.empty or STATUS_COLUMN not in estatus_df.columns:
+        return pd.DataFrame()
+    status_norms = {normalize_text(status) for status in statuses}
+    return estatus_df[
+        estatus_df[STATUS_COLUMN].apply(lambda value: normalize_text(normalize_status_alias(value)) in status_norms)
+    ].copy()
+
+
+def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Series | None]:
+    """Muestra tabla y selector común para pestañas por usuario."""
+
+    if cases_df.empty:
+        st.info("No hay casos para esta pestaña.")
+        return "", None
+    st.caption(f"Registros encontrados: {len(cases_df)}")
+    st.dataframe(
+        cases_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=build_dataframe_column_config(cases_df),
+    )
+    ids = [clean_cell(value).strip() for value in cases_df[ID_COLUMN].tolist() if clean_cell(value).strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        st.warning("No hay registros con Columna 1 para seleccionar.")
+        return "", None
+    labels = {}
+    for _, row in cases_df.iterrows():
+        identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+        if identifier and identifier not in labels:
+            labels[identifier] = (
+                f"🆔 {identifier} | {display_selectbox_value(STATUS_COLUMN, clean_cell(row.get(STATUS_COLUMN, '')).strip())} | "
+                f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', '')).strip()} | 🙂 {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()}"
+            )
+    selected_id = st.selectbox("Selecciona Columna 1", ids, format_func=lambda option: labels.get(option, option), key=key)
+    selected_row = cases_df[cases_df[ID_COLUMN].astype(str).str.strip() == selected_id].iloc[0]
+    return selected_id, selected_row
+
+
+def advance_case_status(
+    *,
+    identifier: str,
+    row: pd.Series,
+    new_status: str,
+    current_user: str,
+    comment: str = "",
+) -> bool:
+    """Actualiza STATUS en ESTATUS y registra cierre/apertura en TIEMPOS."""
+
+    apparatus = clean_display_value(clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))
+    previous_status = normalize_status_alias(clean_cell(get_row_value_by_column(row, STATUS_COLUMN, "")))
+    new_status = normalize_status_alias(new_status)
+    is_valid, validation_message = validate_status_change(
+        identifier=identifier,
+        apparatus=apparatus,
+        previous_status=previous_status,
+        new_status=new_status,
+        current_user=current_user,
+    )
+    if not is_valid:
+        st.error(validation_message)
+        return False
+    result = update_row_by_columna_1(identifier, {STATUS_COLUMN: new_status})
+    if not result["success"]:
+        st.error(result["error"] or "No se pudo actualizar STATUS.")
+        return False
+    register_status_change(
+        identifier=identifier,
+        apparatus=apparatus,
+        previous_status=previous_status,
+        new_status=new_status,
+        change_comment=comment,
+    )
+    st.cache_data.clear()
+    st.success(f"Caso {identifier} actualizado a {new_status}.")
+    return True
+
+
+def render_estefano_tab(current_user: str) -> None:
+    st.subheader("📥 Estefano")
+    can_edit = user_can_edit_tab(current_user, "Estefano")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
+    selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
+    if row is None:
+        return
+    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    with st.form(f"estefano_form_{selected_id}"):
+        file_url = st.text_input("Link de archivos subidos/corregidos", key=f"estefano_url_{selected_id}", disabled=not can_edit)
+        submitted = st.form_submit_button("📤 Guardar archivos y enviar a EN PLANEACIÓN", disabled=not can_edit)
+    if submitted:
+        if not file_url.strip():
+            st.error("Agrega el link de archivos antes de avanzar.")
+            return
+        updated = update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": file_url.strip()})
+        if not updated:
+            st.warning("No encontré registro activo; el link se guardará en el nuevo registro de tiempo.")
+        if advance_case_status(identifier=selected_id, row=row, new_status="EN PLANEACIÓN", current_user=current_user, comment="Archivos de Estefano: " + file_url.strip()):
+            update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": file_url.strip()})
+            st.rerun()
+
+
+def render_xime_tab(current_user: str) -> None:
+    st.subheader("🧠 Xime")
+    can_edit = user_can_edit_tab(current_user, "Xime")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Xime"])
+    selected_id, row = render_case_selector(cases_df, "xime_case_selector")
+    if row is None:
+        return
+    files_url = get_latest_estefano_files(selected_id)
+    if files_url:
+        st.markdown(f"**Archivos Estefano:** {files_url}")
+    else:
+        st.info("No hay link de archivos de Estefano en TIEMPOS_APARATOS.")
+    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    allowed_targets = [status for status in get_allowed_next_statuses(clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")), current_status) if status != current_status]
+    xime_targets = [status for status in allowed_targets if is_transition_allowed_for_user("Xime", current_status, status, clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))]
+    new_status = st.selectbox("Siguiente STATUS", xime_targets or allowed_targets or [current_status], format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option), disabled=not can_edit)
+    comment = st.text_area("Comentario de revisión", disabled=not can_edit)
+    if st.button("💾 Guardar cambio Xime", disabled=not can_edit):
+        if advance_case_status(identifier=selected_id, row=row, new_status=new_status, current_user=current_user, comment=comment):
+            st.rerun()
+
+
+def render_pagos_tab(current_user: str) -> None:
+    st.subheader("💳 Pagos")
+    can_edit = user_can_edit_tab(current_user, "Pagos")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Pagos"])
+    selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
+    if row is None:
+        return
+    row_number, active_payment = get_active_tiempo_row(selected_id)
+    if not active_payment:
+        st.error("No encontré registro activo en TIEMPOS_APARATOS para este pago.")
+        return
+    st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
+    comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit)
+    col_approve, col_reject = st.columns(2)
+    with col_approve:
+        if st.button("✅ Aprobar pago", disabled=not can_edit):
+            now = app_now().strftime("%Y-%m-%d %H:%M:%S")
+            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Aprobado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": comprobante_url.strip(), "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "Sí", "MOTIVO_BLOQUEO": ""})
+            st.success("Pago aprobado. Ya puedes avanzar al siguiente proceso.")
+            st.rerun()
+    with col_reject:
+        if st.button("❌ Rechazar pago", disabled=not can_edit):
+            now = app_now().strftime("%Y-%m-%d %H:%M:%S")
+            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Rechazado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": comprobante_url.strip(), "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "No", "MOTIVO_BLOQUEO": "Pago rechazado"})
+            st.warning("Pago rechazado.")
+            st.rerun()
+    can_advance, reason = can_advance_from_payment(selected_id, get_row_value_by_column(row, STATUS_COLUMN, ""))
+    if can_advance:
+        current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+        apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
+        if current_status == "PAGO PLANEACIÓN":
+            next_status = "EN PLANEACIÓN"
+        else:
+            options = [status for status in get_allowed_next_statuses(apparatus, current_status) if status != current_status and status != "CANCELO"]
+            next_status = options[0] if options else current_status
+        if st.button(f"➡️ Avanzar al siguiente proceso: {next_status}", disabled=not can_edit):
+            if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user, comment="Avance posterior a aprobación de pago"):
+                st.rerun()
+    else:
+        st.info(reason)
+
+
+def render_lesly_tab(current_user: str) -> None:
+    st.subheader("🖨️ Lesly")
+    can_edit = user_can_edit_tab(current_user, "Lesly")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Lesly"])
+    selected_id, row = render_case_selector(cases_df, "lesly_case_selector")
+    if row is None:
+        return
+    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    if st.button("🖨️ Marcar mandar a imprimir", disabled=not can_edit):
+        update_active_tiempo_row(selected_id, {"COMENTARIOS_CAMBIO": "Mandar a imprimir marcado por Lesly"})
+        st.success("Marcado para impresión.")
+    next_status = "LISTO P/SINTERIZADO" if current_status == "ELABORACIÓN PLATINA" else "EN SINTERIZADO Y HORNEADO"
+    if st.button(f"➡️ Cambiar a {next_status}", disabled=not can_edit):
+        if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user):
+            st.rerun()
+
+
+def render_alertas_tab() -> None:
+    render_tiempos_tab("Admin")
+
+
+def render_todos_tab(current_user: str) -> None:
+    render_estatus_tab(current_user)
+
+
 # ==============================
 # 🚀 APP STREAMLIT
 # ==============================
@@ -2466,23 +2912,49 @@ if st.button("🔄 Recargar datos", type="secondary"):
     st.rerun()
 
 try:
+    current_user = st.sidebar.selectbox(
+        "Usuario",
+        ["Estefano", "Xime", "Pagos", "Lesly", "Admin"],
+        key="current_user",
+    )
     ensure_tiempos_headers()
     render_global_alert_dashboard()
-    tab_nuevo, tab_seguimiento, tab_tiempos, tab_procesos = st.tabs(
+    (
+        tab_estefano,
+        tab_xime,
+        tab_pagos,
+        tab_lesly,
+        tab_alertas,
+        tab_todos,
+        tab_nuevo,
+        tab_procesos,
+    ) = st.tabs(
         [
+            "📥 Estefano",
+            "🧠 Xime",
+            "💳 Pagos",
+            "🖨️ Lesly",
+            "⏱️ Alertas",
+            "📋 Todos",
             "➕ Nuevo pedido",
-            "📋 Seguimiento de pedidos",
-            "⏱️ Tiempos y Alertas",
             "⚙️ Procesos por Aparato",
         ]
     )
 
+    with tab_estefano:
+        render_estefano_tab(current_user)
+    with tab_xime:
+        render_xime_tab(current_user)
+    with tab_pagos:
+        render_pagos_tab(current_user)
+    with tab_lesly:
+        render_lesly_tab(current_user)
+    with tab_alertas:
+        render_alertas_tab()
+    with tab_todos:
+        render_todos_tab(current_user)
     with tab_nuevo:
         render_nuevo_pedido_tab()
-    with tab_seguimiento:
-        render_estatus_tab()
-    with tab_tiempos:
-        render_tiempos_tab()
     with tab_procesos:
         render_procesos_tab()
 except Exception as exc:
