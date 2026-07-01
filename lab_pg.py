@@ -1,10 +1,12 @@
 import json
 import math
 import unicodedata
+from pathlib import PurePosixPath
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
+import boto3
 import gspread
 import pandas as pd
 import streamlit as st
@@ -60,6 +62,9 @@ TIEMPOS_HEADERS = [
     "PUEDE_AVANZAR",
     "MOTIVO_BLOQUEO",
     "ARCHIVOS_ESTEFANO_URL",
+    "FECHA_IMPRESION",
+    "HORA_IMPRESION",
+    "USUARIO_IMPRESION",
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
@@ -89,8 +94,8 @@ USER_ALLOWED_TRANSITIONS = {
         "PAGO CONFECCIÓN": [],
     },
     "Lesly": {
-        "ELABORACIÓN PLATINA": ["LISTO P/SINTERIZADO"],
-        "LISTO P/SINTERIZADO": ["EN SINTERIZADO Y HORNEADO"],
+        "LISTO P/SINTERIZADO": ["ELABORACIÓN PLATINA"],
+        "ELABORACIÓN PLATINA": ["EN SINTERIZADO Y HORNEADO"],
     },
 }
 
@@ -1072,6 +1077,9 @@ def get_payment_defaults(status: str) -> dict[str, str]:
             "PUEDE_AVANZAR": "No",
             "MOTIVO_BLOQUEO": "Pendiente pago de planeación",
             "ARCHIVOS_ESTEFANO_URL": "",
+            "FECHA_IMPRESION": "",
+            "HORA_IMPRESION": "",
+            "USUARIO_IMPRESION": "",
         }
     if normalized_status == "PAGO CONFECCIÓN":
         return {
@@ -1084,6 +1092,9 @@ def get_payment_defaults(status: str) -> dict[str, str]:
             "PUEDE_AVANZAR": "No",
             "MOTIVO_BLOQUEO": "Pendiente pago de confección",
             "ARCHIVOS_ESTEFANO_URL": "",
+            "FECHA_IMPRESION": "",
+            "HORA_IMPRESION": "",
+            "USUARIO_IMPRESION": "",
         }
     return {
         "PAGO_REQUERIDO": "No",
@@ -1095,6 +1106,9 @@ def get_payment_defaults(status: str) -> dict[str, str]:
         "PUEDE_AVANZAR": "Sí",
         "MOTIVO_BLOQUEO": "",
         "ARCHIVOS_ESTEFANO_URL": "",
+        "FECHA_IMPRESION": "",
+        "HORA_IMPRESION": "",
+        "USUARIO_IMPRESION": "",
     }
 
 
@@ -2774,6 +2788,59 @@ def advance_case_status(
     return True
 
 
+def get_aws_secret_value(key: str, default: Any = "") -> Any:
+    """Lee credenciales AWS desde st.secrets, soportando claves raíz o sección [aws]."""
+
+    if key in st.secrets:
+        return st.secrets.get(key, default)
+    aws_config = st.secrets.get("aws", {}) if hasattr(st, "secrets") else {}
+    if hasattr(aws_config, "get"):
+        return aws_config.get(key, default)
+    return default
+
+
+def upload_estefano_files_to_s3(identifier: str, uploaded_files: list[Any]) -> list[str]:
+    """Sube archivos de Estefano a S3 y devuelve URLs públicas configuradas o S3 keys."""
+
+    if not uploaded_files:
+        return []
+
+    aws_access_key_id = get_aws_secret_value("aws_access_key_id")
+    aws_secret_access_key = get_aws_secret_value("aws_secret_access_key")
+    aws_region = get_aws_secret_value("aws_region")
+    bucket_name = get_aws_secret_value("s3_bucket_name")
+    if not all([aws_access_key_id, aws_secret_access_key, aws_region, bucket_name]):
+        raise ValueError("Faltan credenciales/configuración de S3 en st.secrets.")
+
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        region_name=aws_region,
+    )
+    safe_identifier = clean_cell(identifier).strip().replace("/", "_") or "sin_identificador"
+    timestamp = app_now().strftime("%Y%m%d_%H%M%S")
+    uploaded_locations: list[str] = []
+    public_urls_setting = get_aws_secret_value("s3_public_urls", False)
+    use_public_urls = str(public_urls_setting).strip().lower() in {"1", "true", "yes", "sí", "si"}
+
+    for uploaded_file in uploaded_files:
+        original_name = PurePosixPath(uploaded_file.name).name
+        key = f"estefano/{safe_identifier}/{timestamp}_{original_name}"
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=uploaded_file.getvalue(),
+            ContentType=getattr(uploaded_file, "type", None) or "application/octet-stream",
+        )
+        if use_public_urls:
+            uploaded_locations.append(f"https://{bucket_name}.s3.{aws_region}.amazonaws.com/{key}")
+        else:
+            uploaded_locations.append(key)
+
+    return uploaded_locations
+
+
 def render_estefano_tab(current_user: str) -> None:
     st.subheader("📥 Estefano")
     can_edit = user_can_edit_tab(current_user, "Estefano")
@@ -2785,17 +2852,27 @@ def render_estefano_tab(current_user: str) -> None:
         return
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
     with st.form(f"estefano_form_{selected_id}"):
-        file_url = st.text_input("Link de archivos subidos/corregidos", key=f"estefano_url_{selected_id}", disabled=not can_edit)
+        uploaded_files = st.file_uploader("Subir archivos de Estefano", accept_multiple_files=True, disabled=not can_edit)
+        file_url = st.text_input("O pegar link de archivos", key=f"estefano_url_{selected_id}", disabled=not can_edit)
         submitted = st.form_submit_button("📤 Guardar archivos y enviar a EN PLANEACIÓN", disabled=not can_edit)
     if submitted:
-        if not file_url.strip():
-            st.error("Agrega el link de archivos antes de avanzar.")
+        if uploaded_files:
+            try:
+                saved_files = upload_estefano_files_to_s3(selected_id, uploaded_files)
+            except Exception as exc:
+                st.error(f"No se pudieron subir los archivos a S3: {exc}")
+                return
+            files_value = "\n".join(saved_files)
+        elif file_url.strip():
+            files_value = file_url.strip()
+        else:
+            st.error("Sube archivos o pega un link antes de avanzar.")
             return
-        updated = update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": file_url.strip()})
+        updated = update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
         if not updated:
-            st.warning("No encontré registro activo; el link se guardará en el nuevo registro de tiempo.")
-        if advance_case_status(identifier=selected_id, row=row, new_status="EN PLANEACIÓN", current_user=current_user, comment="Archivos de Estefano: " + file_url.strip()):
-            update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": file_url.strip()})
+            st.warning("No encontré registro activo; los archivos se guardarán en el nuevo registro de tiempo.")
+        if advance_case_status(identifier=selected_id, row=row, new_status="EN PLANEACIÓN", current_user=current_user, comment="Archivos de Estefano: " + files_value):
+            update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
             st.rerun()
 
 
@@ -2877,13 +2954,37 @@ def render_lesly_tab(current_user: str) -> None:
     if row is None:
         return
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
     if st.button("🖨️ Marcar mandar a imprimir", disabled=not can_edit):
-        update_active_tiempo_row(selected_id, {"COMENTARIOS_CAMBIO": "Mandar a imprimir marcado por Lesly"})
-        st.success("Marcado para impresión.")
-    next_status = "LISTO P/SINTERIZADO" if current_status == "ELABORACIÓN PLATINA" else "EN SINTERIZADO Y HORNEADO"
-    if st.button(f"➡️ Cambiar a {next_status}", disabled=not can_edit):
+        now = app_now()
+        _, active_row = get_active_tiempo_row(selected_id)
+        existing_comment = clean_cell(active_row.get("COMENTARIOS_CAMBIO", "")).strip() if active_row else ""
+        print_comment = "Mandar a imprimir marcado por Lesly"
+        combined_comment = f"{existing_comment}\n{print_comment}" if existing_comment else print_comment
+        updated = update_active_tiempo_row(
+            selected_id,
+            {
+                "FECHA_IMPRESION": now.strftime("%Y-%m-%d"),
+                "HORA_IMPRESION": now.strftime("%H:%M:%S"),
+                "USUARIO_IMPRESION": current_user,
+                "COMENTARIOS_CAMBIO": combined_comment,
+            },
+        )
+        if updated:
+            st.success("Marcado para impresión con trazabilidad en TIEMPOS_APARATOS.")
+        else:
+            st.error("No encontré registro activo en TIEMPOS_APARATOS para guardar la trazabilidad de impresión.")
+    allowed_targets = [
+        status
+        for status in get_allowed_next_statuses(apparatus, current_status)
+        if status != current_status and is_transition_allowed_for_user("Lesly", current_status, status, apparatus)
+    ]
+    next_status = allowed_targets[0] if allowed_targets else ""
+    if next_status and st.button(f"➡️ Cambiar a {next_status}", disabled=not can_edit):
         if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user):
             st.rerun()
+    elif not next_status:
+        st.info("No hay un siguiente STATUS permitido para Lesly en este caso.")
 
 
 def render_alertas_tab() -> None:
