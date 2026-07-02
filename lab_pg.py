@@ -80,6 +80,16 @@ USER_TAB_STATUSES = {
     "Pagos": ["PAGO PLANEACIÓN", "PAGO CONFECCIÓN"],
     "Lesly": ["ELABORACIÓN PLATINA", "LISTO P/SINTERIZADO"],
 }
+APP_TAB_OPTIONS = {
+    "estefano": "📥 Estefano",
+    "xime": "🧠 Xime",
+    "pagos": "💳 Pagos",
+    "lesly": "🖨️ Lesly",
+    "alertas": "⏱️ Alertas",
+    "todos": "📋 Todos",
+    "nuevo": "➕ Nuevo pedido",
+    "procesos": "⚙️ Procesos por Aparato",
+}
 USER_ALLOWED_TRANSITIONS = {
     "Estefano": {
         "REVISIÓN DE ARCHIVOS": ["EN PLANEACIÓN"],
@@ -2995,6 +3005,37 @@ def render_todos_tab(current_user: str) -> None:
     render_estatus_tab(current_user)
 
 
+def render_active_app_tab(current_user: str) -> None:
+    """Renderiza una sola pestaña y conserva la selección durante los reruns."""
+
+    selected_tab = st.segmented_control(
+        "Pestaña activa",
+        options=list(APP_TAB_OPTIONS.keys()),
+        default="estefano",
+        format_func=lambda option: APP_TAB_OPTIONS[option],
+        key="active_app_tab",
+        label_visibility="collapsed",
+    )
+    selected_tab = selected_tab or "estefano"
+
+    if selected_tab == "estefano":
+        render_estefano_tab(current_user)
+    elif selected_tab == "xime":
+        render_xime_tab(current_user)
+    elif selected_tab == "pagos":
+        render_pagos_tab(current_user)
+    elif selected_tab == "lesly":
+        render_lesly_tab(current_user)
+    elif selected_tab == "alertas":
+        render_alertas_tab()
+    elif selected_tab == "todos":
+        render_todos_tab(current_user)
+    elif selected_tab == "nuevo":
+        render_nuevo_pedido_tab()
+    elif selected_tab == "procesos":
+        render_procesos_tab()
+
+
 # ==============================
 # 🚀 APP STREAMLIT
 # ==============================
@@ -3020,44 +3061,7 @@ try:
     )
     ensure_tiempos_headers()
     render_global_alert_dashboard()
-    (
-        tab_estefano,
-        tab_xime,
-        tab_pagos,
-        tab_lesly,
-        tab_alertas,
-        tab_todos,
-        tab_nuevo,
-        tab_procesos,
-    ) = st.tabs(
-        [
-            "📥 Estefano",
-            "🧠 Xime",
-            "💳 Pagos",
-            "🖨️ Lesly",
-            "⏱️ Alertas",
-            "📋 Todos",
-            "➕ Nuevo pedido",
-            "⚙️ Procesos por Aparato",
-        ]
-    )
-
-    with tab_estefano:
-        render_estefano_tab(current_user)
-    with tab_xime:
-        render_xime_tab(current_user)
-    with tab_pagos:
-        render_pagos_tab(current_user)
-    with tab_lesly:
-        render_lesly_tab(current_user)
-    with tab_alertas:
-        render_alertas_tab()
-    with tab_todos:
-        render_todos_tab(current_user)
-    with tab_nuevo:
-        render_nuevo_pedido_tab()
-    with tab_procesos:
-        render_procesos_tab()
+    render_active_app_tab(current_user)
 except Exception as exc:
     st.error("Ocurrió un problema al cargar la app.")
     st.exception(exc)
