@@ -1458,7 +1458,6 @@ NEW_ORDER_ESTATUS_FIELDS = [
     "VENDEDOR",
     "SERVICIO",
     "ARCHIVOS RECIBIDOS",
-    "PAGO",
     "DÍAS DE ENTREGA",
     "FECHA DE RECEPCIÓN",
     "FECHA PARA ENTREGA",
@@ -1515,6 +1514,35 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
     worksheet.update_cells(updates, value_input_option="USER_ENTERED")
     apply_estatus_row_styles(worksheet, headers, target_row, row_dict)
     return target_row
+
+
+def generate_unique_columna_1_id() -> str:
+    """Genera un ID único con formato DDMMAAAA-NNN para Columna 1."""
+
+    values = get_worksheet(SHEET_ESTATUS).get_all_values()
+    if len(values) < 2:
+        raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
+
+    headers = values[1]
+    id_position = get_header_position(headers, ID_COLUMN)
+    if id_position is None:
+        raise ValueError(f"No se encontró la columna {ID_COLUMN} en ESTATUS APARATOS.")
+
+    id_index = id_position - 1
+    existing_ids = {
+        clean_cell(row[id_index]).strip()
+        for row in values[2:]
+        if id_index < len(row) and clean_cell(row[id_index]).strip()
+    }
+    date_prefix = app_today().strftime("%d%m%Y")
+    sequence = 1
+    candidate = f"{date_prefix}-{sequence:03d}"
+
+    while candidate in existing_ids:
+        sequence += 1
+        candidate = f"{date_prefix}-{sequence:03d}"
+
+    return candidate
 
 
 def columna_1_exists(identifier: str) -> bool:
@@ -2102,9 +2130,9 @@ def render_nuevo_pedido_tab() -> None:
         col_left, col_right = st.columns(2)
 
         with col_left:
-            pedido_id = st.text_input(
-                display_field_label(ID_COLUMN, required=True),
-                key=f"nuevo_pedido_id_{form_version}",
+            st.info(
+                "El ID único de Columna 1 se generará automáticamente al guardar "
+                "con formato DDMMAAAA-NNN."
             )
             aparato = st.selectbox(
                 display_field_label("APARATO"),
@@ -2143,11 +2171,6 @@ def render_nuevo_pedido_tab() -> None:
                 ),
                 key=f"nuevo_pedido_archivos_{form_version}",
             )
-            pago = st.selectbox(
-                display_field_label("PAGO"),
-                build_display_selectbox_options("PAGO", PAGO_OPTIONS, ""),
-                key=f"nuevo_pedido_pago_{form_version}",
-            )
             fecha_recepcion = st.date_input(
                 display_field_label("FECHA DE RECEPCIÓN"),
                 value=app_today(),
@@ -2171,20 +2194,17 @@ def render_nuevo_pedido_tab() -> None:
     if not submitted:
         return
 
-    cleaned_identifier = clean_cell(pedido_id).strip()
-    if not cleaned_identifier:
-        st.error("Columna 1 es obligatoria.")
-        return
-
-    if columna_1_exists(cleaned_identifier):
-        st.error(f"Ya existe un pedido con Columna 1: {cleaned_identifier}")
+    try:
+        cleaned_identifier = generate_unique_columna_1_id()
+    except Exception as exc:
+        st.error("No se pudo generar automáticamente un ID único para Columna 1.")
+        st.exception(exc)
         return
 
     clean_aparato = clean_display_value(aparato)
     clean_vendedor = clean_display_value(vendedor)
     clean_servicio = clean_display_value(servicio)
     clean_archivos_recibidos = clean_display_value(archivos_recibidos)
-    clean_pago = clean_display_value(pago)
 
     default_flow = get_process_flow(clean_aparato)
     default_status = default_flow[0][0] if default_flow else ""
@@ -2199,7 +2219,6 @@ def render_nuevo_pedido_tab() -> None:
         "VENDEDOR": clean_vendedor,
         "SERVICIO": clean_servicio,
         "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
-        "PAGO": clean_pago,
         "DÍAS DE ENTREGA": int(dias_entrega),
         "FECHA DE RECEPCIÓN": format_sheet_date(fecha_recepcion),
         "FECHA PARA ENTREGA": format_sheet_date(fecha_para_entrega),
