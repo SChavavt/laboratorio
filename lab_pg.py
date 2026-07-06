@@ -70,21 +70,43 @@ TIEMPOS_HEADERS = [
 ACTIVE_USER_LABEL = "Usuario Streamlit"
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
 USER_TAB_STATUSES = {
-    "Estefano": ["REVISIÓN DE ARCHIVOS", "SOLICITUD DE CAMBIOS"],
-    "Xime": [
-        "EN PLANEACIÓN",
+    "Estefano": ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"],
+    "Jime": [
+        "ORDEN RECIBIDA",
+        "REVISIÓN DE ARCHIVOS",
+        "ESCANEO MAL (EN REPETICIÓN)",
+        "REALIZAR SOLICITUD PAGO",
+        "REALIZAR SOLICITUD PAGO PLANEACIÓN",
+        "PAGO PLANEACIÓN",
+        "PAGO CONFECCIÓN",
         "REVISIÓN DISEÑO DOCTOR",
-        "SOLICITUD DE CAMBIOS",
         "VOBO/ACEPTACIÓN PLANEACIÓN",
+        "SOLICITUD GUÍA PSM + PSM",
+        "PDTE ENVIAR GUÍA PSM + PSM",
+        "GUÍA PSM + PSM ENVIADA",
+        "ESPERANDO STL PSM DOCTOR",
+        "GENERACIÓN DE GUÍA",
+        "EMPACADO/LISTO P/ENVÍO",
+        "PRODUCTO ENVIADO",
+        "ENVÍO DE ENCUESTA",
     ],
     "Pagos": ["PAGO PLANEACIÓN", "PAGO CONFECCIÓN"],
-    "Lesly": ["ELABORACIÓN PLATINA", "LISTO P/SINTERIZADO"],
+    "Lesly": ["LISTO P/SINTERIZADO", "ELABORACIÓN PLATINA", "EN SINTERIZADO Y HORNEADO"],
+    "Vero": [
+        "LISTO P/CONFECCIÓN",
+        "PULIDO (EN CONFECCIÓN)",
+        "SOLDADURA (EN CONFECCIÓN)",
+        "ARENADO (EN CONFECCIÓN)",
+        "CONTROL DE CALIDAD Y FOTOEVIDENCIA",
+        "LISTO P/EMPAQUETADO",
+    ],
 }
 APP_TAB_OPTIONS = {
     "estefano": "📥 Estefano",
-    "xime": "🧠 Xime",
+    "jime": "📋 Jime",
     "pagos": "💳 Pagos",
     "lesly": "🖨️ Lesly",
+    "vero": "🛠️ Vero",
     "alertas": "⏱️ Alertas",
     "todos": "📋 Todos",
     "nuevo": "➕ Nuevo pedido",
@@ -92,12 +114,28 @@ APP_TAB_OPTIONS = {
 }
 USER_ALLOWED_TRANSITIONS = {
     "Estefano": {
-        "REVISIÓN DE ARCHIVOS": ["EN PLANEACIÓN"],
-        "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN"],
-    },
-    "Xime": {
         "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR"],
+        "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR"],
+        "STL PSM ENVIADO": ["EN DISEÑO"],
+        "EN DISEÑO": ["PAGO CONFECCIÓN"],
+    },
+    "Jime": {
+        "ORDEN RECIBIDA": ["REVISIÓN DE ARCHIVOS"],
+        "REVISIÓN DE ARCHIVOS": ["ESCANEO MAL (EN REPETICIÓN)", "REALIZAR SOLICITUD PAGO", "REALIZAR SOLICITUD PAGO PLANEACIÓN"],
+        "ESCANEO MAL (EN REPETICIÓN)": ["REVISIÓN DE ARCHIVOS", "REALIZAR SOLICITUD PAGO", "REALIZAR SOLICITUD PAGO PLANEACIÓN"],
+        "REALIZAR SOLICITUD PAGO": ["PAGO CONFECCIÓN"],
+        "REALIZAR SOLICITUD PAGO PLANEACIÓN": ["PAGO PLANEACIÓN"],
+        "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
         "REVISIÓN DISEÑO DOCTOR": ["SOLICITUD DE CAMBIOS", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+        "VOBO/ACEPTACIÓN PLANEACIÓN": ["PAGO CONFECCIÓN", "SOLICITUD GUÍA PSM + PSM"],
+        "PAGO CONFECCIÓN": [],
+        "SOLICITUD GUÍA PSM + PSM": ["PDTE ENVIAR GUÍA PSM + PSM"],
+        "PDTE ENVIAR GUÍA PSM + PSM": ["GUÍA PSM + PSM ENVIADA"],
+        "GUÍA PSM + PSM ENVIADA": ["ESPERANDO STL PSM DOCTOR"],
+        "ESPERANDO STL PSM DOCTOR": ["STL PSM ENVIADO"],
+        "GENERACIÓN DE GUÍA": ["EMPACADO/LISTO P/ENVÍO"],
+        "EMPACADO/LISTO P/ENVÍO": ["PRODUCTO ENVIADO"],
+        "PRODUCTO ENVIADO": ["ENVÍO DE ENCUESTA"],
     },
     "Pagos": {
         "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
@@ -106,6 +144,13 @@ USER_ALLOWED_TRANSITIONS = {
     "Lesly": {
         "LISTO P/SINTERIZADO": ["ELABORACIÓN PLATINA"],
         "ELABORACIÓN PLATINA": ["EN SINTERIZADO Y HORNEADO"],
+    },
+    "Vero": {
+        "LISTO P/CONFECCIÓN": ["PULIDO (EN CONFECCIÓN)"],
+        "PULIDO (EN CONFECCIÓN)": ["SOLDADURA (EN CONFECCIÓN)"],
+        "SOLDADURA (EN CONFECCIÓN)": ["ARENADO (EN CONFECCIÓN)"],
+        "ARENADO (EN CONFECCIÓN)": ["CONTROL DE CALIDAD Y FOTOEVIDENCIA"],
+        "CONTROL DE CALIDAD Y FOTOEVIDENCIA": ["LISTO P/EMPAQUETADO"],
     },
 }
 
@@ -119,85 +164,105 @@ APARATO_OPTIONS = [
     "DISTALIZADOR",
 ]
 
-DISTALIZADOR_FLOW = [
+PIEZA_SINTERIZADA_FLOW = [
+    ("ORDEN RECIBIDA", None),
     ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
     ("ESCANEO MAL (EN REPETICIÓN)", None),
+    ("REALIZAR SOLICITUD PAGO", None),
+    ("PAGO CONFECCIÓN", None),
+    ("EN PLANEACIÓN", "<3 dias"),
+    ("LISTO P/SINTERIZADO", "<1 dia"),
+    ("ELABORACIÓN PLATINA", "<1 hr"),
+    ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
+    ("LISTO P/CONFECCIÓN", "<1 dia"),
+    ("PULIDO (EN CONFECCIÓN)", "<3 hrs"),
+    ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
+    ("ARENADO (EN CONFECCIÓN)", "<1 hr"),
+    ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
+    ("LISTO P/EMPAQUETADO", "<1 hr"),
+    ("GENERACIÓN DE GUÍA", "<1 hr"),
+    ("EMPACADO/LISTO P/ENVÍO", "<1 hr"),
+    ("PRODUCTO ENVIADO", "<1 hr"),
+    ("ENVÍO DE ENCUESTA", "<3 dias"),
+]
+
+MSE_FLOW = [
+    ("ORDEN RECIBIDA", None),
+    ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+    ("ESCANEO MAL (EN REPETICIÓN)", None),
+    ("REALIZAR SOLICITUD PAGO PLANEACIÓN", None),
     ("PAGO PLANEACIÓN", None),
     ("EN PLANEACIÓN", "<3 dias"),
     ("REVISIÓN DISEÑO DOCTOR", None),
     ("SOLICITUD DE CAMBIOS", "<3 dias"),
     ("VOBO/ACEPTACIÓN PLANEACIÓN", None),
-    ("SOLICITUD GUIA PSM + PSM", "<2 hrs"),
-    ("PDTE ENVIAR GUIA PSM + PSM", "<1 dia"),
-    ("GUIA PSM + PSM ENVIADA", "<1 hr"),
-    ("ESPERANDO STL PSM DOCTOR", None),
-    ("STL PSM ENVIADO", None),
-    ("EN DISEÑO", "<3 dias"),
     ("PAGO CONFECCIÓN", None),
     ("LISTO P/SINTERIZADO", "<1 dia"),
     ("ELABORACIÓN PLATINA", "<1 hr"),
     ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
     ("LISTO P/CONFECCIÓN", "<1 dia"),
-    ("PULIDO / EN CONFECCIÓN", "<3 hrs"),
-    ("SOLDADURA / EN CONFECCIÓN", "<3 hrs"),
-    ("ARENADO / EN CONFECCIÓN", "<1 hr"),
+    ("PULIDO (EN CONFECCIÓN)", "<3 hrs"),
+    ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
+    ("ARENADO (EN CONFECCIÓN)", "<1 hr"),
     ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
     ("LISTO P/EMPAQUETADO", "<1 hr"),
     ("GENERACIÓN DE GUÍA", "<1 hr"),
-    ("EMPACADO/LISTO P/ENVIO", "<1 hr"),
+    ("EMPACADO/LISTO P/ENVÍO", "<1 hr"),
     ("PRODUCTO ENVIADO", "<1 hr"),
-    ("ENVIO DE ENCUESTA", "<3 dias"),
+    ("ENVÍO DE ENCUESTA", "<3 dias"),
+]
+
+DISTALIZADOR_FLOW = [
+    *MSE_FLOW[:9],
+    ("SOLICITUD GUÍA PSM + PSM", "<2 hrs"),
+    ("PDTE ENVIAR GUÍA PSM + PSM", "<1 dia"),
+    ("GUÍA PSM + PSM ENVIADA", "<1 hr"),
+    ("ESPERANDO STL PSM DOCTOR", None),
+    ("STL PSM ENVIADO", None),
+    ("EN DISEÑO", "<3 dias"),
+    *MSE_FLOW[9:],
 ]
 
 PROCESS_CONFIG = {
-    "PIEZA SINTERIZADA": [
-        ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
-        ("ESCANEO MAL (EN REPETICIÓN)", None),
-        ("PAGO CONFECCIÓN", None),
-        ("EN PLANEACIÓN", "<3 dias"),
-        ("LISTO P/SINTERIZADO", "<1 dia"),
-        ("ELABORACIÓN PLATINA", "<1 hr"),
-        ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
-        ("LISTO P/CONFECCIÓN", "<1 dia"),
-        ("PULIDO (EN CONFECCIÓN)", "<3 hrs"),
-        ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
-        ("ARENADO (EN CONFECCIÓN)", "<1 hr"),
-        ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
-        ("LISTO P/EMPAQUETADO", "<1 hr"),
-        ("GENERACIÓN DE GUÍA", "<1 hr"),
-        ("EMPACADO/LISTO P/ENVIO", "<1 hr"),
-        ("PRODUCTO ENVIADO", "<1 hr"),
-        ("ENVIO DE ENCUESTA", "<3 dias"),
-    ],
-    "MSE": [
-        ("REVISIÓN DE ARCHIVOS", "<5 hrs"), ("ESCANEO MAL (EN REPETICIÓN)", None),
-        ("PAGO PLANEACIÓN", None), ("EN PLANEACIÓN", "<3 dias"),
-        ("REVISIÓN DISEÑO DOCTOR", None), ("SOLICITUD DE CAMBIOS", "<3 dias"),
-        ("VOBO/ACEPTACIÓN PLANEACIÓN", None), ("PAGO CONFECCIÓN", None),
-        ("LISTO P/SINTERIZADO", "<1 dia"), ("ELABORACIÓN PLATINA", "<1 hr"),
-        ("EN SINTERIZADO Y HORNEADO", "<1 dia"), ("LISTO P/CONFECCIÓN", "<1 dia"),
-        ("PULIDO (EN CONFECCIÓN)", "<3 hrs"), ("SOLDADURA (EN CONFECCIÓN)", "<3 hrs"),
-        ("ARENADO (EN CONFECCIÓN)", "<1 hr"), ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
-        ("LISTO P/EMPAQUETADO", "<1 hr"), ("GENERACIÓN DE GUÍA", "<1 hr"),
-        ("EMPACADO/LISTO P/ENVIO", "<1 hr"), ("PRODUCTO ENVIADO", "<1 hr"),
-        ("ENVIO DE ENCUESTA", "<3 dias"),
-    ],
+    "PIEZA SINTERIZADA": PIEZA_SINTERIZADA_FLOW,
+    "MSE": MSE_FLOW,
     "DISTALIZADOR": DISTALIZADOR_FLOW,
     "TIGER": DISTALIZADOR_FLOW,
     "LEONE": DISTALIZADOR_FLOW,
-    "REVERSE": [
-        ("REVISIÓN DE ARCHIVOS", "<5 hrs"), ("ESCANEO MAL (EN REPETICIÓN)", None),
-        ("PAGO PLANEACIÓN", None), ("EN PLANEACIÓN", "<3 dias"),
-        ("REVISIÓN DISEÑO DOCTOR", None), ("SOLICITUD DE CAMBIOS", "<3 dias"),
-        ("VOBO/ACEPTACIÓN PLANEACIÓN", None), ("PAGO CONFECCIÓN", None),
-        ("LISTO P/SINTERIZADO", "<1 dia"), ("ELABORACIÓN PLATINA", "<1 hr"),
-        ("EN SINTERIZADO Y HORNEADO", "<1 dia"), ("LISTO P/CONFECCIÓN", "<1 dia"),
-        ("PULIDO / EN CONFECCIÓN", "<3 hrs"), ("SOLDADURA / EN CONFECCIÓN", "<3 hrs"),
-        ("ARENADO / EN CONFECCIÓN", "<1 hr"), ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"),
-        ("LISTO P/EMPAQUETADO", "<1 hr"), ("GENERACIÓN DE GUÍA", "<1 hr"),
-        ("EMPACADO/LISTO P/ENVIO", "<1 hr"), ("PRODUCTO ENVIADO", "<1 hr"),
-        ("ENVIO DE ENCUESTA", "<3 dias"),
-    ],
+    "REVERSE": MSE_FLOW,
+}
+
+PROCESS_RESPONSIBLES = {
+    "ORDEN RECIBIDA": "JIME",
+    "REVISIÓN DE ARCHIVOS": "JIME",
+    "ESCANEO MAL (EN REPETICIÓN)": "JIME",
+    "REALIZAR SOLICITUD PAGO": "JIME",
+    "REALIZAR SOLICITUD PAGO PLANEACIÓN": "JIME",
+    "PAGO PLANEACIÓN": "JIME",
+    "PAGO CONFECCIÓN": "JIME",
+    "REVISIÓN DISEÑO DOCTOR": "JIME",
+    "VOBO/ACEPTACIÓN PLANEACIÓN": "JIME",
+    "SOLICITUD GUÍA PSM + PSM": "JIME",
+    "PDTE ENVIAR GUÍA PSM + PSM": "JIME",
+    "GUÍA PSM + PSM ENVIADA": "JIME",
+    "ESPERANDO STL PSM DOCTOR": "JIME",
+    "GENERACIÓN DE GUÍA": "JIME",
+    "EMPACADO/LISTO P/ENVÍO": "JIME",
+    "PRODUCTO ENVIADO": "JIME",
+    "ENVÍO DE ENCUESTA": "JIME",
+    "EN PLANEACIÓN": "STEFANO",
+    "SOLICITUD DE CAMBIOS": "STEFANO",
+    "STL PSM ENVIADO": "STEFANO",
+    "EN DISEÑO": "STEFANO",
+    "LISTO P/SINTERIZADO": "LESLY",
+    "ELABORACIÓN PLATINA": "LESLY",
+    "EN SINTERIZADO Y HORNEADO": "LESLY",
+    "LISTO P/CONFECCIÓN": "VERO",
+    "PULIDO (EN CONFECCIÓN)": "VERO",
+    "SOLDADURA (EN CONFECCIÓN)": "VERO",
+    "ARENADO (EN CONFECCIÓN)": "VERO",
+    "CONTROL DE CALIDAD Y FOTOEVIDENCIA": "VERO",
+    "LISTO P/EMPAQUETADO": "VERO",
 }
 
 PROCESS_ALIASES = {"HYRAX": "PIEZA SINTERIZADA", "TRAMPA LINGUAL": "PIEZA SINTERIZADA"}
@@ -205,12 +270,20 @@ STATUS_ALIASES = {
     "REVISION DE ARCHIVOS": "REVISIÓN DE ARCHIVOS",
     "REVISIÓN DEL DISEÑO POR DR": "REVISIÓN DISEÑO DOCTOR",
     "ELABORACIÓN PLATINA BANDAS": "ELABORACIÓN PLATINA",
-    "PDTE ENVIO PSM + GUIA": "PDTE ENVIAR GUIA PSM + PSM",
-    "LISTO P/ENVÍO": "EMPACADO/LISTO P/ENVIO",
+    "PDTE ENVIO PSM + GUIA": "PDTE ENVIAR GUÍA PSM + PSM",
+    "SOLICITUD GUIA PSM + PSM": "SOLICITUD GUÍA PSM + PSM",
+    "PDTE ENVIAR GUIA PSM + PSM": "PDTE ENVIAR GUÍA PSM + PSM",
+    "GUIA PSM + PSM ENVIADA": "GUÍA PSM + PSM ENVIADA",
+    "PULIDO / EN CONFECCIÓN": "PULIDO (EN CONFECCIÓN)",
+    "SOLDADURA / EN CONFECCIÓN": "SOLDADURA (EN CONFECCIÓN)",
+    "ARENADO / EN CONFECCIÓN": "ARENADO (EN CONFECCIÓN)",
+    "EMPACADO/LISTO P/ENVIO": "EMPACADO/LISTO P/ENVÍO",
+    "ENVIO DE ENCUESTA": "ENVÍO DE ENCUESTA",
+    "LISTO P/ENVÍO": "EMPACADO/LISTO P/ENVÍO",
     "ENVIADO": "PRODUCTO ENVIADO",
     "ESPERANDO STL PSM": "ESPERANDO STL PSM DOCTOR",
 }
-TERMINAL_STATUSES = {"PRODUCTO ENVIADO", "CANCELO"}
+TERMINAL_STATUSES = {"ENVÍO DE ENCUESTA", "CANCELO"}
 PROCESS_STATUS_VALUES = [
     *list(dict.fromkeys(status for flow in PROCESS_CONFIG.values() for status, _ in flow)),
     "CANCELO",
@@ -261,6 +334,9 @@ APARATO_DISPLAY = {
 }
 
 STATUS_DISPLAY = {
+    "ORDEN RECIBIDA": "📥 ORDEN RECIBIDA",
+    "REALIZAR SOLICITUD PAGO": "🧾 REALIZAR SOLICITUD PAGO",
+    "REALIZAR SOLICITUD PAGO PLANEACIÓN": "🧾 REALIZAR SOLICITUD PAGO PLANEACIÓN",
     "REVISIÓN DE ARCHIVOS": "🔵 REVISIÓN DE ARCHIVOS",
     "ESCANEO MAL (EN REPETICIÓN)": "🔴 ESCANEO MAL (EN REPETICIÓN)",
     "PAGO PLANEACIÓN": "💳 PAGO PLANEACIÓN",
@@ -268,9 +344,9 @@ STATUS_DISPLAY = {
     "REVISIÓN DISEÑO DOCTOR": "⚪ REVISIÓN DISEÑO DOCTOR",
     "SOLICITUD DE CAMBIOS": "🟤 SOLICITUD DE CAMBIOS",
     "VOBO/ACEPTACIÓN PLANEACIÓN": "✅ VOBO/ACEPTACIÓN PLANEACIÓN",
-    "SOLICITUD GUIA PSM + PSM": "📩 SOLICITUD GUIA PSM + PSM",
-    "PDTE ENVIAR GUIA PSM + PSM": "🔴 PDTE ENVIAR GUIA PSM + PSM",
-    "GUIA PSM + PSM ENVIADA": "📤 GUIA PSM + PSM ENVIADA",
+    "SOLICITUD GUÍA PSM + PSM": "📩 SOLICITUD GUÍA PSM + PSM",
+    "PDTE ENVIAR GUÍA PSM + PSM": "🔴 PDTE ENVIAR GUÍA PSM + PSM",
+    "GUÍA PSM + PSM ENVIADA": "📤 GUÍA PSM + PSM ENVIADA",
     "ESPERANDO STL PSM DOCTOR": "🟨 ESPERANDO STL PSM DOCTOR",
     "STL PSM ENVIADO": "📁 STL PSM ENVIADO",
     "EN DISEÑO": "🎨 EN DISEÑO",
@@ -282,15 +358,15 @@ STATUS_DISPLAY = {
     "PULIDO (EN CONFECCIÓN)": "✨ PULIDO (EN CONFECCIÓN)",
     "SOLDADURA (EN CONFECCIÓN)": "🔥 SOLDADURA (EN CONFECCIÓN)",
     "ARENADO (EN CONFECCIÓN)": "💨 ARENADO (EN CONFECCIÓN)",
-    "PULIDO / EN CONFECCIÓN": "✨ PULIDO / EN CONFECCIÓN",
-    "SOLDADURA / EN CONFECCIÓN": "🔥 SOLDADURA / EN CONFECCIÓN",
-    "ARENADO / EN CONFECCIÓN": "💨 ARENADO / EN CONFECCIÓN",
+    "PULIDO (EN CONFECCIÓN)": "✨ PULIDO (EN CONFECCIÓN)",
+    "SOLDADURA (EN CONFECCIÓN)": "🔥 SOLDADURA / EN CONFECCIÓN",
+    "ARENADO (EN CONFECCIÓN)": "💨 ARENADO / EN CONFECCIÓN",
     "CONTROL DE CALIDAD Y FOTOEVIDENCIA": "📸 CONTROL DE CALIDAD Y FOTOEVIDENCIA",
     "LISTO P/EMPAQUETADO": "📦 LISTO P/EMPAQUETADO",
     "GENERACIÓN DE GUÍA": "🧾 GENERACIÓN DE GUÍA",
-    "EMPACADO/LISTO P/ENVIO": "🟢 EMPACADO/LISTO P/ENVIO",
+    "EMPACADO/LISTO P/ENVÍO": "🟢 EMPACADO/LISTO P/ENVÍO",
     "PRODUCTO ENVIADO": "✅ PRODUCTO ENVIADO",
-    "ENVIO DE ENCUESTA": "📝 ENVIO DE ENCUESTA",
+    "ENVÍO DE ENCUESTA": "📝 ENVÍO DE ENCUESTA",
     "FALTA PAGO COMPLETO": "🟣 FALTA PAGO COMPLETO",
     "CONFECCION EN PAUSA": "🚫 CONFECCION EN PAUSA",
     "CANCELO": "🔵 CANCELO",
@@ -352,6 +428,9 @@ SHEET_STYLE_COLORS = {
         "DISTALIZADOR": ("#444444", "#FFFFFF"),
     },
     STATUS_COLUMN: {
+        "ORDEN RECIBIDA": ("#DDEBFF", "#123A63"),
+        "REALIZAR SOLICITUD PAGO": ("#FFF3CD", "#7A4D00"),
+        "REALIZAR SOLICITUD PAGO PLANEACIÓN": ("#FFF3CD", "#7A4D00"),
         "REVISIÓN DE ARCHIVOS": ("#C9E6EC", "#2A5964"),
         "ESCANEO MAL (EN REPETICIÓN)": ("#F8B4B4", "#8A0000"),
         "PAGO PLANEACIÓN": ("#E9D8FD", "#553C9A"),
@@ -359,9 +438,9 @@ SHEET_STYLE_COLORS = {
         "REVISIÓN DISEÑO DOCTOR": ("#E6E6E6", "#333333"),
         "SOLICITUD DE CAMBIOS": ("#6B4B17", "#FFFFFF"),
         "VOBO/ACEPTACIÓN PLANEACIÓN": ("#B7F7C1", "#145A20"),
-        "SOLICITUD GUIA PSM + PSM": ("#BDE7FF", "#005EA8"),
-        "PDTE ENVIAR GUIA PSM + PSM": ("#FFA7A0", "#B00000"),
-        "GUIA PSM + PSM ENVIADA": ("#B7F7C1", "#145A20"),
+        "SOLICITUD GUÍA PSM + PSM": ("#BDE7FF", "#005EA8"),
+        "PDTE ENVIAR GUÍA PSM + PSM": ("#FFA7A0", "#B00000"),
+        "GUÍA PSM + PSM ENVIADA": ("#B7F7C1", "#145A20"),
         "ESPERANDO STL PSM DOCTOR": ("#FAD98A", "#6B4B17"),
         "STL PSM ENVIADO": ("#CDEAFE", "#0B4F6C"),
         "EN DISEÑO": ("#DCC4F4", "#6A3D8E"),
@@ -373,15 +452,15 @@ SHEET_STYLE_COLORS = {
         "PULIDO (EN CONFECCIÓN)": ("#D6F5D6", "#1B5E20"),
         "SOLDADURA (EN CONFECCIÓN)": ("#FFCCBC", "#BF360C"),
         "ARENADO (EN CONFECCIÓN)": ("#D7CCC8", "#4E342E"),
-        "PULIDO / EN CONFECCIÓN": ("#D6F5D6", "#1B5E20"),
-        "SOLDADURA / EN CONFECCIÓN": ("#FFCCBC", "#BF360C"),
-        "ARENADO / EN CONFECCIÓN": ("#D7CCC8", "#4E342E"),
+        "PULIDO (EN CONFECCIÓN)": ("#D6F5D6", "#1B5E20"),
+        "SOLDADURA (EN CONFECCIÓN)": ("#FFCCBC", "#BF360C"),
+        "ARENADO (EN CONFECCIÓN)": ("#D7CCC8", "#4E342E"),
         "CONTROL DE CALIDAD Y FOTOEVIDENCIA": ("#B3E5FC", "#01579B"),
         "LISTO P/EMPAQUETADO": ("#C8E6C9", "#1B5E20"),
         "GENERACIÓN DE GUÍA": ("#FFF9C4", "#795548"),
-        "EMPACADO/LISTO P/ENVIO": ("#8FD84A", "#000000"),
+        "EMPACADO/LISTO P/ENVÍO": ("#8FD84A", "#000000"),
         "PRODUCTO ENVIADO": ("#7BE84D", "#000000"),
-        "ENVIO DE ENCUESTA": ("#BBDEFB", "#0D47A1"),
+        "ENVÍO DE ENCUESTA": ("#BBDEFB", "#0D47A1"),
         "FALTA PAGO COMPLETO": ("#5D3B93", "#FFFFFF"),
         "CONFECCION EN PAUSA": ("#B80F0F", "#FFFFFF"),
         "CANCELO": ("#1F6DD1", "#000000"),
@@ -988,21 +1067,37 @@ def get_time_limit(apparatus: str, status: str) -> str | None:
     return None
 
 
+def get_process_responsible(status: str) -> str:
+    """Regresa el responsable explícito configurado para el proceso."""
+
+    normalized_status = normalize_status_alias(status)
+    status_norm = normalize_text(normalized_status)
+    for configured_status, responsible in PROCESS_RESPONSIBLES.items():
+        if normalize_text(configured_status) == status_norm:
+            return responsible
+    return ""
+
+
 SPECIAL_TRANSITIONS = {
-    "REVISIÓN DE ARCHIVOS": ["ESCANEO MAL (EN REPETICIÓN)", "PAGO PLANEACIÓN", "PAGO CONFECCIÓN", "EN PLANEACIÓN"],
-    "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR", "SOLICITUD DE CAMBIOS", "LISTO P/SINTERIZADO", "VOBO/ACEPTACIÓN PLANEACIÓN"],
+    "REVISIÓN DE ARCHIVOS": [
+        "ESCANEO MAL (EN REPETICIÓN)",
+        "REALIZAR SOLICITUD PAGO",
+        "REALIZAR SOLICITUD PAGO PLANEACIÓN",
+    ],
+    "ESCANEO MAL (EN REPETICIÓN)": [
+        "REVISIÓN DE ARCHIVOS",
+        "REALIZAR SOLICITUD PAGO",
+        "REALIZAR SOLICITUD PAGO PLANEACIÓN",
+    ],
+    "EN PLANEACIÓN": [
+        "REVISIÓN DISEÑO DOCTOR",
+        "SOLICITUD DE CAMBIOS",
+        "LISTO P/SINTERIZADO",
+        "VOBO/ACEPTACIÓN PLANEACIÓN",
+    ],
     "REVISIÓN DISEÑO DOCTOR": ["SOLICITUD DE CAMBIOS", "VOBO/ACEPTACIÓN PLANEACIÓN"],
     "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR", "VOBO/ACEPTACIÓN PLANEACIÓN"],
-    "VOBO/ACEPTACIÓN PLANEACIÓN": ["PAGO CONFECCIÓN", "SOLICITUD GUIA PSM + PSM", "LISTO P/SINTERIZADO"],
-    "SOLICITUD GUIA PSM + PSM": ["PDTE ENVIAR GUIA PSM + PSM"],
-    "PDTE ENVIAR GUIA PSM + PSM": ["GUIA PSM + PSM ENVIADA"],
-    "GUIA PSM + PSM ENVIADA": ["ESPERANDO STL PSM DOCTOR"],
-    "ESPERANDO STL PSM DOCTOR": ["STL PSM ENVIADO"],
-    "STL PSM ENVIADO": ["EN DISEÑO"],
-    "EN DISEÑO": ["PAGO CONFECCIÓN"],
-    "ELABORACIÓN PLATINA": ["LISTO P/SINTERIZADO"],
-    "LISTO P/SINTERIZADO": ["EN SINTERIZADO Y HORNEADO"],
-    "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
+    "VOBO/ACEPTACIÓN PLANEACIÓN": ["PAGO CONFECCIÓN", "SOLICITUD GUÍA PSM + PSM"],
 }
 
 
@@ -1673,7 +1768,7 @@ def register_status_change(
         "FASE_ORDEN": "",
         "STATUS": new_status,
         "STATUS_SIGUIENTE": "",
-        "RESPONSABLE": "",
+        "RESPONSABLE": get_process_responsible(new_status),
         "USUARIO": get_current_user(),
         "FECHA_INICIO": now.strftime("%Y-%m-%d"),
         "HORA_INICIO": now.strftime("%H:%M:%S"),
@@ -2718,6 +2813,7 @@ def render_procesos_tab() -> None:
                     "FASE_ORDEN": order,
                     "STATUS": status,
                     "TIEMPO_CONFIGURADO": time_limit or "",
+                    "RESPONSABLE": get_process_responsible(status),
                     "TIEMPO_MAXIMO_HORAS": ""
                     if parse_time_limit_to_business_hours(time_limit) is None
                     else f"{parse_time_limit_to_business_hours(time_limit):g}",
@@ -2880,38 +2976,56 @@ def render_estefano_tab(current_user: str) -> None:
     if row is None:
         return
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
+    allowed_targets = [
+        status
+        for status in get_allowed_next_statuses(apparatus, current_status)
+        if status != current_status and is_transition_allowed_for_user("Estefano", current_status, status, apparatus)
+    ]
     with st.form(f"estefano_form_{selected_id}"):
-        uploaded_files = st.file_uploader("Subir archivos de Estefano", accept_multiple_files=True, disabled=not can_edit)
+        uploaded_files = st.file_uploader("Subir archivos de Estefano/STL", accept_multiple_files=True, disabled=not can_edit)
         file_url = st.text_input("O pegar link de archivos", key=f"estefano_url_{selected_id}", disabled=not can_edit)
-        submitted = st.form_submit_button("📤 Guardar archivos y enviar a EN PLANEACIÓN", disabled=not can_edit)
+        new_status = st.selectbox(
+            "Siguiente STATUS",
+            allowed_targets or [current_status],
+            format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option),
+            disabled=not can_edit,
+        )
+        comment = st.text_area("Comentario técnico", disabled=not can_edit)
+        submitted = st.form_submit_button("💾 Guardar cambio Estefano", disabled=not can_edit)
     if submitted:
+        files_value = ""
         if uploaded_files:
             try:
-                saved_files = upload_estefano_files_to_s3(selected_id, uploaded_files)
+                files_value = "\n".join(upload_estefano_files_to_s3(selected_id, uploaded_files))
             except Exception as exc:
                 st.error(f"No se pudieron subir los archivos a S3: {exc}")
                 return
-            files_value = "\n".join(saved_files)
         elif file_url.strip():
             files_value = file_url.strip()
-        else:
-            st.error("Sube archivos o pega un link antes de avanzar.")
-            return
-        updated = update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
-        if not updated:
-            st.warning("No encontré registro activo; los archivos se guardarán en el nuevo registro de tiempo.")
-        if advance_case_status(identifier=selected_id, row=row, new_status="EN PLANEACIÓN", current_user=current_user, comment="Archivos de Estefano: " + files_value):
+        if files_value:
             update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
+        full_comment = comment
+        if files_value:
+            full_comment = f"{comment}\nArchivos de Estefano: {files_value}" if comment else f"Archivos de Estefano: {files_value}"
+        if advance_case_status(
+            identifier=selected_id,
+            row=row,
+            new_status=new_status,
+            current_user=current_user,
+            comment=full_comment,
+        ):
+            if files_value:
+                update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
             st.rerun()
 
-
-def render_xime_tab(current_user: str) -> None:
-    st.subheader("🧠 Xime")
-    can_edit = user_can_edit_tab(current_user, "Xime")
+def render_jime_tab(current_user: str) -> None:
+    st.subheader("🧠 Jime")
+    can_edit = user_can_edit_tab(current_user, "Jime")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
-    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Xime"])
-    selected_id, row = render_case_selector(cases_df, "xime_case_selector")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Jime"])
+    selected_id, row = render_case_selector(cases_df, "jime_case_selector")
     if row is None:
         return
     files_url = get_latest_estefano_files(selected_id)
@@ -2921,10 +3035,10 @@ def render_xime_tab(current_user: str) -> None:
         st.info("No hay link de archivos de Estefano en TIEMPOS_APARATOS.")
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
     allowed_targets = [status for status in get_allowed_next_statuses(clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")), current_status) if status != current_status]
-    xime_targets = [status for status in allowed_targets if is_transition_allowed_for_user("Xime", current_status, status, clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))]
-    new_status = st.selectbox("Siguiente STATUS", xime_targets or allowed_targets or [current_status], format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option), disabled=not can_edit)
+    jime_targets = [status for status in allowed_targets if is_transition_allowed_for_user("Jime", current_status, status, clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))]
+    new_status = st.selectbox("Siguiente STATUS", jime_targets or allowed_targets or [current_status], format_func=lambda option: display_selectbox_value(STATUS_COLUMN, option), disabled=not can_edit)
     comment = st.text_area("Comentario de revisión", disabled=not can_edit)
-    if st.button("💾 Guardar cambio Xime", disabled=not can_edit):
+    if st.button("💾 Guardar cambio Jime", disabled=not can_edit):
         if advance_case_status(identifier=selected_id, row=row, new_status=new_status, current_user=current_user, comment=comment):
             st.rerun()
 
@@ -3016,6 +3130,37 @@ def render_lesly_tab(current_user: str) -> None:
         st.info("No hay un siguiente STATUS permitido para Lesly en este caso.")
 
 
+def render_vero_tab(current_user: str) -> None:
+    st.subheader("🛠️ Vero")
+    can_edit = user_can_edit_tab(current_user, "Vero")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Vero"])
+    selected_id, row = render_case_selector(cases_df, "vero_case_selector")
+    if row is None:
+        return
+    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
+    allowed_targets = [
+        status
+        for status in get_allowed_next_statuses(apparatus, current_status)
+        if status != current_status and is_transition_allowed_for_user("Vero", current_status, status, apparatus)
+    ]
+    next_status = allowed_targets[0] if allowed_targets else ""
+    comment = st.text_area("Comentario de confección / calidad", disabled=not can_edit)
+    if next_status and st.button(f"➡️ Cambiar a {next_status}", disabled=not can_edit):
+        if advance_case_status(
+            identifier=selected_id,
+            row=row,
+            new_status=next_status,
+            current_user=current_user,
+            comment=comment,
+        ):
+            st.rerun()
+    elif not next_status:
+        st.info("No hay un siguiente STATUS permitido para Vero en este caso.")
+
+
 def render_alertas_tab() -> None:
     render_tiempos_tab("Admin")
 
@@ -3039,8 +3184,10 @@ def render_active_app_tab(current_user: str) -> None:
 
     if selected_tab == "estefano":
         render_estefano_tab(current_user)
-    elif selected_tab == "xime":
-        render_xime_tab(current_user)
+    elif selected_tab == "jime":
+        render_jime_tab(current_user)
+    elif selected_tab == "vero":
+        render_vero_tab(current_user)
     elif selected_tab == "pagos":
         render_pagos_tab(current_user)
     elif selected_tab == "lesly":
@@ -3075,7 +3222,7 @@ if st.button("🔄 Recargar datos", type="secondary"):
 try:
     current_user = st.sidebar.selectbox(
         "Usuario",
-        ["Estefano", "Xime", "Pagos", "Lesly", "Admin"],
+        ["Jime", "Estefano", "Pagos", "Lesly", "Vero", "Admin"],
         key="current_user",
     )
     ensure_tiempos_headers()
