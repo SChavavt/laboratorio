@@ -3312,7 +3312,6 @@ def render_estefano_forms_review(can_edit: bool) -> None:
     st.markdown(
         f"<div class='forms-hero'>"
         f"<div class='forms-hero-title'>📌 Resumen rápido de la respuesta seleccionada</div>"
-        f"<div class='forms-hero-subtitle'>Revisa lo importante de un vistazo y luego manda el link al subtab de envío.</div>"
         f"<div style='margin-top:10px;'>"
         f"<span class='forms-pill forms-pill-id'>🧾 Respuesta #{html.escape(str(selected_response))}</span>"
         f"<span class='forms-pill {link_pill_class}'>{link_pill_text}</span>"
