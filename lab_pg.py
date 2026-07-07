@@ -3010,30 +3010,53 @@ def filter_estatus_by_status(statuses: list[str]) -> pd.DataFrame:
     ].copy()
 
 
+def apply_single_row_selection_to_selectbox(
+    event: Any, df: pd.DataFrame, id_column: str, selectbox_key: str
+) -> None:
+    """Sincroniza una fila seleccionada en una tabla con su selectbox asociado."""
+
+    selected_rows = getattr(getattr(event, "selection", None), "rows", [])
+    if not selected_rows:
+        return
+    selected_position = selected_rows[0]
+    if selected_position >= len(df.index):
+        return
+    raw_selected_id = df.iloc[selected_position].get(id_column, "")
+    selected_id = clean_cell(raw_selected_id).strip()
+    if selected_id:
+        st.session_state[selectbox_key] = raw_selected_id
+
+
 def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Series | None]:
-    """Muestra tabla y selector común para pestañas por usuario."""
+    """Muestra tabla seleccionable y selector común para pestañas por usuario."""
 
     if cases_df.empty:
         st.info("No hay casos para esta pestaña.")
         return "", None
     st.caption(f"Registros encontrados: {len(cases_df)}")
-    st.dataframe(
+    table_event = st.dataframe(
         cases_df,
         use_container_width=True,
         hide_index=True,
         column_config=build_dataframe_column_config(cases_df),
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"{key}_table",
     )
+    apply_single_row_selection_to_selectbox(table_event, cases_df, ID_COLUMN, key)
     ids = [clean_cell(value).strip() for value in cases_df[ID_COLUMN].tolist() if clean_cell(value).strip()]
     ids = list(dict.fromkeys(ids))
     if not ids:
         st.warning("No hay registros con Columna 1 para seleccionar.")
         return "", None
+    if st.session_state.get(key) not in ids:
+        st.session_state[key] = ids[0]
     labels = {}
     for _, row in cases_df.iterrows():
         identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
         if identifier and identifier not in labels:
             labels[identifier] = (
-                f"🆔 {identifier} | {display_selectbox_value(STATUS_COLUMN, clean_cell(row.get(STATUS_COLUMN, '')).strip())} | "
+                f"🆔 {identifier} | 🚦 {display_selectbox_value(STATUS_COLUMN, clean_cell(row.get(STATUS_COLUMN, '')).strip())} | "
                 f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', '')).strip()} | 🙂 {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()}"
             )
     selected_id = st.selectbox("Selecciona Columna 1", ids, format_func=lambda option: labels.get(option, option), key=key)
@@ -3172,11 +3195,10 @@ def upload_payment_receipt_to_s3(identifier: str, uploaded_file: Any) -> str:
 def render_estefano_forms_review(can_edit: bool) -> None:
     """Muestra respuestas del Google Form para tomar links de Drive en revisión."""
 
-    st.markdown("### 📄 Respuestas de Google Forms")
+    st.markdown("### 📥 Recibido de documentos desde Forms")
     st.caption(
-        "Usa esta sección solo como bandeja de revisión: muestra todas las columnas "
-        "útiles del Excel de Forms, ocultando únicamente aceptación de términos y "
-        "textos legales. También permite copiar el link de Drive al formulario de Estefano."
+        "Selecciona una fila de la tabla o usa el selector. La ficha resume la respuesta "
+        "con bloques visuales para revisar rápido y copiar el link de Drive."
     )
 
     forms_config = get_forms_config()
@@ -3204,9 +3226,10 @@ def render_estefano_forms_review(can_edit: bool) -> None:
         st.info("No hay respuestas de Google Forms para mostrar.")
         return
     file_column = get_forms_file_column(review_df)
+    display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
 
-    st.dataframe(
-        review_df.sort_values("Respuesta #", ascending=False).head(25),
+    table_event = st.dataframe(
+        display_df,
         use_container_width=True,
         hide_index=True,
         column_config=(
@@ -3214,34 +3237,73 @@ def render_estefano_forms_review(can_edit: bool) -> None:
             if file_column
             else None
         ),
+        on_select="rerun",
+        selection_mode="single-row",
+        key="forms_response_table_estefano",
+    )
+    apply_single_row_selection_to_selectbox(
+        table_event, display_df, "Respuesta #", "forms_response_selector_estefano"
     )
 
-    response_options = review_df["Respuesta #"].tolist()
+    response_options = display_df["Respuesta #"].tolist()
+    if st.session_state.get("forms_response_selector_estefano") not in response_options:
+        st.session_state["forms_response_selector_estefano"] = response_options[0]
     selected_response = st.selectbox(
-        "Selecciona una respuesta para usar su link de Drive",
+        "📌 Selecciona una respuesta para usar su link de Drive",
         options=response_options,
-        index=len(response_options) - 1,
         disabled=not can_edit,
         key="forms_response_selector_estefano",
     )
-    selected_rows = review_df[review_df["Respuesta #"] == selected_response]
+    selected_rows = display_df[display_df["Respuesta #"] == selected_response]
     if selected_rows.empty:
         return
 
     selected_row = selected_rows.iloc[0]
     selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
-    detail_columns = list(review_df.columns[1:5])
-    details = [
-        f"{column}: {clean_cell(selected_row.get(column, '')).strip()}"
-        for column in detail_columns
-    ]
-    st.info(" | ".join(detail for detail in details if not detail.endswith(": ")))
+    visible_details = []
+    for column in display_df.columns:
+        if column in {"Respuesta #", file_column}:
+            continue
+        value = clean_cell(selected_row.get(column, "")).strip()
+        if value:
+            visible_details.append((column, value))
+
+    st.markdown(
+        """
+        <style>
+        .forms-card {background:#f8fbff;border:1px solid #d7e8ff;border-radius:16px;padding:18px;margin:10px 0;}
+        .forms-pill {display:inline-block;background:#eaf4ff;color:#0b4f8a;border-radius:999px;padding:6px 11px;margin:4px 6px 4px 0;font-weight:600;}
+        .forms-detail {background:white;border:1px solid #edf2f7;border-radius:12px;padding:10px 12px;margin:6px 0;}
+        .forms-label {color:#52677a;font-size:0.82rem;font-weight:700;text-transform:uppercase;letter-spacing:.02em;}
+        .forms-value {color:#123047;font-size:1rem;margin-top:3px;word-break:break-word;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="forms-card">', unsafe_allow_html=True)
+    st.markdown(
+        f"<span class='forms-pill'>🧾 Respuesta #{selected_response}</span>"
+        f"<span class='forms-pill'>📎 {'Link listo' if selected_link else 'Sin link detectado'}</span>",
+        unsafe_allow_html=True,
+    )
+    if visible_details:
+        cols = st.columns(2)
+        for idx, (column, value) in enumerate(visible_details[:12]):
+            with cols[idx % 2]:
+                st.markdown(
+                    f"<div class='forms-detail'><div class='forms-label'>✨ {column}</div>"
+                    f"<div class='forms-value'>{value}</div></div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("La respuesta seleccionada no tiene detalles adicionales visibles.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if selected_link:
-        st.markdown(f"**Link Drive detectado:** {selected_link}")
-        if st.button("📎 Usar este link en el caso seleccionado", disabled=not can_edit):
+        st.markdown(f"**🔗 Link Drive detectado:** {selected_link}")
+        if st.button("📎 Usar este link en el envío seleccionado", disabled=not can_edit):
             st.session_state["estefano_forms_selected_url"] = selected_link
-            st.success("Link cargado. Revisa el campo 'O pegar link de archivos'.")
+            st.success("Link cargado. Ve al subtab 'Envío de documentos' y revisa el campo de link.")
             st.rerun()
     else:
         st.warning(
@@ -3249,13 +3311,10 @@ def render_estefano_forms_review(can_edit: bool) -> None:
         )
 
 
-def render_estefano_tab(current_user: str) -> None:
-    st.subheader("📥 Estefano")
-    can_edit = user_can_edit_tab(current_user, "Estefano")
-    if not can_edit:
-        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
-    with st.expander("📄 Revisar archivos recibidos desde Google Forms", expanded=True):
-        render_estefano_forms_review(can_edit)
+def render_estefano_shipping_tab(current_user: str, can_edit: bool) -> None:
+    """Subtab operativo para enviar documentos y avanzar casos de Estefano."""
+
+    st.markdown("### 📤 Envío de documentos")
     cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
     selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
     if row is None:
@@ -3308,6 +3367,18 @@ def render_estefano_tab(current_user: str) -> None:
             if files_value:
                 update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
             st.rerun()
+
+
+def render_estefano_tab(current_user: str) -> None:
+    st.subheader("📥 Estefano")
+    can_edit = user_can_edit_tab(current_user, "Estefano")
+    if not can_edit:
+        st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    shipping_tab, received_tab = st.tabs(["📤 Envío de documentos", "📥 Recibido de documentos (Forms)"])
+    with shipping_tab:
+        render_estefano_shipping_tab(current_user, can_edit)
+    with received_tab:
+        render_estefano_forms_review(can_edit)
 
 def render_jime_tab(current_user: str) -> None:
     st.subheader("🧠 Jime")
