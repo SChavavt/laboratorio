@@ -102,6 +102,7 @@ USER_TAB_STATUSES = {
     ],
 }
 APP_TAB_OPTIONS = {
+    "nuevo": "➕ Nuevo pedido",
     "estefano": "📥 Estefano",
     "jime": "📋 Jime",
     "pagos": "💳 Pagos",
@@ -109,7 +110,6 @@ APP_TAB_OPTIONS = {
     "vero": "🛠️ Vero",
     "alertas": "⏱️ Alertas",
     "todos": "📋 Todos",
-    "nuevo": "➕ Nuevo pedido",
     "procesos": "⚙️ Procesos por Aparato",
 }
 USER_ALLOWED_TRANSITIONS = {
@@ -568,6 +568,8 @@ TEXT_AREA_COLUMNS = {
     "DETALLES & COMENTARIOS FINALES",
 }
 
+DEFAULT_DELIVERY_BUSINESS_DAYS = 10
+
 SPANISH_MONTHS = {
     "ENERO": 1,
     "FEBRERO": 2,
@@ -960,6 +962,18 @@ def is_business_day(value: datetime | date) -> bool:
 
     current_date = value.date() if isinstance(value, datetime) else value
     return current_date.weekday() < 5
+
+
+def add_business_days(start_date: date, business_days: int) -> date:
+    """Suma días hábiles (lunes-viernes) a una fecha base."""
+
+    current = start_date
+    added_days = 0
+    while added_days < business_days:
+        current += timedelta(days=1)
+        if is_business_day(current):
+            added_days += 1
+    return current
 
 
 def parse_time_limit_to_business_hours(text: Any) -> float | None:
@@ -2209,8 +2223,9 @@ def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
 def render_nuevo_pedido_tab() -> None:
     st.subheader("➕ Nuevo pedido")
     st.caption(
-        "Captura los datos principales en ESTATUS APARATOS; "
-        "TIEMPOS_APARATOS solo recibe el log complementario para tiempos y alertas."
+        "Captura los datos principales en ESTATUS APARATOS. "
+        "La fecha de recepción se guarda automáticamente con la fecha de hoy; "
+        "la fecha de entrega se calculará al aprobar el pago de confección."
     )
     render_success_feedback(
         "nuevo_pedido_success_message",
@@ -2266,22 +2281,18 @@ def render_nuevo_pedido_tab() -> None:
                 ),
                 key=f"nuevo_pedido_archivos_{form_version}",
             )
-            fecha_recepcion = st.date_input(
-                display_field_label("FECHA DE RECEPCIÓN"),
-                value=app_today(),
-                key=f"nuevo_pedido_fecha_recepcion_{form_version}",
+            fecha_recepcion = app_today()
+            st.info(
+                f"{display_field_label('FECHA DE RECEPCIÓN')}: "
+                f"{format_sheet_date(fecha_recepcion)} (automática al guardar)."
             )
-            dias_entrega = st.number_input(
-                display_field_label("DÍAS DE ENTREGA"),
-                min_value=0,
-                value=0,
-                step=1,
-                key=f"nuevo_pedido_dias_entrega_{form_version}",
+            st.info(
+                f"{display_field_label('DÍAS DE ENTREGA')}: "
+                f"{DEFAULT_DELIVERY_BUSINESS_DAYS} días hábiles para todos los aparatos."
             )
-            fecha_para_entrega = st.date_input(
-                display_field_label("FECHA PARA ENTREGA"),
-                value=app_today(),
-                key=f"nuevo_pedido_fecha_entrega_{form_version}",
+            st.info(
+                f"{display_field_label('FECHA PARA ENTREGA')}: "
+                "se calculará automáticamente al aprobar PAGO CONFECCIÓN."
             )
 
         submitted = st.form_submit_button("💾 Guardar nuevo pedido")
@@ -2314,9 +2325,9 @@ def render_nuevo_pedido_tab() -> None:
         "VENDEDOR": clean_vendedor,
         "SERVICIO": clean_servicio,
         "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
-        "DÍAS DE ENTREGA": int(dias_entrega),
+        "DÍAS DE ENTREGA": DEFAULT_DELIVERY_BUSINESS_DAYS,
         "FECHA DE RECEPCIÓN": format_sheet_date(fecha_recepcion),
-        "FECHA PARA ENTREGA": format_sheet_date(fecha_para_entrega),
+        "FECHA PARA ENTREGA": "",
     }
 
     try:
@@ -2966,6 +2977,42 @@ def upload_estefano_files_to_s3(identifier: str, uploaded_files: list[Any]) -> l
     return uploaded_locations
 
 
+def upload_payment_receipt_to_s3(identifier: str, uploaded_file: Any) -> str:
+    """Sube un comprobante de pago a S3 y devuelve una URL pública configurada o S3 key."""
+
+    if uploaded_file is None:
+        return ""
+
+    aws_access_key_id = get_aws_secret_value("aws_access_key_id")
+    aws_secret_access_key = get_aws_secret_value("aws_secret_access_key")
+    aws_region = get_aws_secret_value("aws_region")
+    bucket_name = get_aws_secret_value("s3_bucket_name")
+    if not all([aws_access_key_id, aws_secret_access_key, aws_region, bucket_name]):
+        raise ValueError("Faltan credenciales/configuración de S3 en st.secrets.")
+
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        region_name=aws_region,
+    )
+    safe_identifier = clean_cell(identifier).strip().replace("/", "_") or "sin_identificador"
+    timestamp = app_now().strftime("%Y%m%d_%H%M%S")
+    original_name = PurePosixPath(uploaded_file.name).name
+    key = f"pagos/{safe_identifier}/{timestamp}_{original_name}"
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=key,
+        Body=uploaded_file.getvalue(),
+        ContentType=getattr(uploaded_file, "type", None) or "application/octet-stream",
+    )
+    public_urls_setting = get_aws_secret_value("s3_public_urls", False)
+    use_public_urls = str(public_urls_setting).strip().lower() in {"1", "true", "yes", "sí", "si"}
+    if use_public_urls:
+        return f"https://{bucket_name}.s3.{aws_region}.amazonaws.com/{key}"
+    return key
+
+
 def render_estefano_tab(current_user: str) -> None:
     st.subheader("📥 Estefano")
     can_edit = user_can_edit_tab(current_user, "Estefano")
@@ -3058,11 +3105,30 @@ def render_pagos_tab(current_user: str) -> None:
         return
     st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
     comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit)
+    comprobante_file = st.file_uploader("Subir comprobante", disabled=not can_edit, key=f"pago_comprobante_{selected_id}")
     col_approve, col_reject = st.columns(2)
     with col_approve:
         if st.button("✅ Aprobar pago", disabled=not can_edit):
-            now = app_now().strftime("%Y-%m-%d %H:%M:%S")
-            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Aprobado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": comprobante_url.strip(), "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "Sí", "MOTIVO_BLOQUEO": ""})
+            receipt_value = comprobante_url.strip()
+            if comprobante_file is not None:
+                try:
+                    receipt_value = upload_payment_receipt_to_s3(selected_id, comprobante_file)
+                except Exception as exc:
+                    st.error(f"No se pudo subir el comprobante a S3: {exc}")
+                    return
+            now_dt = app_now()
+            now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Aprobado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": receipt_value, "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "Sí", "MOTIVO_BLOQUEO": ""})
+            current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+            estatus_changes = {}
+            if current_status == "PAGO PLANEACIÓN":
+                estatus_changes["FECHA PAGO PLANEACION"] = format_sheet_date(now_dt.date())
+            if current_status == "PAGO CONFECCIÓN":
+                estatus_changes["FECHA PAGO CONFECCION"] = format_sheet_date(now_dt.date())
+                estatus_changes["DÍAS DE ENTREGA"] = DEFAULT_DELIVERY_BUSINESS_DAYS
+                estatus_changes["FECHA PARA ENTREGA"] = format_sheet_date(add_business_days(now_dt.date(), DEFAULT_DELIVERY_BUSINESS_DAYS))
+            if estatus_changes:
+                update_row_by_columna_1(selected_id, estatus_changes)
             st.success("Pago aprobado. Ya puedes avanzar al siguiente proceso.")
             st.rerun()
     with col_reject:
@@ -3175,12 +3241,12 @@ def render_active_app_tab(current_user: str) -> None:
     selected_tab = st.segmented_control(
         "Pestaña activa",
         options=list(APP_TAB_OPTIONS.keys()),
-        default="estefano",
+        default="nuevo",
         format_func=lambda option: APP_TAB_OPTIONS[option],
         key="active_app_tab",
         label_visibility="collapsed",
     )
-    selected_tab = selected_tab or "estefano"
+    selected_tab = selected_tab or "nuevo"
 
     if selected_tab == "estefano":
         render_estefano_tab(current_user)
