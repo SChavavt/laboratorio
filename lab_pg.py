@@ -25,6 +25,17 @@ SCOPE = [
 
 SHEET_ESTATUS = "ESTATUS APARATOS"
 SHEET_TIEMPOS = "TIEMPOS_APARATOS"
+DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
+FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
+FORMS_FILE_COLUMN_HINT = "Favor de adjuntar archivos STL"
+FORMS_EXCLUDED_COLUMN_HINTS = [
+    "Acepto que he leído los Términos y Condiciones",
+    "Estoy de acuerdo con el resguardo de mis datos personales",
+    "El llenado de esta prescripción es importante",
+    "El plan de tratamiento esta basado",
+    "El resultado del tratamiento es responsabilidad",
+    "Al aceptar el médico tratante ha comprendido",
+]
 ID_COLUMN = "Columna 1"
 APARATO_COLUMN = "APARATO"
 STATUS_COLUMN = "STATUS"
@@ -1408,6 +1419,14 @@ def get_spreadsheet():
 
 
 @st.cache_resource
+def get_spreadsheet_by_id(sheet_id: str):
+    """Abre cualquier Google Sheet compartido con el service account configurado."""
+
+    client = _get_gs_client()
+    return client.open_by_key(sheet_id)
+
+
+@st.cache_resource
 def get_worksheet(sheet_name: str):
     spreadsheet = get_spreadsheet()
     try:
@@ -1485,6 +1504,143 @@ def read_sheet_values(sheet_name: str) -> list[list[str]]:
     """Lee valores crudos para cálculos que dependen de estructura horizontal."""
 
     return get_worksheet(sheet_name).get_all_values()
+
+
+def get_forms_secret_value(key: str, default: Any = "") -> Any:
+    """Lee configuración opcional del Google Form desde st.secrets.
+
+    Soporta dos formas para evitar confusión con el sheet_id principal:
+    - [google_forms].sheet_id / [google_forms].worksheet
+    - [gsheets].forms_sheet_id / [gsheets].forms_worksheet
+    """
+
+    forms_config = st.secrets.get("google_forms", {}) if hasattr(st, "secrets") else {}
+    if hasattr(forms_config, "get"):
+        value = forms_config.get(key, "")
+        if clean_cell(value).strip():
+            return value
+
+    gsheets_config = st.secrets.get("gsheets", {}) if hasattr(st, "secrets") else {}
+    gsheets_key = f"forms_{key}"
+    if hasattr(gsheets_config, "get"):
+        value = gsheets_config.get(gsheets_key, "")
+        if clean_cell(value).strip():
+            return value
+
+    root_key = f"google_forms_{key}"
+    if hasattr(st, "secrets") and root_key in st.secrets:
+        return st.secrets.get(root_key, default)
+
+    return default
+
+
+def get_forms_config() -> dict[str, str]:
+    """Devuelve la configuración de la hoja de respuestas del Google Form."""
+
+    sheet_id = clean_cell(get_forms_secret_value("sheet_id")).strip()
+    worksheet_name = clean_cell(
+        get_forms_secret_value("worksheet", DEFAULT_FORMS_WORKSHEET)
+    ).strip() or DEFAULT_FORMS_WORKSHEET
+    return {
+        "sheet_id": sheet_id,
+        "worksheet": worksheet_name,
+    }
+
+
+def find_column_by_hint(columns: list[str], *hints: str) -> str:
+    """Encuentra una columna comparando texto normalizado por fragmentos."""
+
+    normalized_columns = [(column, normalize_text(column)) for column in columns]
+    for hint in hints:
+        normalized_hint = normalize_text(hint)
+        for column, normalized_column in normalized_columns:
+            if normalized_hint and normalized_hint in normalized_column:
+                return column
+    return ""
+
+
+def should_hide_forms_column(column: str) -> bool:
+    """Oculta columnas legales/informativas que no aportan a la revisión técnica."""
+
+    normalized_column = normalize_text(column)
+    return any(
+        normalize_text(hint) in normalized_column
+        for hint in FORMS_EXCLUDED_COLUMN_HINTS
+    )
+
+
+@st.cache_data(ttl=30)
+def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    """Lee la hoja de respuestas de Google Forms como DataFrame."""
+
+    if not sheet_id:
+        return pd.DataFrame()
+    spreadsheet = get_spreadsheet_by_id(sheet_id)
+    candidate_names = [
+        worksheet_name,
+        *FORMS_WORKSHEET_FALLBACKS,
+    ]
+    worksheet = None
+    tried_names = []
+    for candidate_name in dict.fromkeys(
+        name for name in candidate_names if clean_cell(name).strip()
+    ):
+        tried_names.append(candidate_name)
+        try:
+            worksheet = spreadsheet.worksheet(candidate_name)
+            break
+        except gspread.WorksheetNotFound:
+            continue
+    if worksheet is None:
+        worksheets = spreadsheet.worksheets()
+        if not worksheets:
+            return pd.DataFrame()
+        worksheet = worksheets[0]
+        st.info(
+            "No encontré las pestañas de Forms esperadas "
+            f"({', '.join(tried_names)}). Usaré la primera pestaña: {worksheet.title}."
+        )
+    values = worksheet.get_all_values()
+    if not values:
+        return pd.DataFrame()
+
+    headers = ensure_unique_column_names(values[0])
+    width = len(headers)
+    rows = [row[:width] + [""] * max(width - len(row), 0) for row in values[1:]]
+    df = pd.DataFrame(rows, columns=headers)
+    if df.empty:
+        return df
+
+    non_empty_rows = df.apply(
+        lambda row: any(clean_cell(value).strip() for value in row),
+        axis=1,
+    )
+    return df[non_empty_rows].reset_index(drop=True)
+
+
+def build_forms_review_df(forms_df: pd.DataFrame) -> pd.DataFrame:
+    """Muestra todas las respuestas útiles de Forms, excluyendo solo textos legales."""
+
+    if forms_df.empty:
+        return forms_df
+
+    visible_columns = [
+        column for column in forms_df.columns if not should_hide_forms_column(column)
+    ]
+    review_df = forms_df[visible_columns].copy()
+    review_df.insert(0, "Respuesta #", [index + 2 for index in range(len(review_df))])
+    return review_df
+
+
+def get_forms_file_column(review_df: pd.DataFrame) -> str:
+    """Encuentra la columna con el link de Drive del ZIP STL/DICOM."""
+
+    return find_column_by_hint(
+        list(review_df.columns),
+        FORMS_FILE_COLUMN_HINT,
+        "adjuntar archivos STL",
+        "DICOM",
+    )
 
 
 def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[str, Any]:
@@ -3013,11 +3169,93 @@ def upload_payment_receipt_to_s3(identifier: str, uploaded_file: Any) -> str:
     return key
 
 
+def render_estefano_forms_review(can_edit: bool) -> None:
+    """Muestra respuestas del Google Form para tomar links de Drive en revisión."""
+
+    st.markdown("### 📄 Respuestas de Google Forms")
+    st.caption(
+        "Usa esta sección solo como bandeja de revisión: muestra todas las columnas "
+        "útiles del Excel de Forms, ocultando únicamente aceptación de términos y "
+        "textos legales. También permite copiar el link de Drive al formulario de Estefano."
+    )
+
+    forms_config = get_forms_config()
+    if not forms_config["sheet_id"]:
+        st.info(
+            "Configura `[google_forms].sheet_id` en secrets para leer el Excel de respuestas."
+        )
+        return
+
+    try:
+        forms_df = read_forms_responses_df(
+            forms_config["sheet_id"],
+            forms_config["worksheet"],
+        )
+    except Exception as exc:
+        st.error(
+            "No pude leer el Google Sheet de respuestas. Verifica que el correo del "
+            "service account/API tenga acceso al archivo."
+        )
+        st.exception(exc)
+        return
+
+    review_df = build_forms_review_df(forms_df)
+    if review_df.empty:
+        st.info("No hay respuestas de Google Forms para mostrar.")
+        return
+    file_column = get_forms_file_column(review_df)
+
+    st.dataframe(
+        review_df.sort_values("Respuesta #", ascending=False).head(25),
+        use_container_width=True,
+        hide_index=True,
+        column_config=(
+            {file_column: st.column_config.LinkColumn(file_column)}
+            if file_column
+            else None
+        ),
+    )
+
+    response_options = review_df["Respuesta #"].tolist()
+    selected_response = st.selectbox(
+        "Selecciona una respuesta para usar su link de Drive",
+        options=response_options,
+        index=len(response_options) - 1,
+        disabled=not can_edit,
+        key="forms_response_selector_estefano",
+    )
+    selected_rows = review_df[review_df["Respuesta #"] == selected_response]
+    if selected_rows.empty:
+        return
+
+    selected_row = selected_rows.iloc[0]
+    selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
+    detail_columns = list(review_df.columns[1:5])
+    details = [
+        f"{column}: {clean_cell(selected_row.get(column, '')).strip()}"
+        for column in detail_columns
+    ]
+    st.info(" | ".join(detail for detail in details if not detail.endswith(": ")))
+
+    if selected_link:
+        st.markdown(f"**Link Drive detectado:** {selected_link}")
+        if st.button("📎 Usar este link en el caso seleccionado", disabled=not can_edit):
+            st.session_state["estefano_forms_selected_url"] = selected_link
+            st.success("Link cargado. Revisa el campo 'O pegar link de archivos'.")
+            st.rerun()
+    else:
+        st.warning(
+            "Esta respuesta no trae link en la columna configurada de archivos STL/DICOM."
+        )
+
+
 def render_estefano_tab(current_user: str) -> None:
     st.subheader("📥 Estefano")
     can_edit = user_can_edit_tab(current_user, "Estefano")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    with st.expander("📄 Revisar archivos recibidos desde Google Forms", expanded=True):
+        render_estefano_forms_review(can_edit)
     cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
     selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
     if row is None:
@@ -3031,7 +3269,12 @@ def render_estefano_tab(current_user: str) -> None:
     ]
     with st.form(f"estefano_form_{selected_id}"):
         uploaded_files = st.file_uploader("Subir archivos de Estefano/STL", accept_multiple_files=True, disabled=not can_edit)
-        file_url = st.text_input("O pegar link de archivos", key=f"estefano_url_{selected_id}", disabled=not can_edit)
+        file_url = st.text_input(
+            "O pegar link de archivos",
+            value=st.session_state.pop("estefano_forms_selected_url", ""),
+            key=f"estefano_url_{selected_id}",
+            disabled=not can_edit,
+        )
         new_status = st.selectbox(
             "Siguiente STATUS",
             allowed_targets or [current_status],
