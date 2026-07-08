@@ -292,7 +292,8 @@ STATUS_ALIASES = {
     "EMPACADO/LISTO P/ENVIO": "EMPACADO/LISTO P/ENVÍO",
     "ENVIO DE ENCUESTA": "ENVÍO DE ENCUESTA",
     "LISTO P/ENVÍO": "EMPACADO/LISTO P/ENVÍO",
-    "ENVIADO": "PRODUCTO ENVIADO",
+    # ENVIADO ya no se trata como PRODUCTO ENVIADO: debe quedar fuera de Jime
+    # hasta que el status sea exactamente PRODUCTO ENVIADO para enviar encuesta.
     "ESPERANDO STL PSM": "ESPERANDO STL PSM DOCTOR",
 }
 TERMINAL_STATUSES = {"ENVÍO DE ENCUESTA", "CANCELO"}
