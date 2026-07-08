@@ -81,6 +81,20 @@ TIEMPOS_HEADERS = [
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
+USER_PASSWORD_DEFAULTS = {
+    "Admin": "AdminLab73",
+    "Jime": "JimeLab48",
+    "Estefano": "EstefanoLab91",
+    "Lesly": "LeslyLab64",
+    "Vero": "VeroLab27",
+}
+USER_VISIBLE_TABS = {
+    "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
+    "Jime": ["nuevo", "jime", "pagos"],
+    "Estefano": ["estefano"],
+    "Lesly": ["lesly"],
+    "Vero": ["vero"],
+}
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
 USER_TAB_STATUSES = {
     "Estefano": ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"],
@@ -166,6 +180,7 @@ USER_ALLOWED_TRANSITIONS = {
         "CONTROL DE CALIDAD Y FOTOEVIDENCIA": ["LISTO P/EMPAQUETADO"],
     },
 }
+
 
 APARATO_OPTIONS = [
     "MSE",
@@ -1163,6 +1178,122 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
 
 
 
+
+def get_user_passwords() -> dict[str, str]:
+    """Lee contraseñas por usuario desde secrets, con defaults de desarrollo."""
+
+    configured_passwords = {}
+    auth_config = st.secrets.get("auth", {}) if hasattr(st, "secrets") else {}
+    if hasattr(auth_config, "get"):
+        passwords_config = auth_config.get("passwords", {})
+        if hasattr(passwords_config, "items"):
+            configured_passwords.update(
+                {str(user): str(password) for user, password in passwords_config.items()}
+            )
+
+    root_passwords = st.secrets.get("user_passwords", {}) if hasattr(st, "secrets") else {}
+    if hasattr(root_passwords, "items"):
+        configured_passwords.update(
+            {str(user): str(password) for user, password in root_passwords.items()}
+        )
+
+    return {**USER_PASSWORD_DEFAULTS, **configured_passwords}
+
+
+def get_query_param_value(key: str) -> str:
+    """Lee un parámetro del URL de Streamlit de forma compatible."""
+
+    value = st.query_params.get(key, "")
+    if isinstance(value, list):
+        return clean_cell(value[0]).strip() if value else ""
+    return clean_cell(value).strip()
+
+
+def persist_login_in_url(username: str) -> None:
+    """Guarda el usuario autenticado en el URL para abrir la app ya loggeado."""
+
+    st.query_params["usuario"] = username
+
+
+def clear_persisted_login_url() -> None:
+    """Limpia del URL el usuario recordado."""
+
+    if "usuario" in st.query_params:
+        del st.query_params["usuario"]
+
+
+def restore_user_from_url() -> str:
+    """Restaura sesión desde ?usuario=Nombre cuando el usuario existe."""
+
+    url_user = get_query_param_value("usuario")
+    return url_user if url_user in USER_VISIBLE_TABS else ""
+
+
+def set_authenticated_user(username: str, *, remember_in_url: bool = True) -> None:
+    """Centraliza el guardado del usuario autenticado."""
+
+    st.session_state["authenticated_user"] = username
+    st.session_state["current_user"] = username
+    st.session_state.pop("login_error", None)
+    if remember_in_url:
+        persist_login_in_url(username)
+
+
+def login_user(username: str, password: str) -> bool:
+    """Valida credenciales y guarda el usuario autenticado en sesión."""
+
+    expected_password = get_user_passwords().get(username, "")
+    if not expected_password or password != expected_password:
+        return False
+    set_authenticated_user(username)
+    return True
+
+
+def logout_user() -> None:
+    """Cierra sesión y limpia selección de usuario/pestaña."""
+
+    for key in ["authenticated_user", "current_user", "active_app_tab"]:
+        st.session_state.pop(key, None)
+    clear_persisted_login_url()
+
+
+def require_authenticated_user() -> str | None:
+    """Pide contraseña al iniciar la app y devuelve el usuario autenticado."""
+
+    authenticated_user = st.session_state.get("authenticated_user")
+    if authenticated_user not in USER_VISIBLE_TABS:
+        remembered_user = restore_user_from_url()
+        if remembered_user:
+            set_authenticated_user(remembered_user, remember_in_url=False)
+            authenticated_user = remembered_user
+
+    if authenticated_user in USER_VISIBLE_TABS:
+        st.sidebar.success(f"Sesión activa: {authenticated_user}")
+        st.sidebar.caption("Este usuario queda recordado en el link de la app.")
+        if st.sidebar.button("🚪 Cerrar sesión"):
+            logout_user()
+            st.rerun()
+        return authenticated_user
+
+    st.subheader("🔐 Acceso requerido")
+    st.caption(
+        "Selecciona tu usuario e ingresa tu contraseña. "
+        "Después de entrar, el usuario queda guardado en el link para la próxima vez."
+    )
+    with st.form("login_form"):
+        username = st.selectbox("Usuario", list(USER_PASSWORD_DEFAULTS.keys()))
+        password = st.text_input("Contraseña", type="password")
+        submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
+
+    if submitted:
+        if login_user(username, password):
+            st.rerun()
+        st.session_state["login_error"] = "Usuario o contraseña incorrectos."
+
+    if st.session_state.get("login_error"):
+        st.error(st.session_state["login_error"])
+    return None
+
 def get_current_user() -> str:
     """Devuelve el usuario seleccionado en sidebar."""
 
@@ -1172,7 +1303,53 @@ def get_current_user() -> str:
 def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
     """Admin puede editar todo; cada usuario solo su pestaña."""
 
-    return current_user == "Admin" or current_user == tab_owner
+    if current_user == "Admin" or current_user == tab_owner:
+        return True
+    return current_user == "Jime" and tab_owner == "Pagos"
+
+
+def get_user_operational_statuses(current_user: str) -> list[str]:
+    """Devuelve los STATUS que pertenecen a las alertas/pestañas del usuario."""
+
+    if current_user == "Admin":
+        return []
+    return USER_TAB_STATUSES.get(current_user, [])
+
+
+def filter_tiempos_for_user(tiempos_df: pd.DataFrame, current_user: str) -> pd.DataFrame:
+    """Limita TIEMPOS_APARATOS a las fases visibles para el usuario autenticado."""
+
+    statuses = get_user_operational_statuses(current_user)
+    if not statuses or tiempos_df.empty or STATUS_COLUMN not in tiempos_df.columns:
+        return tiempos_df
+    status_norms = {normalize_text(status) for status in statuses}
+    return tiempos_df[
+        tiempos_df[STATUS_COLUMN].apply(
+            lambda value: normalize_text(normalize_status_alias(value)) in status_norms
+        )
+    ].copy()
+
+
+def get_status_tab_owner(status: str) -> str:
+    """Identifica la pestaña operativa a la que pertenece un STATUS."""
+
+    status_norm = normalize_text(normalize_status_alias(status))
+    for owner, statuses in USER_TAB_STATUSES.items():
+        if status_norm in {normalize_text(item) for item in statuses}:
+            return owner
+    return ""
+
+
+def get_case_selector_key_for_user(tab_owner: str) -> str:
+    """Devuelve el key del selector de casos para sincronizar desde alertas."""
+
+    return {
+        "Estefano": "estefano_case_selector",
+        "Jime": "jime_case_selector",
+        "Pagos": "pagos_case_selector",
+        "Lesly": "lesly_alert_selected_case",
+        "Vero": "vero_case_selector",
+    }.get(tab_owner, "")
 
 
 def is_transition_allowed_for_user(
@@ -1190,7 +1367,7 @@ def is_transition_allowed_for_user(
 
     user_rules = USER_ALLOWED_TRANSITIONS.get(current_user, {})
     allowed_targets = list(user_rules.get(previous_status, []))
-    if current_user == "Pagos" and previous_status == "PAGO CONFECCIÓN":
+    if current_user in {"Pagos", "Jime"} and previous_status == "PAGO CONFECCIÓN":
         allowed_targets = get_allowed_next_statuses(apparatus, previous_status)
     return new_status in allowed_targets
 
@@ -2754,7 +2931,7 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
 
 def render_tiempos_tab(current_user: str = "Admin") -> None:
     st.subheader("⏱️ Tiempos y Alertas")
-    tiempos_df = build_tiempos_runtime_df()
+    tiempos_df = filter_tiempos_for_user(build_tiempos_runtime_df(), current_user)
 
     if tiempos_df.empty:
         st.info("TIEMPOS_APARATOS aún no tiene registros de cambios de status.")
@@ -2974,15 +3151,59 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
         st.rerun()
 
 
-def render_global_alert_dashboard() -> None:
-    """Muestra métricas y avisos de tiempos fuera de las pestañas."""
+def render_global_alert_dashboard(current_user: str) -> None:
+    """Muestra métricas y avisos de tiempos permitidos para el usuario."""
 
-    tiempos_df = build_tiempos_runtime_df()
+    tiempos_df = filter_tiempos_for_user(build_tiempos_runtime_df(), current_user)
     if tiempos_df.empty:
         st.info("⏱️ Aún no hay registros de tiempos para resumir.")
         return
 
     active_df = tiempos_df[tiempos_df["REGISTRO_ACTIVO"] == "Sí"].copy()
+    alert_pick_df = active_df[
+        active_df["ESTADO_ALERTA_VISUAL"].isin({"Próximo a vencer", "Atrasado"})
+    ].copy()
+    if not alert_pick_df.empty:
+        alert_pick_df = add_estatus_details(alert_pick_df)
+        alert_ids = list(
+            dict.fromkeys(
+                clean_cell(value).strip()
+                for value in alert_pick_df[ID_COLUMN].tolist()
+                if clean_cell(value).strip()
+            )
+        )
+        alert_labels = {}
+        owner_by_id = {}
+        for _, alert_row in alert_pick_df.iterrows():
+            identifier = clean_cell(alert_row.get(ID_COLUMN, "")).strip()
+            if not identifier or identifier in alert_labels:
+                continue
+            owner = get_status_tab_owner(clean_cell(alert_row.get(STATUS_COLUMN, "")))
+            owner_by_id[identifier] = owner
+            alert_labels[identifier] = (
+                f"🆔 {identifier} | 👤 {owner or 'General'} | "
+                f"🚦 {clean_cell(alert_row.get(STATUS_COLUMN, ''))} | "
+                f"🚨 {clean_cell(alert_row.get('ESTADO_ALERTA_VISUAL', ''))} | "
+                f"👩‍⚕️ {clean_cell(alert_row.get('NOMBRE DOCTOR', ''))}"
+            )
+        selected_alert_id = st.selectbox(
+            "🚨 Abrir alerta en su pestaña",
+            alert_ids,
+            format_func=lambda option: alert_labels.get(option, option),
+            key="global_alert_selector",
+        )
+        if st.button("📌 Ir al pedido seleccionado", key="go_to_selected_alert"):
+            owner = owner_by_id.get(selected_alert_id, "")
+            tab_key = normalize_text(owner).lower()
+            if tab_key and tab_key in USER_VISIBLE_TABS.get(current_user, []):
+                st.session_state["active_app_tab"] = tab_key
+                selector_key = get_case_selector_key_for_user(owner)
+                if selector_key:
+                    st.session_state[selector_key] = selected_alert_id
+                st.rerun()
+            else:
+                st.warning("Esta alerta no pertenece a una pestaña visible para tu usuario.")
+
     counts = active_df["ESTADO_ALERTA_VISUAL"].value_counts().to_dict() if not active_df.empty else {}
     st.markdown("### 📊 Resumen general de tiempos")
     summary_cols = st.columns(4)
@@ -3618,9 +3839,13 @@ def render_lesly_tab(current_user: str) -> None:
 
     with st.form("lesly_mark_printing_form"):
         st.markdown("### 🖨️ Marcar pedidos como impresión")
+        default_print_selection = [
+            st.session_state.get("lesly_alert_selected_case")
+        ] if st.session_state.get("lesly_alert_selected_case") in pending_print_ids else []
         selected_to_print = st.multiselect(
             "Selecciona uno o varios pedidos pendientes de impresión",
             pending_print_ids,
+            default=default_print_selection,
             format_func=lambda option: labels.get(option, option),
             disabled=not can_edit or not pending_print_ids,
         )
@@ -3651,9 +3876,13 @@ def render_lesly_tab(current_user: str) -> None:
         st.markdown("### ➡️ Cambiar STATUS de pedidos ya marcados")
         if print_ready_ids and not advanceable_ids:
             st.info("Hay pedidos marcados como impresión, pero ninguno tiene un siguiente STATUS permitido para Lesly.")
+        default_advance_selection = [
+            st.session_state.get("lesly_alert_selected_case")
+        ] if st.session_state.get("lesly_alert_selected_case") in advanceable_ids else []
         selected_to_advance = st.multiselect(
             "Selecciona uno o varios pedidos ya marcados como impresión",
             advanceable_ids,
+            default=default_advance_selection,
             format_func=lambda option: f"{labels.get(option, option)} | ➡️ {next_status_by_id.get(option, '')}",
             disabled=not can_edit or not advanceable_ids,
         )
@@ -3724,8 +3953,8 @@ def render_vero_tab(current_user: str) -> None:
         st.info("No hay un siguiente STATUS permitido para Vero en este caso.")
 
 
-def render_alertas_tab() -> None:
-    render_tiempos_tab("Admin")
+def render_alertas_tab(current_user: str = "Admin") -> None:
+    render_tiempos_tab(current_user)
 
 
 def render_todos_tab(current_user: str) -> None:
@@ -3735,15 +3964,20 @@ def render_todos_tab(current_user: str) -> None:
 def render_active_app_tab(current_user: str) -> None:
     """Renderiza una sola pestaña y conserva la selección durante los reruns."""
 
+    visible_tabs = USER_VISIBLE_TABS.get(current_user, ["nuevo"])
+    current_selected_tab = st.session_state.get("active_app_tab")
+    if current_selected_tab not in visible_tabs:
+        st.session_state["active_app_tab"] = visible_tabs[0]
+
     selected_tab = st.segmented_control(
         "Pestaña activa",
-        options=list(APP_TAB_OPTIONS.keys()),
-        default="nuevo",
+        options=visible_tabs,
+        default=st.session_state.get("active_app_tab", visible_tabs[0]),
         format_func=lambda option: APP_TAB_OPTIONS[option],
         key="active_app_tab",
         label_visibility="collapsed",
     )
-    selected_tab = selected_tab or "nuevo"
+    selected_tab = selected_tab or visible_tabs[0]
 
     if selected_tab == "estefano":
         render_estefano_tab(current_user)
@@ -3756,7 +3990,7 @@ def render_active_app_tab(current_user: str) -> None:
     elif selected_tab == "lesly":
         render_lesly_tab(current_user)
     elif selected_tab == "alertas":
-        render_alertas_tab()
+        render_alertas_tab(current_user)
     elif selected_tab == "todos":
         render_todos_tab(current_user)
     elif selected_tab == "nuevo":
@@ -3783,14 +4017,11 @@ if st.button("🔄 Recargar datos", type="secondary"):
     st.rerun()
 
 try:
-    current_user = st.sidebar.selectbox(
-        "Usuario",
-        ["Jime", "Estefano", "Pagos", "Lesly", "Vero", "Admin"],
-        key="current_user",
-    )
-    ensure_tiempos_headers()
-    render_global_alert_dashboard()
-    render_active_app_tab(current_user)
+    current_user = require_authenticated_user()
+    if current_user is not None:
+        ensure_tiempos_headers()
+        render_global_alert_dashboard(current_user)
+        render_active_app_tab(current_user)
 except Exception as exc:
     st.error("Ocurrió un problema al cargar la app.")
     st.exception(exc)
