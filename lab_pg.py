@@ -40,6 +40,7 @@ FORMS_EXCLUDED_COLUMN_HINTS = [
 ID_COLUMN = "Columna 1"
 APARATO_COLUMN = "APARATO"
 STATUS_COLUMN = "STATUS"
+ESTATUS_PRINT_DATE_COLUMN = "FECHA IMPRESIÓN"
 APP_TIMEZONE_NAME = "America/Mexico_City"
 APP_TIMEZONE_LABEL = "Ciudad de México"
 APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
@@ -1289,6 +1290,49 @@ def update_active_tiempo_row(identifier: str, changes: dict[str, Any]) -> bool:
     worksheet.update_cells(updates, value_input_option="USER_ENTERED")
     st.cache_data.clear()
     return True
+
+
+def is_case_marked_for_printing(row: pd.Series) -> bool:
+    """Indica si el pedido ya tiene fecha de impresión en ESTATUS APARATOS."""
+
+    return bool(clean_cell(get_row_value_by_column(row, ESTATUS_PRINT_DATE_COLUMN, "")).strip())
+
+
+def mark_case_for_printing(identifier: str, row: pd.Series, current_user: str) -> dict[str, Any]:
+    """Guarda trazabilidad de impresión en ESTATUS APARATOS y TIEMPOS_APARATOS."""
+
+    now = app_now()
+    printed_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    estatus_result = update_row_by_columna_1(
+        identifier,
+        {
+            ESTATUS_PRINT_DATE_COLUMN: printed_at,
+        },
+    )
+    if not estatus_result["success"]:
+        return {
+            "success": False,
+            "message": estatus_result["error"]
+            or f"No se pudo guardar {ESTATUS_PRINT_DATE_COLUMN} en ESTATUS APARATOS.",
+        }
+
+    _, active_row = get_active_tiempo_row(identifier)
+    existing_comment = clean_cell(active_row.get("COMENTARIOS_CAMBIO", "")).strip() if active_row else ""
+    print_comment = "Mandar a imprimir marcado por Lesly"
+    combined_comment = f"{existing_comment}\n{print_comment}" if existing_comment else print_comment
+    update_active_tiempo_row(
+        identifier,
+        {
+            "FECHA_IMPRESION": now.strftime("%Y-%m-%d"),
+            "HORA_IMPRESION": now.strftime("%H:%M:%S"),
+            "USUARIO_IMPRESION": current_user,
+            "COMENTARIOS_CAMBIO": combined_comment,
+        },
+    )
+    return {
+        "success": True,
+        "message": f"{identifier} marcado como impresión el {printed_at}.",
+    }
 
 
 def can_advance_from_payment(identifier: str, current_status: str) -> tuple[bool, str]:
@@ -2659,6 +2703,12 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
             if not is_valid:
                 st.error(validation_message)
                 return
+            if current_user == "Lesly" and not is_case_marked_for_printing(row):
+                st.error(
+                    f"Primero debes marcar el pedido como impresión llenando "
+                    f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
+                )
+                return
 
         update_result = update_row_by_columna_1(selected_id, changes)
         if update_result["success"]:
@@ -3089,6 +3139,12 @@ def advance_case_status(
     if not is_valid:
         st.error(validation_message)
         return False
+    if current_user == "Lesly" and not is_case_marked_for_printing(row):
+        st.error(
+            f"Primero debes marcar el pedido como impresión llenando "
+            f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
+        )
+        return False
     result = update_row_by_columna_1(identifier, {STATUS_COLUMN: new_status})
     if not result["success"]:
         st.error(result["error"] or "No se pudo actualizar STATUS.")
@@ -3504,41 +3560,137 @@ def render_lesly_tab(current_user: str) -> None:
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
     cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Lesly"])
-    selected_id, row = render_case_selector(cases_df, "lesly_case_selector")
-    if row is None:
+    if cases_df.empty:
+        st.info("No hay casos para esta pestaña.")
         return
-    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
-    apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
-    if st.button("🖨️ Marcar mandar a imprimir", disabled=not can_edit):
-        now = app_now()
-        _, active_row = get_active_tiempo_row(selected_id)
-        existing_comment = clean_cell(active_row.get("COMENTARIOS_CAMBIO", "")).strip() if active_row else ""
-        print_comment = "Mandar a imprimir marcado por Lesly"
-        combined_comment = f"{existing_comment}\n{print_comment}" if existing_comment else print_comment
-        updated = update_active_tiempo_row(
-            selected_id,
-            {
-                "FECHA_IMPRESION": now.strftime("%Y-%m-%d"),
-                "HORA_IMPRESION": now.strftime("%H:%M:%S"),
-                "USUARIO_IMPRESION": current_user,
-                "COMENTARIOS_CAMBIO": combined_comment,
-            },
+
+    display_df = cases_df.copy()
+    display_df["IMPRESIÓN"] = display_df.apply(
+        lambda item: "✅ Marcado" if is_case_marked_for_printing(item) else "⏳ Pendiente",
+        axis=1,
+    )
+    st.caption(f"Registros encontrados: {len(display_df)}")
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=build_dataframe_column_config(display_df),
+    )
+    st.info(
+        "Primero marca los pedidos como impresión. Solo los pedidos con "
+        f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)} lleno pueden avanzar de STATUS."
+    )
+
+    row_by_id: dict[str, pd.Series] = {}
+    labels: dict[str, str] = {}
+    print_ready_ids: list[str] = []
+    pending_print_ids: list[str] = []
+    advanceable_ids: list[str] = []
+    next_status_by_id: dict[str, str] = {}
+
+    for _, case_row in cases_df.iterrows():
+        identifier = clean_cell(case_row.get(ID_COLUMN, "")).strip()
+        if not identifier or identifier in row_by_id:
+            continue
+        row_by_id[identifier] = case_row
+        current_status = normalize_status_alias(get_row_value_by_column(case_row, STATUS_COLUMN, ""))
+        apparatus = clean_cell(get_row_value_by_column(case_row, APARATO_COLUMN, ""))
+        print_date = clean_cell(get_row_value_by_column(case_row, ESTATUS_PRINT_DATE_COLUMN, "")).strip()
+        print_badge = f"✅ Impreso: {print_date}" if print_date else "⏳ Falta impresión"
+        labels[identifier] = (
+            f"🆔 {identifier} | 🚦 {display_selectbox_value(STATUS_COLUMN, current_status)} | "
+            f"{print_badge} | 👩‍⚕️ {clean_cell(case_row.get('NOMBRE DOCTOR', '')).strip()} | "
+            f"🙂 {clean_cell(case_row.get('NOMBRE PACIENTE', '')).strip()}"
         )
-        if updated:
-            st.success("Marcado para impresión con trazabilidad en TIEMPOS_APARATOS.")
+        if print_date:
+            print_ready_ids.append(identifier)
         else:
-            st.error("No encontré registro activo en TIEMPOS_APARATOS para guardar la trazabilidad de impresión.")
-    allowed_targets = [
-        status
-        for status in get_allowed_next_statuses(apparatus, current_status)
-        if status != current_status and is_transition_allowed_for_user("Lesly", current_status, status, apparatus)
-    ]
-    next_status = allowed_targets[0] if allowed_targets else ""
-    if next_status and st.button(f"➡️ Cambiar a {next_status}", disabled=not can_edit):
-        if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user):
+            pending_print_ids.append(identifier)
+
+        allowed_targets = [
+            status
+            for status in get_allowed_next_statuses(apparatus, current_status)
+            if status != current_status and is_transition_allowed_for_user("Lesly", current_status, status, apparatus)
+        ]
+        if print_date and allowed_targets:
+            advanceable_ids.append(identifier)
+            next_status_by_id[identifier] = allowed_targets[0]
+
+    with st.form("lesly_mark_printing_form"):
+        st.markdown("### 🖨️ Marcar pedidos como impresión")
+        selected_to_print = st.multiselect(
+            "Selecciona uno o varios pedidos pendientes de impresión",
+            pending_print_ids,
+            format_func=lambda option: labels.get(option, option),
+            disabled=not can_edit or not pending_print_ids,
+        )
+        mark_submitted = st.form_submit_button(
+            "🖨️ Marcar seleccionados como impresión",
+            disabled=not can_edit or not pending_print_ids,
+        )
+
+    if mark_submitted:
+        if not selected_to_print:
+            st.warning("Selecciona al menos un pedido para marcar como impresión.")
+        else:
+            successes = []
+            failures = []
+            for identifier in selected_to_print:
+                result = mark_case_for_printing(identifier, row_by_id[identifier], current_user)
+                if result["success"]:
+                    successes.append(identifier)
+                else:
+                    failures.append(f"{identifier}: {result['message']}")
+            if successes:
+                st.success(f"Pedidos marcados como impresión: {', '.join(successes)}.")
+            if failures:
+                st.error("No se pudieron marcar: " + " | ".join(failures))
             st.rerun()
-    elif not next_status:
-        st.info("No hay un siguiente STATUS permitido para Lesly en este caso.")
+
+    with st.form("lesly_advance_printed_form"):
+        st.markdown("### ➡️ Cambiar STATUS de pedidos ya marcados")
+        if print_ready_ids and not advanceable_ids:
+            st.info("Hay pedidos marcados como impresión, pero ninguno tiene un siguiente STATUS permitido para Lesly.")
+        selected_to_advance = st.multiselect(
+            "Selecciona uno o varios pedidos ya marcados como impresión",
+            advanceable_ids,
+            format_func=lambda option: f"{labels.get(option, option)} | ➡️ {next_status_by_id.get(option, '')}",
+            disabled=not can_edit or not advanceable_ids,
+        )
+        advance_submitted = st.form_submit_button(
+            "➡️ Cambiar STATUS de seleccionados",
+            disabled=not can_edit or not advanceable_ids,
+        )
+
+    if advance_submitted:
+        if not selected_to_advance:
+            st.warning("Selecciona al menos un pedido marcado como impresión para cambiar STATUS.")
+        else:
+            successes = []
+            failures = []
+            for identifier in selected_to_advance:
+                case_row = row_by_id[identifier]
+                if not is_case_marked_for_printing(case_row):
+                    failures.append(f"{identifier}: falta {ESTATUS_PRINT_DATE_COLUMN}.")
+                    continue
+                next_status = next_status_by_id.get(identifier, "")
+                if not next_status:
+                    failures.append(f"{identifier}: no tiene siguiente STATUS permitido.")
+                    continue
+                if advance_case_status(
+                    identifier=identifier,
+                    row=case_row,
+                    new_status=next_status,
+                    current_user=current_user,
+                ):
+                    successes.append(f"{identifier} → {next_status}")
+                else:
+                    failures.append(f"{identifier}: no se pudo cambiar STATUS.")
+            if successes:
+                st.success("Pedidos actualizados: " + " | ".join(successes))
+            if failures:
+                st.error("Revisa estos pedidos: " + " | ".join(failures))
+            st.rerun()
 
 
 def render_vero_tab(current_user: str) -> None:
