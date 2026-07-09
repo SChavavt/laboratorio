@@ -3390,6 +3390,55 @@ def filter_estatus_by_status(statuses: list[str]) -> pd.DataFrame:
     ].copy()
 
 
+
+def filter_payment_control_cases(estatus_df: pd.DataFrame) -> pd.DataFrame:
+    """Lista pedidos que necesitan revisión en la pestaña de pagos.
+
+    Incluye pedidos detenidos en un STATUS de pago y pedidos cuyo estado
+    comercial aún no está marcado como pagado total o cancelado.
+    """
+
+    if estatus_df.empty:
+        return pd.DataFrame()
+
+    status_series = (
+        estatus_df[STATUS_COLUMN].apply(lambda value: normalize_status_alias(value))
+        if STATUS_COLUMN in estatus_df.columns
+        else pd.Series([""] * len(estatus_df), index=estatus_df.index)
+    )
+    payment_series = (
+        estatus_df["PAGO"].apply(lambda value: clean_display_value(clean_cell(value).strip()).upper())
+        if "PAGO" in estatus_df.columns
+        else pd.Series([""] * len(estatus_df), index=estatus_df.index)
+    )
+    payment_status_norms = {normalize_text(status) for status in PAYMENT_STATUSES}
+    needs_workflow_payment = status_series.apply(lambda value: normalize_text(value) in payment_status_norms)
+    needs_commercial_payment = payment_series.isin({"ANTICIPO", "SIN PAGO", ""})
+    cases_df = estatus_df[needs_workflow_payment | needs_commercial_payment].copy()
+    if cases_df.empty:
+        return cases_df
+
+    cases_df.insert(
+        min(len(cases_df.columns), 2),
+        "PAGO A VALIDAR",
+        cases_df.apply(describe_payment_to_validate, axis=1),
+    )
+    return cases_df
+
+
+def describe_payment_to_validate(row: pd.Series) -> str:
+    """Indica si el pago pendiente corresponde a planeación o confección."""
+
+    status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    if status == "PAGO PLANEACIÓN":
+        return "Planeación"
+    if status == "PAGO CONFECCIÓN":
+        return "Confección"
+    apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")).strip()
+    service = clean_cell(get_row_value_by_column(row, "SERVICIO", "")).strip()
+    context = f"{apparatus} / {service}".strip(" /")
+    return f"Por definir según aparato{f' ({context})' if context else ''}"
+
 def apply_single_row_selection_to_selectbox(
     event: Any, df: pd.DataFrame, id_column: str, selectbox_key: str
 ) -> None:
@@ -3902,15 +3951,26 @@ def render_pagos_tab(current_user: str) -> None:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
     estatus_df = read_sheet_df(SHEET_ESTATUS)
     render_payment_status_metrics(estatus_df)
-    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Pagos"])
+    cases_df = filter_payment_control_cases(estatus_df)
+    st.caption(
+        "Se muestran pedidos en PAGO PLANEACIÓN/PAGO CONFECCIÓN y también "
+        "los pedidos con PAGO en SIN PAGO o ANTICIPO para poder actualizarlos."
+    )
     selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
     if row is None:
         return
     row_number, active_payment = get_active_tiempo_row(selected_id)
-    if not active_payment:
-        st.error("No encontré registro activo en TIEMPOS_APARATOS para este pago.")
-        return
-    st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
+    current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    active_payment_required = clean_cell(active_payment.get("PAGO_REQUERIDO", "")).strip() == "Sí"
+    if active_payment:
+        st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
+    else:
+        st.warning(
+            "Este pedido aparece porque su columna PAGO aún no está como TOTAL/CANCELO, "
+            "pero no tiene un pago activo en TIEMPOS_APARATOS. Puedes cambiar el estado "
+            "comercial del pedido; para aprobar con comprobante primero debe estar en "
+            "PAGO PLANEACIÓN o PAGO CONFECCIÓN."
+        )
     current_payment_status = clean_display_value(
         clean_cell(get_row_value_by_column(row, "PAGO", "")).strip()
     ).upper()
@@ -3934,11 +3994,13 @@ def render_pagos_tab(current_user: str) -> None:
             st.rerun()
         else:
             st.error(result["error"] or "No se pudo actualizar el estado de pago.")
-    comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit)
-    comprobante_file = st.file_uploader("Subir comprobante", disabled=not can_edit, key=f"pago_comprobante_{selected_id}")
+    payment_kind = clean_cell(active_payment.get("TIPO_PAGO_REQUERIDO", "")).strip() or describe_payment_to_validate(row)
+    st.info(f"Pago a validar: {payment_kind}.")
+    comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit or not active_payment_required)
+    comprobante_file = st.file_uploader("Subir comprobante", disabled=not can_edit or not active_payment_required, key=f"pago_comprobante_{selected_id}")
     col_approve, col_reject = st.columns(2)
     with col_approve:
-        if st.button("✅ Aprobar pago", disabled=not can_edit):
+        if st.button("✅ Aprobar pago", disabled=not can_edit or not active_payment_required):
             receipt_value = comprobante_url.strip()
             if comprobante_file is not None:
                 try:
@@ -3949,8 +4011,7 @@ def render_pagos_tab(current_user: str) -> None:
             now_dt = app_now()
             now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
             update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Aprobado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": receipt_value, "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "Sí", "MOTIVO_BLOQUEO": ""})
-            current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
-            estatus_changes = {}
+            estatus_changes = {"PAGO": selected_payment_status}
             if current_status == "PAGO PLANEACIÓN":
                 estatus_changes["FECHA PAGO PLANEACION"] = format_sheet_date(now_dt.date())
             if current_status == "PAGO CONFECCIÓN":
@@ -3962,25 +4023,25 @@ def render_pagos_tab(current_user: str) -> None:
             st.success("Pago aprobado. Ya puedes avanzar al siguiente proceso.")
             st.rerun()
     with col_reject:
-        if st.button("❌ Rechazar pago", disabled=not can_edit):
+        if st.button("❌ Rechazar pago", disabled=not can_edit or not active_payment_required):
             now = app_now().strftime("%Y-%m-%d %H:%M:%S")
             update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Rechazado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": comprobante_url.strip(), "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "No", "MOTIVO_BLOQUEO": "Pago rechazado"})
             st.warning("Pago rechazado.")
             st.rerun()
-    can_advance, reason = can_advance_from_payment(selected_id, get_row_value_by_column(row, STATUS_COLUMN, ""))
-    if can_advance:
-        current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
-        apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
-        if current_status == "PAGO PLANEACIÓN":
-            next_status = "EN PLANEACIÓN"
+    if current_status in PAYMENT_STATUSES:
+        can_advance, reason = can_advance_from_payment(selected_id, current_status)
+        if can_advance:
+            apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
+            if current_status == "PAGO PLANEACIÓN":
+                next_status = "EN PLANEACIÓN"
+            else:
+                options = [status for status in get_allowed_next_statuses(apparatus, current_status) if status != current_status and status != "CANCELO"]
+                next_status = options[0] if options else current_status
+            if st.button(f"➡️ Avanzar al siguiente proceso: {next_status}", disabled=not can_edit):
+                if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user, comment="Avance posterior a aprobación de pago"):
+                    st.rerun()
         else:
-            options = [status for status in get_allowed_next_statuses(apparatus, current_status) if status != current_status and status != "CANCELO"]
-            next_status = options[0] if options else current_status
-        if st.button(f"➡️ Avanzar al siguiente proceso: {next_status}", disabled=not can_edit):
-            if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user, comment="Avance posterior a aprobación de pago"):
-                st.rerun()
-    else:
-        st.info(reason)
+            st.info(reason)
 
 
 def render_lesly_tab(current_user: str) -> None:
