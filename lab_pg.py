@@ -3444,6 +3444,35 @@ def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Seri
     return selected_id, selected_row
 
 
+def get_status_datetime_autofill_changes(
+    row: pd.Series,
+    previous_status: str,
+    new_status: str,
+    current_user: str,
+) -> dict[str, str]:
+    """Autollena fechas clave al cambiar STATUS según las reglas de cada columna."""
+
+    now_value = format_sheet_datetime(app_now())
+    changes: dict[str, str] = {}
+
+    # Estas fechas deben reflejar el último evento real del flujo,
+    # por eso se actualizan aunque ya tuvieran un valor previo.
+    if (
+        current_user == "Estefano"
+        and previous_status in {"EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "EN DISEÑO"}
+        and new_status in {"REVISIÓN DISEÑO DOCTOR", "PAGO CONFECCIÓN"}
+    ):
+        changes["FECHA/HORA ENVÍO STEFANO"] = now_value
+
+    if new_status == "STL PSM ENVIADO":
+        changes["FECHA/HORA ENTREGA STEFANO"] = now_value
+
+    if new_status == "PRODUCTO ENVIADO":
+        changes["FECHA ENVÍO"] = format_sheet_date(app_today())
+
+    return changes
+
+
 def advance_case_status(
     *,
     identifier: str,
@@ -3473,10 +3502,33 @@ def advance_case_status(
             f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
         )
         return False
-    result = update_row_by_columna_1(identifier, {STATUS_COLUMN: new_status})
+    estatus_changes = {STATUS_COLUMN: new_status}
+    estatus_changes.update(
+        get_status_datetime_autofill_changes(
+            row=row,
+            previous_status=previous_status,
+            new_status=new_status,
+            current_user=current_user,
+        )
+    )
+    result = update_row_by_columna_1(identifier, estatus_changes)
     if not result["success"]:
         st.error(result["error"] or "No se pudo actualizar STATUS.")
         return False
+    skipped_datetime_columns = [
+        column
+        for column in [
+            "FECHA/HORA ENVÍO STEFANO",
+            "FECHA/HORA ENTREGA STEFANO",
+            "FECHA ENVÍO",
+        ]
+        if column in result.get("skipped_columns", [])
+    ]
+    if skipped_datetime_columns:
+        st.warning(
+            "El STATUS se actualizó, pero no encontré estas columnas de fecha para autollenar: "
+            + ", ".join(skipped_datetime_columns)
+        )
     register_status_change(
         identifier=identifier,
         apparatus=apparatus,
@@ -3819,11 +3871,37 @@ def render_jime_tab(current_user: str) -> None:
             st.rerun()
 
 
+def render_payment_status_metrics(estatus_df: pd.DataFrame) -> None:
+    """Muestra métricas rápidas del estado comercial de pago en ESTATUS APARATOS."""
+
+    st.markdown("### 📊 Resumen de pagos")
+    if estatus_df.empty or "PAGO" not in estatus_df.columns:
+        st.info("No hay datos de pago para calcular métricas.")
+        return
+
+    normalized_payment_values = estatus_df["PAGO"].apply(
+        lambda value: clean_display_value(clean_cell(value).strip()).upper()
+    )
+    payment_counts = normalized_payment_values.value_counts().to_dict()
+    metric_columns = st.columns(4)
+    metric_definitions = [
+        ("🟢 Pagados total", "TOTAL"),
+        ("🔴 Con anticipo", "ANTICIPO"),
+        ("⚪ Sin pago", "SIN PAGO"),
+        ("🔵 Cancelados", "CANCELO"),
+    ]
+    for column, (label, value) in zip(metric_columns, metric_definitions):
+        with column:
+            st.metric(label, int(payment_counts.get(value, 0)))
+
+
 def render_pagos_tab(current_user: str) -> None:
     st.subheader("💳 Pagos")
     can_edit = user_can_edit_tab(current_user, "Pagos")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    render_payment_status_metrics(estatus_df)
     cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Pagos"])
     selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
     if row is None:
@@ -3833,6 +3911,29 @@ def render_pagos_tab(current_user: str) -> None:
         st.error("No encontré registro activo en TIEMPOS_APARATOS para este pago.")
         return
     st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
+    current_payment_status = clean_display_value(
+        clean_cell(get_row_value_by_column(row, "PAGO", "")).strip()
+    ).upper()
+    current_payment_index = (
+        PAGO_OPTIONS.index(current_payment_status)
+        if current_payment_status in PAGO_OPTIONS
+        else 0
+    )
+    selected_payment_status = st.selectbox(
+        "Estado del pago en pedido",
+        PAGO_OPTIONS,
+        index=current_payment_index,
+        format_func=lambda option: display_selectbox_value("PAGO", option),
+        disabled=not can_edit,
+        key=f"pedido_pago_status_{selected_id}",
+    )
+    if st.button("💾 Actualizar estado de pago del pedido", disabled=not can_edit):
+        result = update_row_by_columna_1(selected_id, {"PAGO": selected_payment_status})
+        if result["success"]:
+            st.success(f"Estado de pago actualizado a {selected_payment_status}.")
+            st.rerun()
+        else:
+            st.error(result["error"] or "No se pudo actualizar el estado de pago.")
     comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit)
     comprobante_file = st.file_uploader("Subir comprobante", disabled=not can_edit, key=f"pago_comprobante_{selected_id}")
     col_approve, col_reject = st.columns(2)
