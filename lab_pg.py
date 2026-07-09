@@ -3392,36 +3392,54 @@ def filter_estatus_by_status(statuses: list[str]) -> pd.DataFrame:
 
 
 def filter_payment_control_cases(estatus_df: pd.DataFrame) -> pd.DataFrame:
-    """Lista pedidos que necesitan revisión en la pestaña de pagos.
+    """Lista solo pagos activos creados por el flujo nuevo de la app.
 
-    Incluye pedidos detenidos en un STATUS de pago y pedidos cuyo estado
-    comercial aún no está marcado como pagado total o cancelado.
+    No usa la columna comercial PAGO como criterio para evitar mezclar
+    registros históricos pagados/sin comprobante con pagos nuevos que sí
+    requieren validación desde TIEMPOS_APARATOS.
     """
 
-    if estatus_df.empty:
+    if estatus_df.empty or ID_COLUMN not in estatus_df.columns:
         return pd.DataFrame()
 
-    status_series = (
-        estatus_df[STATUS_COLUMN].apply(lambda value: normalize_status_alias(value))
-        if STATUS_COLUMN in estatus_df.columns
-        else pd.Series([""] * len(estatus_df), index=estatus_df.index)
-    )
-    payment_series = (
-        estatus_df["PAGO"].apply(lambda value: clean_display_value(clean_cell(value).strip()).upper())
-        if "PAGO" in estatus_df.columns
-        else pd.Series([""] * len(estatus_df), index=estatus_df.index)
-    )
-    payment_status_norms = {normalize_text(status) for status in PAYMENT_STATUSES}
-    needs_workflow_payment = status_series.apply(lambda value: normalize_text(value) in payment_status_norms)
-    needs_commercial_payment = payment_series.isin({"ANTICIPO", "SIN PAGO", ""})
-    cases_df = estatus_df[needs_workflow_payment | needs_commercial_payment].copy()
+    tiempos_df = read_sheet_df(SHEET_TIEMPOS)
+    required_columns = {ID_COLUMN, "FECHA_FIN", "PAGO_REQUERIDO", "PAGO_ESTADO"}
+    if tiempos_df.empty or not required_columns.issubset(tiempos_df.columns):
+        return pd.DataFrame()
+
+    active_payment_rows = tiempos_df[
+        (tiempos_df[ID_COLUMN].apply(lambda value: bool(clean_cell(value).strip())))
+        & (tiempos_df["FECHA_FIN"].apply(lambda value: not clean_cell(value).strip()))
+        & (tiempos_df["PAGO_REQUERIDO"].apply(lambda value: clean_cell(value).strip() == "Sí"))
+        & (tiempos_df["PAGO_ESTADO"].apply(lambda value: clean_cell(value).strip() != "Aprobado"))
+    ].copy()
+    if active_payment_rows.empty:
+        return pd.DataFrame()
+
+    payment_lookup = {
+        clean_cell(row.get(ID_COLUMN, "")).strip(): row
+        for _, row in active_payment_rows.iterrows()
+        if clean_cell(row.get(ID_COLUMN, "")).strip()
+    }
+    active_payment_ids = set(payment_lookup)
+    cases_df = estatus_df[
+        estatus_df[ID_COLUMN].apply(lambda value: clean_cell(value).strip() in active_payment_ids)
+    ].copy()
     if cases_df.empty:
         return cases_df
 
     cases_df.insert(
         min(len(cases_df.columns), 2),
         "PAGO A VALIDAR",
-        cases_df.apply(describe_payment_to_validate, axis=1),
+        cases_df.apply(
+            lambda row: clean_cell(
+                payment_lookup.get(
+                    clean_cell(row.get(ID_COLUMN, "")).strip(), {}
+                ).get("TIPO_PAGO_REQUERIDO", "")
+            ).strip()
+            or describe_payment_to_validate(row),
+            axis=1,
+        ),
     )
     return cases_df
 
@@ -3953,8 +3971,8 @@ def render_pagos_tab(current_user: str) -> None:
     render_payment_status_metrics(estatus_df)
     cases_df = filter_payment_control_cases(estatus_df)
     st.caption(
-        "Se muestran pedidos en PAGO PLANEACIÓN/PAGO CONFECCIÓN y también "
-        "los pedidos con PAGO en SIN PAGO o ANTICIPO para poder actualizarlos."
+        "Se muestran solo pagos activos creados por el flujo nuevo de la app "
+        "en TIEMPOS_APARATOS; no se mezclan registros históricos de la columna PAGO."
     )
     selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
     if row is None:
@@ -3966,10 +3984,9 @@ def render_pagos_tab(current_user: str) -> None:
         st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
     else:
         st.warning(
-            "Este pedido aparece porque su columna PAGO aún no está como TOTAL/CANCELO, "
-            "pero no tiene un pago activo en TIEMPOS_APARATOS. Puedes cambiar el estado "
-            "comercial del pedido; para aprobar con comprobante primero debe estar en "
-            "PAGO PLANEACIÓN o PAGO CONFECCIÓN."
+            "Este pedido no tiene un pago activo del flujo nuevo en TIEMPOS_APARATOS. "
+            "No se debe buscar comprobante histórico; primero debe generarse una "
+            "solicitud de pago nueva desde el flujo de la app."
         )
     current_payment_status = clean_display_value(
         clean_cell(get_row_value_by_column(row, "PAGO", "")).strip()
