@@ -598,6 +598,10 @@ TEXT_AREA_COLUMNS = {
 }
 
 DEFAULT_DELIVERY_BUSINESS_DAYS = 10
+SPECIAL_PAYMENT_SLA_APPARATUSES = {"DISTALIZADOR", "TIGER", "LEONE"}
+SPECIAL_PAYMENT_SLA_BUSINESS_DAYS = 10
+PLANNING_PAYMENT_SLA_TARGET_STATUS = "GUÍA PSM + PSM ENVIADA"
+CONFECTION_PAYMENT_SLA_TARGET_STATUS = "PRODUCTO ENVIADO"
 
 SPANISH_MONTHS = {
     "ENERO": 1,
@@ -1593,6 +1597,84 @@ def calculate_duration_hours(start_dt: datetime | None, end_dt: datetime | None 
     return f"{business_hours_elapsed(start_dt, end_dt):.2f}"
 
 
+
+def get_status_flow_index(apparatus: str, status: str) -> int | None:
+    """Devuelve la posición de un STATUS dentro del flujo configurado del aparato."""
+
+    status_norm = normalize_text(normalize_status_alias(status))
+    for index, (flow_status, _) in enumerate(get_process_flow(apparatus)):
+        if normalize_text(flow_status) == status_norm:
+            return index
+    return None
+
+
+def has_reached_status(apparatus: str, current_status: str, target_status: str) -> bool:
+    """Indica si el pedido ya llegó al STATUS objetivo o a una fase posterior del flujo."""
+
+    current_status = normalize_status_alias(current_status)
+    target_status = normalize_status_alias(target_status)
+    if current_status == target_status:
+        return True
+    current_index = get_status_flow_index(apparatus, current_status)
+    target_index = get_status_flow_index(apparatus, target_status)
+    if current_index is None or target_index is None:
+        return False
+    return current_index >= target_index
+
+
+def get_special_payment_sla_alert_state(
+    row: pd.Series, estatus_by_id: dict[str, dict[str, Any]]
+) -> str:
+    """Calcula alertas especiales de pagos para Distalizador, Tiger y Leone."""
+
+    identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+    estatus_row = estatus_by_id.get(identifier, {})
+    apparatus = clean_display_value(
+        clean_cell(row.get("APARATO", estatus_row.get(APARATO_COLUMN, "")))
+    )
+    if normalize_text(apparatus) not in {
+        normalize_text(item) for item in SPECIAL_PAYMENT_SLA_APPARATUSES
+    }:
+        return ""
+
+    current_status = normalize_status_alias(
+        clean_cell(row.get(STATUS_COLUMN, estatus_row.get(STATUS_COLUMN, "")))
+    )
+    if current_status in TERMINAL_STATUSES:
+        return ""
+
+    checks = [
+        (
+            "FECHA PAGO PLANEACION",
+            PLANNING_PAYMENT_SLA_TARGET_STATUS,
+            "Pago planeación",
+        ),
+        (
+            "FECHA PAGO CONFECCION",
+            CONFECTION_PAYMENT_SLA_TARGET_STATUS,
+            "Pago confección",
+        ),
+    ]
+    for date_column, target_status, label in checks:
+        payment_date = parse_simple_date(estatus_row.get(date_column, ""))
+        if payment_date is None or has_reached_status(
+            apparatus, current_status, target_status
+        ):
+            continue
+        start_dt = datetime.combine(payment_date, datetime.min.time()).replace(
+            tzinfo=APP_TIMEZONE
+        )
+        max_hours = SPECIAL_PAYMENT_SLA_BUSINESS_DAYS * 24
+        elapsed_hours = business_hours_elapsed(start_dt, app_now())
+        if elapsed_hours >= max_hours:
+            return (
+                f"Atrasado - {label} > {SPECIAL_PAYMENT_SLA_BUSINESS_DAYS} "
+                f"días hábiles sin {target_status}"
+            )
+        if elapsed_hours >= max_hours * 0.8:
+            return f"Próximo a vencer - {label} sin {target_status}"
+    return ""
+
 def calculate_alert_state(
     fecha_inicio: Any,
     hora_inicio: Any,
@@ -2198,16 +2280,29 @@ def build_tiempos_runtime_df() -> pd.DataFrame:
 
     active_mask = tiempos_df["FECHA_FIN"].astype(str).str.strip() == ""
     tiempos_df["REGISTRO_ACTIVO"] = active_mask.map({True: "Sí", False: "No"})
-    tiempos_df["ESTADO_ALERTA_VISUAL"] = tiempos_df.apply(
-        lambda row: calculate_alert_state(
+
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    estatus_by_id: dict[str, dict[str, Any]] = {}
+    if not estatus_df.empty and ID_COLUMN in estatus_df.columns:
+        estatus_by_id = {
+            clean_cell(row.get(ID_COLUMN, "")).strip(): row.to_dict()
+            for _, row in estatus_df.iterrows()
+            if clean_cell(row.get(ID_COLUMN, "")).strip()
+        }
+
+    def build_alert_state(row: pd.Series) -> str:
+        if clean_cell(row.get("FECHA_FIN", "")).strip():
+            return "Cerrado"
+        special_state = get_special_payment_sla_alert_state(row, estatus_by_id)
+        if special_state:
+            return special_state
+        return calculate_alert_state(
             row.get("FECHA_INICIO", ""),
             row.get("HORA_INICIO", ""),
             row.get("TIEMPO_MAXIMO_HORAS", ""),
         )
-        if clean_cell(row.get("FECHA_FIN", "")).strip() == ""
-        else "Cerrado",
-        axis=1,
-    )
+
+    tiempos_df["ESTADO_ALERTA_VISUAL"] = tiempos_df.apply(build_alert_state, axis=1)
     tiempos_df["HORAS_TRANSCURRIDAS"] = tiempos_df.apply(
         lambda row: calculate_duration_hours(
             parse_start_datetime(row.get("FECHA_INICIO", ""), row.get("HORA_INICIO", ""))
@@ -3007,7 +3102,11 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
     alert_states = {"Próximo a vencer", "Atrasado"}
     alert_df = tiempos_df[
         (tiempos_df["REGISTRO_ACTIVO"] == "Sí")
-        & (tiempos_df["ESTADO_ALERTA_VISUAL"].isin(alert_states))
+        & (
+            tiempos_df["ESTADO_ALERTA_VISUAL"]
+            .astype(str)
+            .str.startswith(tuple(alert_states))
+        )
     ].copy()
     if alert_df.empty:
         st.success("No hay pedidos activos próximos a vencer o atrasados.")
@@ -3161,7 +3260,9 @@ def render_global_alert_dashboard(current_user: str) -> None:
 
     active_df = tiempos_df[tiempos_df["REGISTRO_ACTIVO"] == "Sí"].copy()
     alert_pick_df = active_df[
-        active_df["ESTADO_ALERTA_VISUAL"].isin({"Próximo a vencer", "Atrasado"})
+        active_df["ESTADO_ALERTA_VISUAL"]
+        .astype(str)
+        .str.startswith(("Próximo a vencer", "Atrasado"))
     ].copy()
     if not alert_pick_df.empty:
         alert_pick_df = add_estatus_details(alert_pick_df)
@@ -3204,16 +3305,22 @@ def render_global_alert_dashboard(current_user: str) -> None:
             else:
                 st.warning("Esta alerta no pertenece a una pestaña visible para tu usuario.")
 
-    counts = active_df["ESTADO_ALERTA_VISUAL"].value_counts().to_dict() if not active_df.empty else {}
+    alert_state_series = (
+        active_df["ESTADO_ALERTA_VISUAL"].astype(str)
+        if not active_df.empty
+        else pd.Series(dtype=str)
+    )
     st.markdown("### 📊 Resumen general de tiempos")
     summary_cols = st.columns(4)
     for container, label in zip(
         summary_cols,
         ["En tiempo", "Próximo a vencer", "Atrasado", "Sin tiempo configurado"],
     ):
-        container.metric(label, counts.get(label, 0))
+        container.metric(label, int(alert_state_series.str.startswith(label).sum()))
 
-    delayed_df = active_df[active_df["ESTADO_ALERTA_VISUAL"] == "Atrasado"].copy()
+    delayed_df = active_df[
+        active_df["ESTADO_ALERTA_VISUAL"].astype(str).str.startswith("Atrasado")
+    ].copy()
     if delayed_df.empty:
         st.success("✅ No hay pedidos atrasados activos en este momento.")
         return
@@ -3221,7 +3328,7 @@ def render_global_alert_dashboard(current_user: str) -> None:
     delayed_df = add_estatus_details(delayed_df)
     delayed_df["HORAS_NUM"] = pd.to_numeric(delayed_df["HORAS_TRANSCURRIDAS"], errors="coerce")
     delayed_df = delayed_df.sort_values("HORAS_NUM", ascending=False).head(5)
-    st.warning(f"🚨 Hay {len(active_df[active_df['ESTADO_ALERTA_VISUAL'] == 'Atrasado'])} pedido(s) atrasado(s) activos.")
+    st.warning(f"🚨 Hay {len(delayed_df)} pedido(s) atrasado(s) activos.")
     notice_rows = []
     for _, row in delayed_df.iterrows():
         notice_rows.append(
