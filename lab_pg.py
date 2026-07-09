@@ -130,13 +130,13 @@ USER_TAB_STATUSES = {
 }
 APP_TAB_OPTIONS = {
     "nuevo": "➕ Nuevo pedido",
-    "estefano": "📥 Estefano",
-    "jime": "📋 Jime",
-    "pagos": "💳 Pagos",
-    "lesly": "🖨️ Lesly",
-    "vero": "🛠️ Vero",
+    "estefano": "📐 Planeación y Diseño",
+    "jime": "📋 Recepción y Seguimiento",
+    "pagos": "💳 Control de Pagos",
+    "lesly": "🖨️ Impresión y Sinterizado",
+    "vero": "🛠️ Confección y Calidad",
     "alertas": "⏱️ Alertas",
-    "todos": "📋 Todos",
+    "todos": "📋 Todos los Procesos",
     "procesos": "⚙️ Procesos por Aparato",
 }
 USER_ALLOWED_TRANSITIONS = {
