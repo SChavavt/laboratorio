@@ -2743,43 +2743,63 @@ def render_nuevo_pedido_tab() -> None:
     form_key = f"form_nuevo_pedido_{form_version}"
 
     with st.form(form_key):
-        col_left, col_right = st.columns(2)
+        is_admin_user = get_current_user() == "Admin"
+        fecha_recepcion = app_today()
 
-        with col_left:
-            st.info(
-                "El ID único de Columna 1 se generará automáticamente al guardar "
-                "con formato DDMMAAAA-NNN."
-            )
+        if is_admin_user:
+            admin_info_cols = st.columns(2)
+            with admin_info_cols[0]:
+                st.info(
+                    "El ID único de Columna 1 se generará automáticamente al guardar "
+                    "con formato DDMMAAAA-NNN."
+                )
+                st.info(
+                    f"{display_field_label('FECHA DE RECEPCIÓN')}: "
+                    f"{format_sheet_date(fecha_recepcion)} (automática al guardar)."
+                )
+            with admin_info_cols[1]:
+                st.info(
+                    f"{display_field_label('DÍAS DE ENTREGA')}: "
+                    f"{DEFAULT_DELIVERY_BUSINESS_DAYS} días hábiles para todos los aparatos."
+                )
+                st.info(
+                    f"{display_field_label('FECHA PARA ENTREGA')}: "
+                    "se calculará automáticamente al aprobar PAGO CONFECCIÓN."
+                )
+
+        first_row_cols = st.columns(3)
+        second_row_cols = st.columns(3)
+
+        with first_row_cols[0]:
             aparato = st.selectbox(
                 display_field_label("APARATO"),
                 build_display_selectbox_options("APARATO", APARATO_OPTIONS, ""),
                 key=f"nuevo_pedido_aparato_{form_version}",
             )
+        with first_row_cols[1]:
             nombre_doctor = st.text_input(
                 display_field_label("NOMBRE DOCTOR"),
                 key=f"nuevo_pedido_doctor_{form_version}",
             )
+        with first_row_cols[2]:
             nombre_paciente = st.text_input(
                 display_field_label("NOMBRE PACIENTE"),
                 key=f"nuevo_pedido_paciente_{form_version}",
             )
-            detalle_comentarios = st.text_area(
-                display_field_label("DETALLE COMENTARIOS"),
-                height=100,
-                key=f"nuevo_pedido_comentarios_{form_version}",
-            )
 
-        with col_right:
+        with second_row_cols[0]:
             vendedor = st.selectbox(
                 display_field_label("VENDEDOR"),
                 build_display_selectbox_options("VENDEDOR", VENDEDOR_OPTIONS, ""),
                 key=f"nuevo_pedido_vendedor_{form_version}",
             )
+        with second_row_cols[1]:
             servicio = st.selectbox(
                 display_field_label("SERVICIO"),
                 build_display_selectbox_options("SERVICIO", SERVICIO_OPTIONS, ""),
                 key=f"nuevo_pedido_servicio_{form_version}",
             )
+        with second_row_cols[2]:
             archivos_recibidos = st.selectbox(
                 display_field_label("ARCHIVOS RECIBIDOS"),
                 build_display_selectbox_options(
@@ -2787,19 +2807,12 @@ def render_nuevo_pedido_tab() -> None:
                 ),
                 key=f"nuevo_pedido_archivos_{form_version}",
             )
-            fecha_recepcion = app_today()
-            st.info(
-                f"{display_field_label('FECHA DE RECEPCIÓN')}: "
-                f"{format_sheet_date(fecha_recepcion)} (automática al guardar)."
-            )
-            st.info(
-                f"{display_field_label('DÍAS DE ENTREGA')}: "
-                f"{DEFAULT_DELIVERY_BUSINESS_DAYS} días hábiles para todos los aparatos."
-            )
-            st.info(
-                f"{display_field_label('FECHA PARA ENTREGA')}: "
-                "se calculará automáticamente al aprobar PAGO CONFECCIÓN."
-            )
+
+        detalle_comentarios = st.text_area(
+            display_field_label("DETALLE COMENTARIOS"),
+            height=100,
+            key=f"nuevo_pedido_comentarios_{form_version}",
+        )
 
         submitted = st.form_submit_button("💾 Guardar nuevo pedido")
 
