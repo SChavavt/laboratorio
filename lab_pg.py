@@ -1112,6 +1112,11 @@ def add_business_time(start_datetime: datetime, time_text: Any) -> tuple[str, st
 def business_hours_elapsed(start_datetime: datetime, now: datetime) -> float:
     """Calcula horas transcurridas entre dos datetimes contando solo lunes-viernes."""
 
+    if start_datetime.tzinfo is not None and start_datetime.utcoffset() is not None:
+        start_datetime = start_datetime.astimezone(APP_TIMEZONE).replace(tzinfo=None)
+    if now.tzinfo is not None and now.utcoffset() is not None:
+        now = now.astimezone(APP_TIMEZONE).replace(tzinfo=None)
+
     if now <= start_datetime:
         return 0.0
     current = start_datetime
@@ -1564,15 +1569,15 @@ def mark_case_for_printing(identifier: str, row: pd.Series, current_user: str) -
 
 
 def can_advance_from_payment(identifier: str, current_status: str) -> tuple[bool, str]:
-    """Bloquea avances desde pagos si no están aprobados en TIEMPOS_APARATOS."""
+    """Bloquea avances desde pagos si el pago no habilita cambio de STATUS."""
 
     if normalize_status_alias(current_status) not in PAYMENT_STATUSES:
         return True, ""
     _, active_row = get_active_tiempo_row(identifier)
     if not active_row:
         return False, "No encontré el registro activo de pago en TIEMPOS_APARATOS."
-    if clean_cell(active_row.get("PAGO_ESTADO", "")).strip() != "Aprobado" or clean_cell(active_row.get("PUEDE_AVANZAR", "")).strip() != "Sí":
-        return False, "No puedes avanzar este caso porque el pago sigue pendiente o rechazado."
+    if clean_cell(active_row.get("PUEDE_AVANZAR", "")).strip() != "Sí":
+        return False, "No puedes avanzar este caso porque el pago no autoriza cambio de STATUS."
     return True, ""
 
 
@@ -3463,7 +3468,7 @@ def filter_payment_control_cases(estatus_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     tiempos_df = read_sheet_df(SHEET_TIEMPOS)
-    required_columns = {ID_COLUMN, "FECHA_FIN", "PAGO_REQUERIDO", "PAGO_ESTADO"}
+    required_columns = {ID_COLUMN, "FECHA_FIN", "PAGO_REQUERIDO", "PUEDE_AVANZAR"}
     if tiempos_df.empty or not required_columns.issubset(tiempos_df.columns):
         return pd.DataFrame()
 
@@ -3471,7 +3476,7 @@ def filter_payment_control_cases(estatus_df: pd.DataFrame) -> pd.DataFrame:
         (tiempos_df[ID_COLUMN].apply(lambda value: bool(clean_cell(value).strip())))
         & (tiempos_df["FECHA_FIN"].apply(lambda value: not clean_cell(value).strip()))
         & (tiempos_df["PAGO_REQUERIDO"].apply(lambda value: clean_cell(value).strip() == "Sí"))
-        & (tiempos_df["PAGO_ESTADO"].apply(lambda value: clean_cell(value).strip() != "Aprobado"))
+        & (tiempos_df["PUEDE_AVANZAR"].apply(lambda value: clean_cell(value).strip() != "Sí"))
     ].copy()
     if active_payment_rows.empty:
         return pd.DataFrame()
@@ -4090,6 +4095,91 @@ def render_payment_status_metrics(estatus_df: pd.DataFrame) -> None:
             st.metric(label, int(payment_counts.get(value, 0)))
 
 
+def render_payment_summary_card(active_payment: dict[str, Any]) -> None:
+    """Muestra el pago activo en formato visual sin exponer el dict técnico."""
+
+    if not active_payment:
+        return
+
+    field_definitions = [
+        ("TIPO_PAGO_REQUERIDO", "🏷️ Pago solicitado"),
+        ("PAGO_ESTADO", "✅ Estado"),
+        ("PAGO_FECHA", "📅 Fecha"),
+        ("PAGO_COMPROBANTE", "🔗 Comprobante"),
+        ("PAGO_VALIDADO_POR", "👤 Registró"),
+        ("MOTIVO_BLOQUEO", "🚧 Nota"),
+    ]
+    visible_fields = [
+        (label, clean_cell(active_payment.get(key, "")).strip())
+        for key, label in field_definitions
+        if clean_cell(active_payment.get(key, "")).strip()
+    ]
+    can_advance = clean_cell(active_payment.get("PUEDE_AVANZAR", "")).strip() == "Sí"
+    status_badge = "🟢 Autoriza avanzar" if can_advance else "🟡 Pendiente / no autoriza avanzar"
+
+    st.markdown("#### Resumen del pago activo")
+    st.caption(status_badge)
+    if not visible_fields:
+        st.info("Aún no hay datos capturados para este pago.")
+        return
+
+    columns = st.columns(2)
+    for index, (label, value) in enumerate(visible_fields):
+        with columns[index % 2]:
+            if value.startswith(("http://", "https://")):
+                st.markdown(f"**{label}:** [Abrir comprobante]({value})")
+            else:
+                st.markdown(f"**{label}:** {value}")
+
+
+def build_payment_authorization_changes(
+    *,
+    payment_status: str,
+    receipt_value: str,
+    current_user: str,
+    authorized_advance: bool = False,
+) -> dict[str, str]:
+    """Traduce la columna PAGO del pedido a autorización del flujo de pagos."""
+
+    now = app_now().strftime("%Y-%m-%d %H:%M:%S")
+    normalized_payment_status = clean_display_value(payment_status).upper()
+    if normalized_payment_status == "TOTAL":
+        return {
+            "PAGO_ESTADO": "Aprobado",
+            "PAGO_FECHA": now,
+            "PAGO_COMPROBANTE": receipt_value,
+            "PAGO_VALIDADO_POR": current_user,
+            "PUEDE_AVANZAR": "Sí",
+            "MOTIVO_BLOQUEO": "",
+        }
+    if normalized_payment_status == "ANTICIPO" and authorized_advance:
+        return {
+            "PAGO_ESTADO": "Anticipo autorizado",
+            "PAGO_FECHA": now,
+            "PAGO_COMPROBANTE": receipt_value,
+            "PAGO_VALIDADO_POR": current_user,
+            "PUEDE_AVANZAR": "Sí",
+            "MOTIVO_BLOQUEO": "",
+        }
+    if normalized_payment_status == "ANTICIPO":
+        return {
+            "PAGO_ESTADO": "Anticipo registrado",
+            "PAGO_FECHA": now,
+            "PAGO_COMPROBANTE": receipt_value,
+            "PAGO_VALIDADO_POR": current_user,
+            "PUEDE_AVANZAR": "No",
+            "MOTIVO_BLOQUEO": "Anticipo registrado; falta autorización para avanzar.",
+        }
+    return {
+        "PAGO_ESTADO": "No autorizado",
+        "PAGO_FECHA": now,
+        "PAGO_COMPROBANTE": receipt_value,
+        "PAGO_VALIDADO_POR": current_user,
+        "PUEDE_AVANZAR": "No",
+        "MOTIVO_BLOQUEO": f"{normalized_payment_status or 'SIN PAGO'} no autoriza cambio de STATUS.",
+    }
+
+
 def render_pagos_tab(current_user: str) -> None:
     st.subheader("💳 Control de Pagos")
     can_edit = user_can_edit_tab(current_user, "Pagos")
@@ -4109,7 +4199,7 @@ def render_pagos_tab(current_user: str) -> None:
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
     active_payment_required = clean_cell(active_payment.get("PAGO_REQUERIDO", "")).strip() == "Sí"
     if active_payment:
-        st.json({key: active_payment.get(key, "") for key in ["PAGO_REQUERIDO", "TIPO_PAGO_REQUERIDO", "PAGO_ESTADO", "PAGO_FECHA", "PAGO_COMPROBANTE", "PUEDE_AVANZAR", "MOTIVO_BLOQUEO"]})
+        render_payment_summary_card(active_payment)
     else:
         st.warning(
             "Este pedido no tiene un pago activo del flujo nuevo en TIEMPOS_APARATOS. "
@@ -4132,49 +4222,68 @@ def render_pagos_tab(current_user: str) -> None:
         disabled=not can_edit,
         key=f"pedido_pago_status_{selected_id}",
     )
-    if st.button("💾 Actualizar estado de pago del pedido", disabled=not can_edit):
-        result = update_row_by_columna_1(selected_id, {"PAGO": selected_payment_status})
-        if result["success"]:
-            st.success(f"Estado de pago actualizado a {selected_payment_status}.")
-            st.rerun()
-        else:
-            st.error(result["error"] or "No se pudo actualizar el estado de pago.")
     payment_kind = clean_cell(active_payment.get("TIPO_PAGO_REQUERIDO", "")).strip() or describe_payment_to_validate(row)
     st.info(f"Pago a validar: {payment_kind}.")
-    comprobante_url = st.text_input("Link del comprobante", value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")), disabled=not can_edit or not active_payment_required)
-    comprobante_file = st.file_uploader("Subir comprobante", disabled=not can_edit or not active_payment_required, key=f"pago_comprobante_{selected_id}")
-    col_approve, col_reject = st.columns(2)
-    with col_approve:
-        if st.button("✅ Aprobar pago", disabled=not can_edit or not active_payment_required):
-            receipt_value = comprobante_url.strip()
-            if comprobante_file is not None:
-                try:
-                    receipt_value = upload_payment_receipt_to_s3(selected_id, comprobante_file)
-                except Exception as exc:
-                    st.error(f"No se pudo subir el comprobante a S3: {exc}")
-                    return
-            now_dt = app_now()
-            now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Aprobado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": receipt_value, "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "Sí", "MOTIVO_BLOQUEO": ""})
-            estatus_changes = {"PAGO": selected_payment_status}
+    comprobante_url = st.text_input(
+        "Link del comprobante (opcional)",
+        value=clean_cell(active_payment.get("PAGO_COMPROBANTE", "")),
+        disabled=not can_edit or not active_payment_required,
+    )
+    comprobante_file = st.file_uploader(
+        "Subir comprobante (opcional)",
+        disabled=not can_edit or not active_payment_required,
+        key=f"pago_comprobante_{selected_id}",
+    )
+    authorize_advance = False
+    if selected_payment_status == "TOTAL":
+        st.success("Con TOTAL el pago queda aprobado automáticamente y se autoriza avanzar de STATUS.")
+        authorize_advance = True
+    elif selected_payment_status == "ANTICIPO":
+        authorize_advance = st.checkbox(
+            "Autorizar cambios de STATUS con anticipo",
+            value=False,
+            disabled=not can_edit or not active_payment_required,
+            key=f"autoriza_anticipo_{selected_id}",
+        )
+        if authorize_advance:
+            st.warning("El anticipo quedará autorizado para avanzar de STATUS.")
+        else:
+            st.info("El anticipo se registra, pero no autoriza avanzar de STATUS.")
+    else:
+        st.warning(f"{selected_payment_status} no autoriza el pago ni el avance de STATUS.")
+
+    if st.button("💾 Guardar estado del pago", disabled=not can_edit or not active_payment_required):
+        receipt_value = comprobante_url.strip()
+        if comprobante_file is not None:
+            try:
+                receipt_value = upload_payment_receipt_to_s3(selected_id, comprobante_file)
+            except Exception as exc:
+                st.error(f"No se pudo subir el comprobante a S3: {exc}")
+                return
+        tiempo_changes = build_payment_authorization_changes(
+            payment_status=selected_payment_status,
+            receipt_value=receipt_value,
+            current_user=current_user,
+            authorized_advance=authorize_advance,
+        )
+        update_active_tiempo_row(selected_id, tiempo_changes)
+        now_dt = app_now()
+        estatus_changes = {"PAGO": selected_payment_status}
+        if tiempo_changes["PUEDE_AVANZAR"] == "Sí":
             if current_status == "PAGO PLANEACIÓN":
                 estatus_changes["FECHA PAGO PLANEACION"] = format_sheet_date(now_dt.date())
             if current_status == "PAGO CONFECCIÓN":
                 estatus_changes["FECHA PAGO CONFECCION"] = format_sheet_date(now_dt.date())
                 estatus_changes["DÍAS DE ENTREGA"] = DEFAULT_DELIVERY_BUSINESS_DAYS
                 estatus_changes["FECHA PARA ENTREGA"] = format_sheet_date(add_business_days(now_dt.date(), DEFAULT_DELIVERY_BUSINESS_DAYS))
-            if estatus_changes:
-                update_row_by_columna_1(selected_id, estatus_changes)
-            st.success("Pago aprobado. Ya puedes avanzar al siguiente proceso.")
+        result = update_row_by_columna_1(selected_id, estatus_changes)
+        if result["success"]:
+            st.success("Estado de pago guardado.")
             st.rerun()
-    with col_reject:
-        if st.button("❌ Rechazar pago", disabled=not can_edit or not active_payment_required):
-            now = app_now().strftime("%Y-%m-%d %H:%M:%S")
-            update_active_tiempo_row(selected_id, {"PAGO_ESTADO": "Rechazado", "PAGO_FECHA": now, "PAGO_COMPROBANTE": comprobante_url.strip(), "PAGO_VALIDADO_POR": current_user, "PUEDE_AVANZAR": "No", "MOTIVO_BLOQUEO": "Pago rechazado"})
-            st.warning("Pago rechazado.")
-            st.rerun()
+        else:
+            st.error(result["error"] or "No se pudo actualizar el estado de pago.")
     if current_status in PAYMENT_STATUSES:
-        can_advance, reason = can_advance_from_payment(selected_id, current_status)
+        can_advance, _ = can_advance_from_payment(selected_id, current_status)
         if can_advance:
             apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
             if current_status == "PAGO PLANEACIÓN":
@@ -4185,8 +4294,6 @@ def render_pagos_tab(current_user: str) -> None:
             if st.button(f"➡️ Avanzar al siguiente proceso: {next_status}", disabled=not can_edit):
                 if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user, comment="Avance posterior a aprobación de pago"):
                     st.rerun()
-        else:
-            st.info(reason)
 
 
 def render_lesly_tab(current_user: str) -> None:
