@@ -1,11 +1,12 @@
 import html
 import json
 import math
+import time
 import unicodedata
 from pathlib import PurePosixPath
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Any
+from typing import Any, Callable
 
 import boto3
 import gspread
@@ -1482,7 +1483,7 @@ def get_active_tiempo_row(identifier: str) -> tuple[int | None, dict[str, Any]]:
     """Busca el registro activo de TIEMPOS_APARATOS para Columna 1."""
 
     worksheet = get_worksheet(SHEET_TIEMPOS)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) <= 1:
         return None, {}
     headers = values[0]
@@ -1506,7 +1507,7 @@ def update_active_tiempo_row(identifier: str, changes: dict[str, Any]) -> bool:
 
     ensure_tiempos_headers()
     worksheet = get_worksheet(SHEET_TIEMPOS)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) <= 1:
         return False
     headers = values[0]
@@ -1520,8 +1521,10 @@ def update_active_tiempo_row(identifier: str, changes: dict[str, Any]) -> bool:
             updates.append(Cell(row_number, column_position, prepare_sheet_value(value)))
     if not updates:
         return False
-    worksheet.update_cells(updates, value_input_option="USER_ENTERED")
-    st.cache_data.clear()
+    run_gsheets_request(
+        lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    )
+    clear_sheet_data_cache()
     return True
 
 
@@ -1794,6 +1797,35 @@ def calculate_alert_state(
     return "En tiempo"
 
 
+def is_google_sheets_rate_limit_error(exc: Exception) -> bool:
+    """Detecta errores 429 de cuota/rate limit de Google Sheets."""
+
+    if not isinstance(exc, gspread.exceptions.APIError):
+        return False
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    error_text = str(exc).upper()
+    return (
+        status_code == 429
+        or "RATE_LIMIT_EXCEEDED" in error_text
+        or "RESOURCE_EXHAUSTED" in error_text
+    )
+
+
+def run_gsheets_request(
+    operation: Callable[[], Any], *, retries: int = 3, base_delay: float = 1.0
+) -> Any:
+    """Ejecuta una operación de Google Sheets con reintentos ante cuota 429."""
+
+    for attempt in range(retries + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if not is_google_sheets_rate_limit_error(exc) or attempt >= retries:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+    raise RuntimeError("No se pudo completar la operación de Google Sheets.")
+
 # ==============================
 # 🔐 CLIENTE GOOGLE SHEETS
 # ==============================
@@ -1808,7 +1840,7 @@ def _get_gs_client():
 def get_spreadsheet():
     client = _get_gs_client()
     sheet_id = st.secrets["gsheets"]["sheet_id"]
-    return client.open_by_key(sheet_id)
+    return run_gsheets_request(lambda: client.open_by_key(sheet_id))
 
 
 @st.cache_resource
@@ -1816,37 +1848,40 @@ def get_spreadsheet_by_id(sheet_id: str):
     """Abre cualquier Google Sheet compartido con el service account configurado."""
 
     client = _get_gs_client()
-    return client.open_by_key(sheet_id)
+    return run_gsheets_request(lambda: client.open_by_key(sheet_id))
 
 
 @st.cache_resource
 def get_worksheet(sheet_name: str):
     spreadsheet = get_spreadsheet()
     try:
-        return spreadsheet.worksheet(sheet_name)
+        return run_gsheets_request(lambda: spreadsheet.worksheet(sheet_name))
     except gspread.WorksheetNotFound:
         if sheet_name != SHEET_TIEMPOS:
             raise
-        return spreadsheet.add_worksheet(
-            title=SHEET_TIEMPOS,
-            rows="1000",
-            cols=str(len(TIEMPOS_HEADERS)),
+        return run_gsheets_request(
+            lambda: spreadsheet.add_worksheet(
+                title=SHEET_TIEMPOS,
+                rows="1000",
+                cols=str(len(TIEMPOS_HEADERS)),
+            )
         )
 
 
+@st.cache_data(ttl=3600)
 def ensure_tiempos_headers() -> None:
     """Asegura encabezados de TIEMPOS_APARATOS sin borrar datos existentes."""
 
     worksheet = get_worksheet(SHEET_TIEMPOS)
-    headers = worksheet.row_values(1)
+    headers = run_gsheets_request(lambda: worksheet.row_values(1))
     if not headers:
-        worksheet.update("A1", [TIEMPOS_HEADERS])
+        run_gsheets_request(lambda: worksheet.update("A1", [TIEMPOS_HEADERS]))
         st.cache_data.clear()
         return
 
     missing_headers = [header for header in TIEMPOS_HEADERS if header not in headers]
     if missing_headers:
-        worksheet.update("A1", [headers + missing_headers])
+        run_gsheets_request(lambda: worksheet.update("A1", [headers + missing_headers]))
         st.cache_data.clear()
 
 
@@ -1855,7 +1890,7 @@ def read_sheet_df(sheet_name: str) -> pd.DataFrame:
     """Lee una hoja como DataFrame sin alterar sus encabezados existentes."""
 
     worksheet = get_worksheet(sheet_name)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if not values:
         if sheet_name == SHEET_TIEMPOS:
             return pd.DataFrame(columns=TIEMPOS_HEADERS)
@@ -1896,7 +1931,7 @@ def read_sheet_df(sheet_name: str) -> pd.DataFrame:
 def read_sheet_values(sheet_name: str) -> list[list[str]]:
     """Lee valores crudos para cálculos que dependen de estructura horizontal."""
 
-    return get_worksheet(sheet_name).get_all_values()
+    return run_gsheets_request(lambda: get_worksheet(sheet_name).get_all_values())
 
 
 def get_forms_secret_value(key: str, default: Any = "") -> Any:
@@ -1962,6 +1997,14 @@ def should_hide_forms_column(column: str) -> bool:
     )
 
 
+def clear_sheet_data_cache() -> None:
+    """Limpia solo cachés de lecturas sin descartar recursos ni validaciones estables."""
+
+    read_sheet_df.clear()
+    read_sheet_values.clear()
+    read_forms_responses_df.clear()
+
+
 @st.cache_data(ttl=30)
 def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
     """Lee la hoja de respuestas de Google Forms como DataFrame."""
@@ -1980,12 +2023,14 @@ def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
     ):
         tried_names.append(candidate_name)
         try:
-            worksheet = spreadsheet.worksheet(candidate_name)
+            worksheet = run_gsheets_request(
+                lambda: spreadsheet.worksheet(candidate_name)
+            )
             break
         except gspread.WorksheetNotFound:
             continue
     if worksheet is None:
-        worksheets = spreadsheet.worksheets()
+        worksheets = run_gsheets_request(lambda: spreadsheet.worksheets())
         if not worksheets:
             return pd.DataFrame()
         worksheet = worksheets[0]
@@ -1993,7 +2038,7 @@ def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
             "No encontré las pestañas de Forms esperadas "
             f"({', '.join(tried_names)}). Usaré la primera pestaña: {worksheet.title}."
         )
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if not values:
         return pd.DataFrame()
 
@@ -2044,7 +2089,7 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[st
         return result
 
     worksheet = get_worksheet(SHEET_ESTATUS)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if not values:
         result["skipped_columns"] = list(changes)
         result["error"] = "La hoja ESTATUS APARATOS está vacía."
@@ -2093,7 +2138,9 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[st
         return result
 
     try:
-        worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+        run_gsheets_request(
+        lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    )
     except Exception as exc:
         result["skipped_columns"] = [*result["updated_columns"], *result["skipped_columns"]]
         result["updated_columns"] = []
@@ -2142,7 +2189,7 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
     """Escribe un nuevo pedido en ESTATUS APARATOS y devuelve el renglón usado."""
 
     worksheet = get_worksheet(SHEET_ESTATUS)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) < 2:
         raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
 
@@ -2169,7 +2216,9 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
     if not updates:
         raise ValueError("No hay campos válidos para guardar en ESTATUS APARATOS.")
 
-    worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    run_gsheets_request(
+        lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    )
     apply_estatus_row_styles(worksheet, headers, target_row, row_dict)
     return target_row
 
@@ -2177,7 +2226,7 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
 def generate_unique_columna_1_id() -> str:
     """Genera un ID único con formato DDMMAAAA-NNN para Columna 1."""
 
-    values = get_worksheet(SHEET_ESTATUS).get_all_values()
+    values = run_gsheets_request(lambda: get_worksheet(SHEET_ESTATUS).get_all_values())
     if len(values) < 2:
         raise ValueError("No se encontraron encabezados en la fila 2 de ESTATUS APARATOS.")
 
@@ -2210,7 +2259,7 @@ def columna_1_exists(identifier: str) -> bool:
     if not cleaned_identifier:
         return False
 
-    values = get_worksheet(SHEET_ESTATUS).get_all_values()
+    values = run_gsheets_request(lambda: get_worksheet(SHEET_ESTATUS).get_all_values())
     if len(values) < 2:
         return False
 
@@ -2247,7 +2296,7 @@ def close_previous_active_time(identifier: str) -> bool:
     """Cierra el registro activo anterior de TIEMPOS_APARATOS, si existe."""
 
     worksheet = get_worksheet(SHEET_TIEMPOS)
-    values = worksheet.get_all_values()
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) <= 1:
         return False
 
@@ -2282,7 +2331,9 @@ def close_previous_active_time(identifier: str) -> bool:
         Cell(target_row_number, headers.index("HORA_FIN") + 1, end_dt.strftime("%H:%M:%S")),
         Cell(target_row_number, headers.index("DURACION_HORAS") + 1, calculate_duration_hours(start_dt, end_dt)),
     ]
-    worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    run_gsheets_request(
+        lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
+    )
     return True
 
 
@@ -2302,7 +2353,7 @@ def register_status_change(
 
     ensure_tiempos_headers()
     close_previous_active_time(previous_identifier or identifier)
-    st.cache_data.clear()
+    clear_sheet_data_cache()
 
     if normalize_text(new_status) in {normalize_text(status) for status in TERMINAL_STATUSES}:
         return
@@ -2348,10 +2399,12 @@ def register_status_change(
         **get_payment_defaults(new_status),
     }
     tiempos_worksheet = get_worksheet(SHEET_TIEMPOS)
-    current_headers = tiempos_worksheet.row_values(1) or TIEMPOS_HEADERS
-    tiempos_worksheet.append_row(
-        [prepare_sheet_value(row.get(column, "")) for column in current_headers],
-        value_input_option="USER_ENTERED",
+    current_headers = TIEMPOS_HEADERS
+    run_gsheets_request(
+        lambda: tiempos_worksheet.append_row(
+            [prepare_sheet_value(row.get(column, "")) for column in current_headers],
+            value_input_option="USER_ENTERED",
+        )
     )
 
 
@@ -2930,7 +2983,7 @@ def render_nuevo_pedido_tab() -> None:
             )
             st.exception(exc)
 
-    st.cache_data.clear()
+    clear_sheet_data_cache()
     log_text = (
         "y también se registró el log inicial en TIEMPOS_APARATOS"
         if timing_log_saved
@@ -3093,7 +3146,7 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
                     new_status=new_status,
                     previous_identifier=selected_id,
                 )
-            st.cache_data.clear()
+            clear_sheet_data_cache()
             saved_columns = ", ".join(
                 display_field_label(column) for column in update_result["updated_columns"]
             )
@@ -3346,7 +3399,7 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
             new_status=new_status,
             change_comment=comment,
         )
-        st.cache_data.clear()
+        clear_sheet_data_cache()
         st.success(f"Pedido {selected_id} actualizado a {new_status}.")
         st.rerun()
 
@@ -3769,7 +3822,7 @@ def advance_case_status(
         new_status=new_status,
         change_comment=comment,
     )
-    st.cache_data.clear()
+    clear_sheet_data_cache()
     set_status_change_feedback(identifier, previous_status, new_status)
     st.success(st.session_state["status_change_success_message"])
     return True
@@ -4581,5 +4634,15 @@ try:
         render_global_alert_dashboard(current_user)
         render_active_app_tab(current_user)
 except Exception as exc:
-    st.error("Ocurrió un problema al cargar la app.")
-    st.exception(exc)
+    if is_google_sheets_rate_limit_error(exc):
+        st.error(
+            "Google Sheets alcanzó el límite temporal de lecturas. "
+            "Espera 1 minuto y vuelve a presionar ‘Recargar datos’."
+        )
+        st.info(
+            "Para reducir este problema, la app ahora conserva la conexión y los encabezados en caché "
+            "y reintenta automáticamente las llamadas que reciben cuota 429."
+        )
+    else:
+        st.error("Ocurrió un problema al cargar la app.")
+        st.exception(exc)
