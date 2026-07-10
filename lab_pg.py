@@ -3682,6 +3682,10 @@ def render_status_change_feedback() -> None:
 def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Series | None]:
     """Muestra tabla seleccionable y selector común para pestañas por usuario."""
 
+    pending_selection = clean_cell(st.session_state.pop(f"{key}_pending_selection", "")).strip()
+    if pending_selection:
+        st.session_state[key] = pending_selection
+
     cases_df, kept_recent_case = append_recent_selected_case(cases_df, key)
     if cases_df.empty:
         st.info("No hay casos para esta pestaña.")
@@ -4535,6 +4539,7 @@ def render_lesly_tab(current_user: str) -> None:
 
 def render_vero_tab(current_user: str) -> None:
     st.subheader("🛠️ Confección y Calidad")
+    render_status_change_feedback()
     can_edit = user_can_edit_tab(current_user, "Vero")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -4543,6 +4548,7 @@ def render_vero_tab(current_user: str) -> None:
     if row is None:
         return
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
+    st.info(f"STATUS actual del pedido seleccionado: {display_selectbox_value(STATUS_COLUMN, current_status)}")
     apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
     allowed_targets = [
         status
@@ -4559,6 +4565,7 @@ def render_vero_tab(current_user: str) -> None:
             current_user=current_user,
             comment=comment,
         ):
+            st.session_state["vero_case_selector_pending_selection"] = selected_id
             st.rerun()
     elif not next_status:
         st.info("No hay un siguiente STATUS permitido para Vero en este caso.")
