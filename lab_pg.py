@@ -84,14 +84,12 @@ ACTIVE_USER_LABEL = "Usuario Streamlit"
 USER_PASSWORD_DEFAULTS = {
     "Admin": "AdminLab73",
     "Jime": "JimeLab48",
-    "Estefano": "EstefanoLab91",
     "Lesly": "LeslyLab64",
     "Vero": "VeroLab27",
 }
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
-    "Jime": ["nuevo", "jime", "pagos"],
-    "Estefano": ["estefano"],
+    "Jime": ["nuevo", "jime", "estefano", "pagos"],
     "Lesly": ["lesly"],
     "Vero": ["vero"],
 }
@@ -147,6 +145,10 @@ USER_ALLOWED_TRANSITIONS = {
         "EN DISEÑO": ["PAGO CONFECCIÓN"],
     },
     "Jime": {
+        "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR"],
+        "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR"],
+        "STL PSM ENVIADO": ["EN DISEÑO"],
+        "EN DISEÑO": ["PAGO CONFECCIÓN"],
         "ORDEN RECIBIDA": ["REVISIÓN DE ARCHIVOS"],
         "REVISIÓN DE ARCHIVOS": ["ESCANEO MAL (EN REPETICIÓN)", "REALIZAR SOLICITUD PAGO", "REALIZAR SOLICITUD PAGO PLANEACIÓN"],
         "ESCANEO MAL (EN REPETICIÓN)": ["REVISIÓN DE ARCHIVOS", "REALIZAR SOLICITUD PAGO", "REALIZAR SOLICITUD PAGO PLANEACIÓN"],
@@ -1334,7 +1336,7 @@ def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
 
     if current_user == "Admin" or current_user == tab_owner:
         return True
-    return current_user == "Jime" and tab_owner == "Pagos"
+    return current_user == "Jime" and tab_owner in {"Estefano", "Pagos"}
 
 
 def get_user_operational_statuses(current_user: str) -> list[str]:
@@ -1342,6 +1344,11 @@ def get_user_operational_statuses(current_user: str) -> list[str]:
 
     if current_user == "Admin":
         return []
+    if current_user == "Jime":
+        return [
+            *USER_TAB_STATUSES.get("Jime", []),
+            *USER_TAB_STATUSES.get("Estefano", []),
+        ]
     return USER_TAB_STATUSES.get(current_user, [])
 
 
@@ -3550,7 +3557,7 @@ def get_status_datetime_autofill_changes(
     # Estas fechas deben reflejar el último evento real del flujo,
     # por eso se actualizan aunque ya tuvieran un valor previo.
     if (
-        current_user == "Estefano"
+        current_user in {"Estefano", "Jime"}
         and previous_status in {"EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "EN DISEÑO"}
         and new_status in {"REVISIÓN DISEÑO DOCTOR", "PAGO CONFECCIÓN"}
     ):
@@ -3929,7 +3936,7 @@ def render_estefano_shipping_tab(current_user: str, can_edit: bool) -> None:
 
 
 def render_estefano_tab(current_user: str) -> None:
-    st.subheader("📥 Estefano")
+    st.subheader("📐 Planeación y Diseño")
     can_edit = user_can_edit_tab(current_user, "Estefano")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -3940,7 +3947,7 @@ def render_estefano_tab(current_user: str) -> None:
         render_estefano_forms_review(can_edit)
 
 def render_jime_tab(current_user: str) -> None:
-    st.subheader("🧠 Jime")
+    st.subheader("📋 Recepción y Seguimiento")
     can_edit = user_can_edit_tab(current_user, "Jime")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -3988,7 +3995,7 @@ def render_payment_status_metrics(estatus_df: pd.DataFrame) -> None:
 
 
 def render_pagos_tab(current_user: str) -> None:
-    st.subheader("💳 Pagos")
+    st.subheader("💳 Control de Pagos")
     can_edit = user_can_edit_tab(current_user, "Pagos")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -4087,7 +4094,7 @@ def render_pagos_tab(current_user: str) -> None:
 
 
 def render_lesly_tab(current_user: str) -> None:
-    st.subheader("🖨️ Lesly")
+    st.subheader("🖨️ Impresión y Sinterizado")
     can_edit = user_can_edit_tab(current_user, "Lesly")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -4234,7 +4241,7 @@ def render_lesly_tab(current_user: str) -> None:
 
 
 def render_vero_tab(current_user: str) -> None:
-    st.subheader("🛠️ Vero")
+    st.subheader("🛠️ Confección y Calidad")
     can_edit = user_can_edit_tab(current_user, "Vero")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -4330,6 +4337,7 @@ if st.button("🔄 Recargar datos", type="secondary"):
 try:
     current_user = require_authenticated_user()
     if current_user is not None:
+        st.caption(f"👋 Bienvenido/a, {current_user}")
         ensure_tiempos_headers()
         render_global_alert_dashboard(current_user)
         render_active_app_tab(current_user)
