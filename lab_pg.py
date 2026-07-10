@@ -114,7 +114,6 @@ USER_TAB_STATUSES = {
         "GENERACIÓN DE GUÍA",
         "EMPACADO/LISTO P/ENVÍO",
         "PRODUCTO ENVIADO",
-        "ENVÍO DE ENCUESTA",
     ],
     "Pagos": ["PAGO PLANEACIÓN", "PAGO CONFECCIÓN"],
     "Lesly": ["LISTO P/SINTERIZADO", "ELABORACIÓN PLATINA", "EN SINTERIZADO Y HORNEADO"],
@@ -166,6 +165,7 @@ USER_ALLOWED_TRANSITIONS = {
         "GENERACIÓN DE GUÍA": ["EMPACADO/LISTO P/ENVÍO"],
         "EMPACADO/LISTO P/ENVÍO": ["PRODUCTO ENVIADO"],
         "PRODUCTO ENVIADO": ["ENVÍO DE ENCUESTA"],
+        "ENVÍO DE ENCUESTA": [],
     },
     "Pagos": {
         "PAGO PLANEACIÓN": ["EN PLANEACIÓN"],
@@ -3646,7 +3646,7 @@ def get_estatus_row_by_identifier(identifier: str) -> pd.Series | None:
 
 
 def append_recent_selected_case(cases_df: pd.DataFrame, key: str) -> tuple[pd.DataFrame, bool]:
-    """Conserva visible el último pedido seleccionado aunque ya no pertenezca al filtro."""
+    """Conserva visible el último pedido seleccionado si sigue en un STATUS operativo."""
 
     selected_id = clean_cell(st.session_state.get(key, "")).strip()
     if not selected_id or ID_COLUMN not in cases_df.columns:
@@ -3656,6 +3656,10 @@ def append_recent_selected_case(cases_df: pd.DataFrame, key: str) -> tuple[pd.Da
         return cases_df, False
     selected_row = get_estatus_row_by_identifier(selected_id)
     if selected_row is None:
+        return cases_df, False
+    selected_status = normalize_status_alias(get_row_value_by_column(selected_row, STATUS_COLUMN, ""))
+    if selected_status in TERMINAL_STATUSES:
+        st.session_state.pop(key, None)
         return cases_df, False
     return pd.concat([pd.DataFrame([selected_row]), cases_df], ignore_index=True), True
 
