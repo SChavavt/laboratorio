@@ -801,6 +801,21 @@ def display_selectbox_value(column: str, value: str) -> str:
     return display_options.get(cleaned_value, cleaned_value)
 
 
+def build_order_type_label(row: pd.Series) -> str:
+    """Construye una etiqueta de pedido basada en APARATO y SERVICIO, no en el ID."""
+
+    apparatus = display_selectbox_value(
+        APARATO_COLUMN, clean_cell(row.get(APARATO_COLUMN, "")).strip()
+    )
+    service = display_selectbox_value("SERVICIO", clean_cell(row.get("SERVICIO", "")).strip())
+    label_parts = []
+    if apparatus:
+        label_parts.append(f"🦷 {apparatus}")
+    if service:
+        label_parts.append(f"🛠️ {service}")
+    return " | ".join(label_parts) or "Sin APARATO / SERVICIO"
+
+
 def build_display_selectbox_options(
     column: str, fixed_options: list[str], current_value: str
 ) -> list[str]:
@@ -2932,7 +2947,7 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
         option_id = clean_cell(option_row.get(ID_COLUMN, "")).strip()
         if not option_id or option_id in selection_labels:
             continue
-        label_parts = [f"🆔 {option_id}"]
+        label_parts = [build_order_type_label(option_row)]
         status = display_selectbox_value(
             STATUS_COLUMN, clean_cell(option_row.get(STATUS_COLUMN, "")).strip()
         )
@@ -2949,7 +2964,7 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
         selection_labels[option_id] = " | ".join(label_parts)
 
     selected_id = st.selectbox(
-        "🆔 Selecciona un registro por Columna 1, STATUS, doctor o vendedor",
+        "🦷 Selecciona un registro por APARATO, SERVICIO, STATUS, doctor o vendedor",
         selectable_ids,
         format_func=lambda option: selection_labels.get(option, option),
     )
@@ -3169,7 +3184,7 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
         if not identifier or identifier in labels:
             continue
         labels[identifier] = (
-            f"🆔 {identifier} | 🦷 {clean_cell(row.get('APARATO', ''))} | "
+            f"{build_order_type_label(row)} | "
             f"🚦 {clean_cell(row.get('STATUS', ''))} | 🚨 {clean_cell(row.get('ESTADO_ALERTA_VISUAL', ''))} | "
             f"⌛ {clean_cell(row.get('HORAS_TRANSCURRIDAS', ''))} h | "
             f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', ''))}"
@@ -3327,7 +3342,7 @@ def render_global_alert_dashboard(current_user: str) -> None:
             owner = get_status_tab_owner(clean_cell(alert_row.get(STATUS_COLUMN, "")))
             owner_by_id[identifier] = owner
             alert_labels[identifier] = (
-                f"🆔 {identifier} | 👤 {owner or 'General'} | "
+                f"{build_order_type_label(alert_row)} | 👤 {owner or 'General'} | "
                 f"🚦 {clean_cell(alert_row.get(STATUS_COLUMN, ''))} | "
                 f"🚨 {clean_cell(alert_row.get('ESTADO_ALERTA_VISUAL', ''))} | "
                 f"👩‍⚕️ {clean_cell(alert_row.get('NOMBRE DOCTOR', ''))}"
@@ -3604,12 +3619,21 @@ def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Seri
         identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
         if identifier and identifier not in labels:
             labels[identifier] = (
-                f"🆔 {identifier} | 🚦 {display_selectbox_value(STATUS_COLUMN, clean_cell(row.get(STATUS_COLUMN, '')).strip())} | "
-                f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', '')).strip()} | 🙂 {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()}"
+                f"{build_order_type_label(row)} | "
+                f"🚦 {display_selectbox_value(STATUS_COLUMN, clean_cell(row.get(STATUS_COLUMN, '')).strip())} | "
+                f"👩‍⚕️ {clean_cell(row.get('NOMBRE DOCTOR', '')).strip()} | "
+                f"🙂 {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()}"
             )
-    selected_id = st.selectbox("Selecciona Columna 1", ids, format_func=lambda option: labels.get(option, option), key=key)
+    selected_id = st.selectbox(
+        "Selecciona por APARATO y SERVICIO",
+        ids,
+        format_func=lambda option: labels.get(option, option),
+        key=key,
+    )
     selected_row = cases_df[cases_df[ID_COLUMN].astype(str).str.strip() == selected_id].iloc[0]
     return selected_id, selected_row
+
+
 
 
 def get_status_datetime_autofill_changes(
@@ -4311,7 +4335,7 @@ def render_lesly_tab(current_user: str) -> None:
         print_date = clean_cell(get_row_value_by_column(case_row, ESTATUS_PRINT_DATE_COLUMN, "")).strip()
         print_badge = f"✅ Impreso: {print_date}" if print_date else "⏳ Falta impresión"
         labels[identifier] = (
-            f"🆔 {identifier} | 🚦 {display_selectbox_value(STATUS_COLUMN, current_status)} | "
+            f"{build_order_type_label(case_row)} | 🚦 {display_selectbox_value(STATUS_COLUMN, current_status)} | "
             f"{print_badge} | 👩‍⚕️ {clean_cell(case_row.get('NOMBRE DOCTOR', '')).strip()} | "
             f"🙂 {clean_cell(case_row.get('NOMBRE PACIENTE', '')).strip()}"
         )
