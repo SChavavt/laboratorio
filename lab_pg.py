@@ -3519,13 +3519,69 @@ def apply_single_row_selection_to_selectbox(
         st.session_state[selectbox_key] = raw_selected_id
 
 
+def get_estatus_row_by_identifier(identifier: str) -> pd.Series | None:
+    """Busca un pedido por Columna 1 en ESTATUS APARATOS."""
+
+    identifier = clean_cell(identifier).strip()
+    if not identifier:
+        return None
+    estatus_df = read_sheet_df(SHEET_ESTATUS)
+    if estatus_df.empty or ID_COLUMN not in estatus_df.columns:
+        return None
+    matches = estatus_df[estatus_df[ID_COLUMN].astype(str).str.strip() == identifier]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def append_recent_selected_case(cases_df: pd.DataFrame, key: str) -> tuple[pd.DataFrame, bool]:
+    """Conserva visible el último pedido seleccionado aunque ya no pertenezca al filtro."""
+
+    selected_id = clean_cell(st.session_state.get(key, "")).strip()
+    if not selected_id or ID_COLUMN not in cases_df.columns:
+        return cases_df, False
+    current_ids = {clean_cell(value).strip() for value in cases_df[ID_COLUMN].tolist()}
+    if selected_id in current_ids:
+        return cases_df, False
+    selected_row = get_estatus_row_by_identifier(selected_id)
+    if selected_row is None:
+        return cases_df, False
+    return pd.concat([pd.DataFrame([selected_row]), cases_df], ignore_index=True), True
+
+
+def set_status_change_feedback(identifier: str, previous_status: str, new_status: str) -> None:
+    """Guarda confirmación persistente para que sobreviva al rerun de Streamlit."""
+
+    st.session_state["status_change_success_message"] = (
+        f"✅ Pedido {identifier} actualizado: {previous_status or 'Sin STATUS'} → {new_status}."
+    )
+
+
+def render_status_change_feedback() -> None:
+    """Muestra el último cambio de STATUS confirmado hasta que el usuario lo cierre."""
+
+    message = st.session_state.get("status_change_success_message")
+    if not message:
+        return
+    st.success(message)
+    if st.button("Entendido, ocultar confirmación", key="clear_status_change_success_message"):
+        st.session_state.pop("status_change_success_message", None)
+        st.rerun()
+
+
 def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Series | None]:
     """Muestra tabla seleccionable y selector común para pestañas por usuario."""
 
+    cases_df, kept_recent_case = append_recent_selected_case(cases_df, key)
     if cases_df.empty:
         st.info("No hay casos para esta pestaña.")
         return "", None
     st.caption(f"Registros encontrados: {len(cases_df)}")
+    if kept_recent_case:
+        st.info(
+            "Mantengo seleccionado el último pedido actualizado aunque ya haya cambiado de STATUS "
+            "y no pertenezca al filtro principal de esta pestaña."
+        )
     table_event = st.dataframe(
         cases_df,
         use_container_width=True,
@@ -3649,7 +3705,8 @@ def advance_case_status(
         change_comment=comment,
     )
     st.cache_data.clear()
-    st.success(f"Caso {identifier} actualizado a {new_status}.")
+    set_status_change_feedback(identifier, previous_status, new_status)
+    st.success(st.session_state["status_change_success_message"])
     return True
 
 
@@ -3894,6 +3951,7 @@ def render_estefano_shipping_tab(current_user: str, can_edit: bool) -> None:
     """Subtab operativo para enviar documentos y avanzar casos de Estefano."""
 
     st.markdown("### 📤 Envío de documentos")
+    render_status_change_feedback()
     cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
     selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
     if row is None:
@@ -3961,6 +4019,7 @@ def render_estefano_tab(current_user: str) -> None:
 
 def render_jime_tab(current_user: str) -> None:
     st.subheader("📋 Recepción y Seguimiento")
+    render_status_change_feedback()
     can_edit = user_can_edit_tab(current_user, "Jime")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
