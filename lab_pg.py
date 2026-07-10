@@ -652,6 +652,31 @@ def normalize_text(value: Any) -> str:
     return without_accents.upper()
 
 
+def parse_datetime_text(value: Any, *, dayfirst: bool = True) -> pd.Timestamp:
+    """Parsea fechas conocidas evitando warnings de pandas por dayfirst."""
+
+    text = clean_cell(value).strip()
+    if not text:
+        return pd.NaT
+
+    normalized = " ".join(text.replace("/", "-").split())
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%d-%m-%Y",
+    ]
+    for date_format in formats:
+        try:
+            return pd.Timestamp(datetime.strptime(normalized, date_format))
+        except ValueError:
+            continue
+
+    return pd.to_datetime(text, errors="coerce", dayfirst=dayfirst)
+
+
 def parse_simple_date(value: Any) -> date | None:
     """Convierte fechas simples de Sheets a date cuando es seguro hacerlo."""
 
@@ -670,7 +695,7 @@ def parse_simple_date(value: Any) -> date | None:
         except ValueError:
             return None
 
-    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    parsed = parse_datetime_text(text, dayfirst=True)
     if pd.isna(parsed):
         return None
     return parsed.date()
@@ -710,7 +735,7 @@ def parse_spanish_datetime(value: Any) -> datetime | None:
         except ValueError:
             return None
 
-    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    parsed = parse_datetime_text(text, dayfirst=True)
     if pd.isna(parsed):
         return None
     return parsed.to_pydatetime().replace(second=0, microsecond=0)
@@ -1580,9 +1605,9 @@ def parse_start_datetime(fecha: Any, hora: Any) -> datetime | None:
         return None
 
     combined = f"{fecha_text} {hora_text}".strip()
-    parsed = pd.to_datetime(combined, errors="coerce", dayfirst=True)
+    parsed = parse_datetime_text(combined, dayfirst=True)
     if pd.isna(parsed):
-        parsed = pd.to_datetime(fecha_text, errors="coerce", dayfirst=True)
+        parsed = parse_datetime_text(fecha_text, dayfirst=True)
     if pd.isna(parsed):
         return None
     return parsed.to_pydatetime()
