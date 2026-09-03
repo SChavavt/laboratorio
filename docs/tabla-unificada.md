@@ -1,6 +1,9 @@
 # Mesa de trabajo de laboratorio
 
-`lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa.
+`lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa en
+**Seguimiento**, seguida de **Nuevo pedido**, **Respuestas de Forms** y
+**Procesos y plazos**, en ese orden. Se respetan los permisos de cada usuario:
+Admin tiene las cuatro pestañas, Jime las primeras tres y Lesly/Vero Seguimiento.
 Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
 
 ## Operación
@@ -14,10 +17,22 @@ Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
    Con un pedido seleccionado se muestran archivos, historial y las acciones
    de pago o diseño correspondientes. Con pedidos de impresión seleccionados,
    Admin/Lesly pueden marcarlos o avanzar por lote en la misma pantalla.
-4. Nuevo pedido, Forms y consulta de procesos se despliegan dentro de la página.
+4. Nuevo pedido, Forms y consulta de procesos tienen sus propias pestañas.
+   Las etapas de los pedidos permanecen juntas en Seguimiento.
 5. **Actualizar datos** vuelve a leer los pedidos y calcular el semáforo.
    La hora de consulta es visible. Los filtros y las acciones quedan bloqueados
    mientras hay celdas pendientes, para no perder cambios sin guardarlos.
+
+La interfaz usa acentos morados y turquesa, contadores con los colores del
+semáforo y las etiquetas originales con emojis en las etapas y desplegables.
+Los emojis son sólo presentación: Sheets recibe siempre el valor canónico.
+Las fichas de pedido también muestran la etapa con su color configurado.
+
+La edición se ejecuta en un fragmento de Streamlit y conserva la misma clave,
+posición y tamaño del editor. La barra de cambios ocupa siempre 40 px; el mensaje
+de pendientes ya no inserta un bloque encima de la tabla. Las confirmaciones de
+guardado se muestran como avisos flotantes y los efectos visuales son de color
+y sombra al pasar el cursor, sin animaciones que desplacen las filas.
 
 ## Semáforo
 

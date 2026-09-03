@@ -1311,7 +1311,8 @@ def login_user(username: str, password: str) -> bool:
 def logout_user() -> None:
     """Cierra sesión y limpia selección de usuario/pestaña."""
 
-    for key in ["authenticated_user", "current_user", "active_app_tab", "workbench_snapshot", "workbench_editor_key"]:
+    for key in ["authenticated_user", "current_user", "active_app_tab", "workbench_snapshot",
+                "workbench_editor_key", "workbench_editor_baseline"]:
         st.session_state.pop(key, None)
     clear_persisted_login_url()
 
@@ -4774,6 +4775,25 @@ def workbench_editable_columns(current_user: str) -> set[str]:
     return set()
 
 
+def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Añade las etiquetas visuales existentes sólo a la copia del editor."""
+    displayed = df.copy()
+    for column in DISPLAY_OPTIONS_BY_COLUMN:
+        if column in displayed:
+            displayed[column] = displayed[column].map(
+                lambda value, name=column: display_selectbox_value(name, value)
+            )
+    return displayed
+
+
+def workbench_cell_value(column: str, value: Any) -> str:
+    """Convierte las etiquetas del editor a los valores reales del flujo."""
+    text = clean_cell(value).strip()
+    if column == STATUS_COLUMN:
+        return normalize_status_alias(text)
+    return clean_display_value(text) if column in DISPLAY_OPTIONS_BY_COLUMN else text
+
+
 def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tuple[str, dict[str, Any]]]:
     """Compara celdas por folio, nunca por el orden visual después de ordenar."""
     changes = []
@@ -4787,7 +4807,7 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
     for _, row in edited.iterrows():
         identifier = row[ID_COLUMN]
         previous = lookup.loc[identifier]
-        delta = {column: clean_cell(row[column]).strip() for column in source_columns
+        delta = {column: workbench_cell_value(column, row[column]) for column in source_columns
                  if column in edited and not values_equivalent_for_column(column, previous[column], row[column])}
         if delta:
             changes.append((identifier, delta))
@@ -4889,18 +4909,32 @@ def reset_workbench() -> None:
     """Invalida la fotografía y la clave del editor después de una operación explícita."""
     st.session_state.pop("workbench_snapshot", None)
     st.session_state.pop("workbench_editor_key", None)
+    st.session_state.pop("workbench_editor_baseline", None)
+    st.session_state.pop("workbench_save_errors", None)
     st.session_state["workbench_revision"] = st.session_state.get("workbench_revision", 0) + 1
 
 
-def workbench_has_pending_edits() -> bool:
+def workbench_pending_count() -> int:
     key = st.session_state.get("workbench_editor_key", "")
     state = st.session_state.get(key, {})
-    return any(set(delta) - {"SELECCIONAR"} for delta in state.get("edited_rows", {}).values())
+    baseline = st.session_state.get("workbench_editor_baseline")
+    count = 0
+    for index, delta in state.get("edited_rows", {}).items():
+        original = baseline.iloc[int(index)] if baseline is not None and int(index) < len(baseline) else {}
+        if any(column != "SELECCIONAR" and not values_equivalent_for_column(
+            column, original.get(column, ""), value
+        ) for column, value in delta.items()):
+            count += 1
+    return count
+
+
+def workbench_has_pending_edits() -> bool:
+    return workbench_pending_count() > 0
 
 
 def style_workbench_cell(value: Any, column: str) -> str:
     palette = WORKBENCH_SIGNAL_COLORS if column == "SEMÁFORO" else SHEET_STYLE_COLORS.get(column, {})
-    colors = palette.get(clean_cell(value))
+    colors = palette.get(workbench_cell_value(column, value))
     return f"background-color: {colors[0]}; color: {colors[1]}; font-weight: 600" if colors else ""
 
 
@@ -4922,13 +4956,19 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
     row = selected.iloc[0]
     identifier = row[ID_COLUMN]
     with st.container(border=True):
-        st.markdown(f"**Pedido {identifier} · {row.get(APARATO_COLUMN, '')} · {row[STATUS_COLUMN]}**")
+        stage = display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])
+        background, foreground = SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))
+        st.markdown(f"**Pedido {identifier} · {row.get(APARATO_COLUMN, '')}**")
+        st.markdown(
+            f'<span class="lab-stage-chip" style="background:{background};color:{foreground}">{html.escape(stage)}</span>',
+            unsafe_allow_html=True,
+        )
         st.caption(f"{row.get('NOMBRE DOCTOR', '')} · {row.get('NOMBRE PACIENTE', '')}")
         st.write(f"{row['SEMÁFORO']} — {row['DETALLE SEMÁFORO']}")
         targets = [target for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])
                    if target != row[STATUS_COLUMN] and is_transition_allowed_for_user(current_user, row[STATUS_COLUMN], target, row.get(APARATO_COLUMN, ""))]
         if targets:
-            st.caption("Etapas permitidas para tu usuario: " + " · ".join(targets))
+            st.caption("Etapas permitidas para tu usuario: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets))
         else:
             st.caption("Este pedido es de consulta para tu usuario en su etapa actual.")
         latest_files = get_latest_estefano_files(identifier)
@@ -4953,15 +4993,17 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
                 st.dataframe(history[fields], hide_index=True, use_container_width=True)
 
 
+@st.fragment
 def render_workbench(current_user: str) -> None:
-    """Una sola tabla con edición, semáforo y operaciones contextuales, sin pestañas."""
+    """La edición actualiza sólo Seguimiento, conservando estructura y clave del editor."""
     snapshot = st.session_state.get("workbench_snapshot")
     if snapshot is None or snapshot["user"] != current_user:
         table = build_workbench_table(read_sheet_df(SHEET_ESTATUS), read_sheet_df(SHEET_TIEMPOS))
         snapshot = {"user": current_user, "table": table, "at": app_now()}
         st.session_state["workbench_snapshot"] = snapshot
     table = snapshot["table"]
-    pending = workbench_has_pending_edits()
+    pending_count = workbench_pending_count()
+    pending = pending_count > 0
     heading, refresh = st.columns([5, 1])
     with heading:
         st.caption(f"{current_user} · Datos consultados {snapshot['at']:%d/%m/%Y %H:%M} · Hora de Ciudad de México")
@@ -4973,20 +5015,25 @@ def render_workbench(current_user: str) -> None:
     if "workbench_feedback" in st.session_state:
         saved, errors = st.session_state.pop("workbench_feedback")
         if saved:
-            st.success("Guardado: " + ", ".join(saved))
+            st.toast("Guardado: " + ", ".join(saved), icon="✅")
         if errors:
-            st.error("Revisa estos pedidos: " + " | ".join(errors))
-    render_status_change_feedback()
+            st.session_state["workbench_save_errors"] = errors
     metrics = st.columns(5)
-    metrics[0].metric("Pedidos activos", len(table))
-    for container, signal in zip(metrics[1:], ["🔴 Atrasado", "🟡 Por vencer", "🟢 En tiempo", "⚪ Sin medición"]):
-        container.metric(signal, int(table["SEMÁFORO"].eq(signal).sum()))
+    with metrics[0].container(key="lab_total"):
+        st.metric("🦷 Pedidos activos", len(table))
+    for container, signal, color in zip(metrics[1:], ["🔴 Atrasado", "🟡 Por vencer", "🟢 En tiempo", "⚪ Sin medición"],
+                                        ["red", "amber", "green", "gray"]):
+        with container.container(key=f"lab_{color}"):
+            st.metric(signal, int(table["SEMÁFORO"].eq(signal).sum()))
     st.caption("Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes. "
                "Se conservan los plazos hábiles de lunes a viernes y las alertas especiales de pagos.")
     if table.empty:
         st.info("No hay pedidos activos para mostrar.")
-    if pending:
-        st.info("Tienes celdas editadas. Guarda o descarta antes de cambiar filtros o actualizar datos.")
+    # Siempre ocupa el mismo espacio: editar una celda no empuja la tabla.
+    bar_text = (f"✏️ {pending_count} pedidos con cambios · Guarda o descarta para habilitar los filtros."
+                if pending else "✨ Listo para trabajar · Edita las celdas habilitadas y guarda tus cambios.")
+    bar_class = "is-pending" if pending else "is-ready"
+    st.markdown(f'<div class="lab-edit-bar {bar_class}" role="status">{bar_text}</div>', unsafe_allow_html=True)
     filters = st.columns([2, 1, 1, 1])
     search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
     signal = filters[1].selectbox("Semáforo", ["Todos", *WORKBENCH_SIGNAL_COLORS], disabled=pending, key="workbench_signal")
@@ -4996,7 +5043,9 @@ def render_workbench(current_user: str) -> None:
     chosen = {}
     for container, column in zip(more_filters, [APARATO_COLUMN, STATUS_COLUMN, "VENDEDOR", "PAGO"]):
         options = sorted(set(table[column].str.strip()) - {""}) if column in table else []
-        chosen[column] = container.multiselect(column.title(), options, disabled=pending, key=f"workbench_filter_{column}")
+        chosen[column] = container.multiselect(column.title(), options, disabled=pending,
+                                              format_func=lambda value, name=column: display_selectbox_value(name, value),
+                                              key=f"workbench_filter_{column}")
     filtered = table.copy()
     if search:
         search_columns = [column for column in [ID_COLUMN, APARATO_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"] if column in table]
@@ -5014,12 +5063,13 @@ def render_workbench(current_user: str) -> None:
     st.caption(f"{len(filtered)} de {len(table)} pedidos · Edita las celdas habilitadas y pulsa Guardar cambios. "
                "El folio, aparato, pagos y semáforo se protegen; cada cambio de etapa se valida al guardar.")
     if not filtered.empty:
-        grid = filtered.copy()
+        grid = workbench_display_df(filtered)
         grid.insert(0, "SELECCIONAR", False)
         signature = hashlib.sha256(json.dumps([current_user, st.session_state.get("workbench_revision", 0),
                                               search, signal, owner, priority, chosen], sort_keys=True).encode()).hexdigest()[:16]
         key = f"workbench_grid_{signature}"
         st.session_state["workbench_editor_key"] = key
+        st.session_state["workbench_editor_baseline"] = grid.copy()
         editable = workbench_editable_columns(current_user)
         disabled = [column for column in grid if column not in {*editable, "SELECCIONAR"}]
         config = {column: st.column_config.TextColumn(column.title(), width="medium") for column in grid}
@@ -5031,10 +5081,14 @@ def render_workbench(current_user: str) -> None:
         config["NOMBRE PACIENTE"] = st.column_config.TextColumn("Paciente", width=190)
         all_targets = sorted({target for _, row in filtered.iterrows()
                               for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])})
-        config[STATUS_COLUMN] = st.column_config.SelectboxColumn("Etapa / status", options=sorted(set(all_targets) | set(filtered[STATUS_COLUMN])), width=240, required=True)
+        stage_options = [display_selectbox_value(STATUS_COLUMN, value)
+                         for value in sorted(set(all_targets) | set(filtered[STATUS_COLUMN]))]
+        config[STATUS_COLUMN] = st.column_config.SelectboxColumn("🎨 Etapa / status", options=stage_options, width=280, required=True)
         for column in editable & set(SELECTBOX_OPTIONS_BY_COLUMN) - {STATUS_COLUMN}:
             if column in grid:
-                config[column] = st.column_config.SelectboxColumn(column.title(), options=sorted(set(SELECTBOX_OPTIONS_BY_COLUMN[column]) | set(grid[column])), width="medium")
+                options = [display_selectbox_value(column, value)
+                           for value in sorted(set(SELECTBOX_OPTIONS_BY_COLUMN[column]) | set(filtered[column]))]
+                config[column] = st.column_config.SelectboxColumn(column.title(), options=list(dict.fromkeys(options)), width="medium")
         for column in ["HORAS EN ETAPA", "PLAZO HORAS"]:
             config[column] = st.column_config.NumberColumn(column.title(), format="%.2f h", width="small")
         config["DETALLE SEMÁFORO"] = st.column_config.TextColumn("Motivo del semáforo", width="large")
@@ -5042,7 +5096,7 @@ def render_workbench(current_user: str) -> None:
                  "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS",
                  "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
         order = [column for column in order if column in grid] + [column for column in grid if column not in order]
-        styled = grid.style
+        styled = grid.style.set_uuid(f"lab_{signature}")
         for column in ["SEMÁFORO", APARATO_COLUMN, "PAGO", "SERVICIO", "ARCHIVOS RECIBIDOS"]:
             if column in grid and column in disabled:
                 styled = styled.map(lambda value, name=column: style_workbench_cell(value, name), subset=[column])
@@ -5056,6 +5110,7 @@ def render_workbench(current_user: str) -> None:
             changes = []
         save_col, discard_col, count_col = st.columns([1, 1, 3])
         if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
+            st.session_state.pop("workbench_save_errors", None)
             saved, errors = save_workbench_changes(grid, edited, current_user)
             if errors and not saved and "workbench_snapshot" in st.session_state:
                 for error in errors:
@@ -5067,40 +5122,151 @@ def render_workbench(current_user: str) -> None:
             reset_workbench()
             st.rerun()
         count_col.caption(f"{len(changes)} pedidos con cambios pendientes")
+        for error in st.session_state.get("workbench_save_errors", []):
+            st.error(error)
         selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
         selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
-        render_workbench_case_actions(selected, current_user, bool(changes))
+        if selected.empty:
+            render_workbench_case_actions(selected, current_user, bool(changes))
+        else:
+            # Tampoco se reduce la altura de la página al bloquear las acciones.
+            with st.container(height=540, border=False):
+                render_workbench_case_actions(selected, current_user, bool(changes))
     else:
         st.info("No hay pedidos que coincidan con los filtros.")
+
+
+def workbench_tab_options(current_user: str) -> list[str]:
+    options = ["📋 Seguimiento"]
     if current_user in {"Admin", "Jime"}:
-        if st.toggle("Nuevo pedido", key="workbench_new", disabled=pending) and not pending:
-            with st.container(border=True):
-                render_nuevo_pedido_tab()
-        if st.toggle("Consultar respuestas de Forms", key="workbench_forms", disabled=pending) and not pending:
-            render_estefano_forms_review(user_can_edit_tab(current_user, "Estefano"))
-    if current_user == "Admin" and st.toggle("Consultar procesos y plazos", key="workbench_processes", disabled=pending) and not pending:
+        options.extend(["➕ Nuevo pedido", "📨 Respuestas de Forms"])
+    if current_user == "Admin":
+        options.append("⚙️ Procesos y plazos")
+    return options
+
+
+@st.fragment
+def render_workbench_auxiliary(label: str, current_user: str) -> None:
+    if label == "➕ Nuevo pedido":
+        if workbench_has_pending_edits():
+            st.info("Guarda o descarta los cambios de Seguimiento antes de crear un pedido.")
+            return
+        render_nuevo_pedido_tab()
+    elif label == "📨 Respuestas de Forms":
+        render_estefano_forms_review(user_can_edit_tab(current_user, "Estefano"))
+    elif label == "⚙️ Procesos y plazos":
         render_procesos_tab()
+
+
+def render_workbench_tabs(current_user: str) -> None:
+    labels = workbench_tab_options(current_user)
+    tabs = st.tabs(labels)
+    with tabs[0]:
+        render_workbench(current_user)
+    for label, tab in zip(labels[1:], tabs[1:]):
+        with tab:
+            render_workbench_auxiliary(label, current_user)
 
 
 def main() -> None:
     st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
     st.markdown("""<style>
-        .stApp {background: #F6F7FB;}
-        .block-container {padding-top: 1.5rem; padding-bottom: 2rem; max-width: 100%;}
-        h1 {color: #403361; font-size: 1.9rem !important; letter-spacing: -.025em;}
-        [data-testid="stMetric"] {background: white; border: 1px solid #E2DDED;
-            border-radius: 10px; padding: 10px 14px;}
-        [data-testid="stMetricValue"] {font-size: 1.6rem;}
-        [data-testid="stDataFrame"] {border: 1px solid #D7D2E3; border-radius: 8px;}
-        [data-testid="stForm"] {background: white; border: 1px solid #E2DDED; padding: 18px; border-radius: 10px;}
+        .stApp {
+            background: radial-gradient(ellipse at 0 0, #DED1FF 0, transparent 48%),
+                        radial-gradient(ellipse at 100% 30%, #CDEDEA 0, transparent 45%), #F1EEFA;
+        }
+        .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 100%;}
+        [data-testid="stHeader"] {background: transparent;}
+        [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
+        h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
+        .lab-hero {
+            position: relative; overflow: hidden; padding: 24px 30px; margin: 0 0 20px;
+            display: flex; justify-content: space-between; align-items: center; gap: 20px;
+            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
+            border: 1px solid #9A80CD; border-radius: 20px;
+            box-shadow: 0 12px 30px #39236522;
+        }
+        .lab-hero::after {
+            content: ''; width: 230px; height: 230px; border: 38px solid #FFFFFF0D;
+            border-radius: 50%; position: absolute; right: 100px; top: -130px; pointer-events: none;
+        }
+        .lab-hero h1 {color: #FFF; font-size: 2rem; margin: 6px 0; padding: 0;}
+        .lab-hero p {color: #E9E1FF; margin: 0; font-size: .93rem;}
+        .lab-brand {font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;}
+        .lab-hero-badge {
+            background: #FFFFFF18; border: 1px solid #FFFFFF42; border-radius: 14px;
+            padding: 12px 18px; font-size: .84rem; color: #FFF; white-space: nowrap;
+        }
+        [data-baseweb="tab-list"] {
+            gap: 8px; padding: 7px; border-radius: 15px; background: #E2D8F3;
+            border: 1px solid #CBBDE3; margin-bottom: 12px;
+        }
+        [data-baseweb="tab"] {
+            height: 45px; padding: 0 20px; border-radius: 10px; background: #F6F2FF;
+            border: 1px solid #D5C7EC; color: #493168; font-weight: 700;
+            transition: background-color 150ms ease, box-shadow 150ms ease;
+        }
+        [data-baseweb="tab"]:hover {background: #DAD0F7; box-shadow: 0 3px 10px #603BA91C;}
+        [data-baseweb="tab"][aria-selected="true"] {
+            background: linear-gradient(110deg, #7040BD, #4E3992); color: #FFF;
+            border-color: #6337A6; box-shadow: 0 4px 12px #6943A833;
+        }
+        [data-baseweb="tab"][aria-selected="true"] p {color: #FFF;}
+        [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {display: none;}
+        [data-testid="stMetric"] {
+            border: 1px solid #CDC1E6; border-top-width: 4px; border-radius: 14px;
+            padding: 13px 16px; box-shadow: 0 5px 16px #42266C0D;
+            transition: box-shadow 160ms ease;
+        }
+        [data-testid="stMetric"]:hover {box-shadow: 0 8px 20px #42266C22;}
+        [data-testid="stMetricValue"] {font-size: 1.85rem; font-weight: 800;}
+        .st-key-lab_total [data-testid="stMetric"] {background: linear-gradient(120deg,#E4D6FF,#EEE7FF); border-color: #8C62D2; color: #4C2883;}
+        .st-key-lab_red [data-testid="stMetric"] {background: linear-gradient(120deg,#FFD8DF,#FFECEF); border-color: #DF5875; color: #A72B48;}
+        .st-key-lab_amber [data-testid="stMetric"] {background: linear-gradient(120deg,#FFE7AB,#FFF3D7); border-color: #DBA131; color: #885A08;}
+        .st-key-lab_green [data-testid="stMetric"] {background: linear-gradient(120deg,#BFEBDC,#E0F7EE); border-color: #37A989; color: #13654E;}
+        .st-key-lab_gray [data-testid="stMetric"] {background: linear-gradient(120deg,#DCE3F2,#EBEFF8); border-color: #8193B4; color: #4C5E7D;}
+        .lab-edit-bar {
+            height: 40px; min-height: 40px; box-sizing: border-box; display: flex; align-items: center;
+            padding: 0 14px; border-radius: 10px; border: 1px solid #CDBCEB;
+            font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .lab-edit-bar.is-ready {background: #E7DFF7; color: #53357F;}
+        .lab-edit-bar.is-pending {background: #FCE9BA; border-color: #DCA544; color: #805410;}
+        [data-testid="stWidgetLabel"] p {color: #493064; font-weight: 650;}
+        [data-baseweb="input"], [data-baseweb="select"] > div {border-color: #CCBDE3; border-radius: 9px;}
+        [data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within {box-shadow: 0 0 0 2px #9B72D529;}
+        [data-testid="stDataFrame"] {
+            border: 2px solid #B199D4; border-radius: 12px; overflow: hidden;
+            box-shadow: 0 7px 24px #46307814;
+        }
+        [data-testid="stForm"] {background: #FAF7FF; border: 1px solid #CDBCE5; padding: 20px; border-radius: 14px;}
+        [data-testid="stExpander"] {background: #F7F1FE; border-radius: 12px;}
+        button[kind="primary"], [data-testid="stBaseButton-primary"] {
+            background: linear-gradient(110deg,#7A40BE,#5942A1); border-color: #68419D;
+            color: #FFF; box-shadow: 0 4px 12px #6637A82B;
+        }
+        button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {box-shadow: 0 5px 16px #6637A84D;}
+        .lab-stage-chip {display: inline-block; border-radius: 9px; padding: 8px 13px; font-size: .85rem; font-weight: 750; margin-bottom: 10px;}
+        @media (max-width: 700px) {
+            .lab-hero {padding: 20px;}
+            .lab-hero h1 {font-size: 1.55rem;}
+            .lab-hero-badge {display: none;}
+            [data-baseweb="tab"] {padding: 0 12px;}
+        }
+        @media (prefers-reduced-motion: reduce) {
+            [data-baseweb="tab"], [data-testid="stMetric"] {transition: none;}
+        }
         </style>""", unsafe_allow_html=True)
-    st.title("Control de aparatos")
-    st.caption("ARTTDLAB · Todos los pedidos activos, una sola mesa de trabajo")
+    st.markdown("""<section class="lab-hero">
+        <div><div class="lab-brand">ARTTDLAB / LABORATORIO</div>
+        <h1>Control de aparatos</h1><p>Cada pedido, cada etapa. Todo a la vista.</p></div>
+        <div class="lab-hero-badge">🦷 Seguimiento de laboratorio</div>
+        </section>""", unsafe_allow_html=True)
     try:
         current_user = require_authenticated_user()
         if current_user is not None:
             ensure_tiempos_headers()
-            render_workbench(current_user)
+            render_workbench_tabs(current_user)
     except Exception as exc:
         if is_google_sheets_rate_limit_error(exc):
             st.error("Google Sheets alcanzó el límite temporal de lecturas. Espera 1 minuto y actualiza los datos.")
