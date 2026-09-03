@@ -1,4 +1,5 @@
 import html
+import hashlib
 import json
 import math
 import time
@@ -948,6 +949,9 @@ def values_equivalent_for_column(column: str, old_value: Any, new_value: Any) ->
     old_text = clean_display_value(clean_cell(old_value)).strip()
     new_text = clean_display_value(clean_cell(new_value)).strip()
 
+    if canonical_column == STATUS_COLUMN:
+        return normalize_text(normalize_status_alias(old_text)) == normalize_text(normalize_status_alias(new_text))
+
     if canonical_column in DATE_COLUMNS:
         old_date = parse_simple_date(old_text)
         new_date = parse_simple_date(new_text)
@@ -1125,7 +1129,8 @@ def business_hours_elapsed(start_datetime: datetime, now: datetime) -> float:
     current = start_datetime
     elapsed = 0.0
     while current < now:
-        next_step = min(current + timedelta(hours=1), now)
+        next_midnight = datetime.combine(current.date() + timedelta(days=1), datetime.min.time())
+        next_step = min(next_midnight, now)
         if is_business_day(current):
             elapsed += (next_step - current).total_seconds() / 3600
         current = next_step
@@ -1306,7 +1311,7 @@ def login_user(username: str, password: str) -> bool:
 def logout_user() -> None:
     """Cierra sesión y limpia selección de usuario/pestaña."""
 
-    for key in ["authenticated_user", "current_user", "active_app_tab"]:
+    for key in ["authenticated_user", "current_user", "active_app_tab", "workbench_snapshot", "workbench_editor_key"]:
         st.session_state.pop(key, None)
     clear_persisted_login_url()
 
@@ -1784,7 +1789,7 @@ def calculate_alert_state(
         max_hours = float(max_time_text.replace(",", "."))
     except ValueError:
         return "Sin tiempo configurado"
-    if max_hours <= 0:
+    if not math.isfinite(max_hours) or max_hours <= 0:
         return "Sin tiempo configurado"
 
     start_dt = parse_start_datetime(fecha_inicio, hora_inicio)
@@ -2083,7 +2088,9 @@ def get_forms_file_column(review_df: pd.DataFrame) -> str:
     )
 
 
-def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[str, Any]:
+def update_row_by_columna_1(
+    identifier: str, changes: dict[str, Any], *, expected_values: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Actualiza solo las celdas modificadas de ESTATUS APARATOS por Columna 1."""
 
     result = {"success": False, "updated_columns": [], "skipped_columns": [], "error": ""}
@@ -2121,6 +2128,19 @@ def update_row_by_columna_1(identifier: str, changes: dict[str, Any]) -> dict[st
         result["skipped_columns"] = list(changes)
         result["error"] = f"No encontré el registro con {ID_COLUMN} {identifier}."
         return result
+
+    if expected_values is not None:
+        matches = [item for item in values[2:]
+                   if id_index < len(item) and clean_cell(item[id_index]).strip() == clean_cell(identifier).strip()]
+        if len(matches) != 1:
+            result["error"] = "El folio está duplicado. Corrige el identificador antes de editar."
+            return result
+        for column, expected in expected_values.items():
+            position = get_header_position(headers, column)
+            actual = matches[0][position - 1] if position and position <= len(matches[0]) else ""
+            if not values_equivalent_for_column(column, expected, actual):
+                result["error"] = f"Otro usuario cambió {column}. Actualiza la tabla antes de guardar."
+                return result
 
     updates = []
     canonical_changes: dict[str, Any] = {}
@@ -2401,7 +2421,8 @@ def register_status_change(
         **get_payment_defaults(new_status),
     }
     tiempos_worksheet = get_worksheet(SHEET_TIEMPOS)
-    current_headers = TIEMPOS_HEADERS
+    # Las hojas existentes pueden tener los mismos encabezados en otro orden.
+    current_headers = run_gsheets_request(lambda: tiempos_worksheet.row_values(1))
     run_gsheets_request(
         lambda: tiempos_worksheet.append_row(
             [prepare_sheet_value(row.get(column, "")) for column in current_headers],
@@ -2997,6 +3018,7 @@ def render_nuevo_pedido_tab() -> None:
     )
     st.session_state["nuevo_pedido_form_version"] = form_version + 1
     st.session_state["nuevo_pedido_show_celebration"] = True
+    reset_workbench()
     st.rerun()
 
 
@@ -3776,6 +3798,8 @@ def advance_case_status(
     new_status: str,
     current_user: str,
     comment: str = "",
+    extra_changes: dict[str, Any] | None = None,
+    expected_values: dict[str, Any] | None = None,
 ) -> bool:
     """Actualiza STATUS en ESTATUS y registra cierre/apertura en TIEMPOS."""
 
@@ -3798,7 +3822,7 @@ def advance_case_status(
             f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
         )
         return False
-    estatus_changes = {STATUS_COLUMN: new_status}
+    estatus_changes = {**(extra_changes or {}), STATUS_COLUMN: new_status}
     estatus_changes.update(
         get_status_datetime_autofill_changes(
             row=row,
@@ -3807,7 +3831,7 @@ def advance_case_status(
             current_user=current_user,
         )
     )
-    result = update_row_by_columna_1(identifier, estatus_changes)
+    result = update_row_by_columna_1(identifier, estatus_changes, expected_values=expected_values)
     if not result["success"]:
         st.error(result["error"] or "No se pudo actualizar STATUS.")
         return False
@@ -3833,6 +3857,7 @@ def advance_case_status(
         change_comment=comment,
     )
     clear_sheet_data_cache()
+    reset_workbench()
     set_status_change_feedback(identifier, previous_status, new_status)
     st.success(st.session_state["status_change_success_message"])
     return True
@@ -4075,13 +4100,19 @@ def render_estefano_forms_review(can_edit: bool) -> None:
         )
 
 
-def render_estefano_shipping_tab(current_user: str, can_edit: bool) -> None:
+def render_estefano_shipping_tab(
+    current_user: str, can_edit: bool, selected_row: pd.Series | None = None
+) -> None:
     """Subtab operativo para enviar documentos y avanzar casos de Estefano."""
 
     st.markdown("### 📤 Envío de documentos")
-    render_status_change_feedback()
-    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
-    selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
+    if selected_row is None:
+        render_status_change_feedback()
+        cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
+        selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
+    else:
+        row = selected_row
+        selected_id = clean_cell(row[ID_COLUMN]).strip()
     if row is None:
         return
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
@@ -4279,19 +4310,19 @@ def build_payment_authorization_changes(
     }
 
 
-def render_pagos_tab(current_user: str) -> None:
+def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -> None:
     st.subheader("💳 Control de Pagos")
     can_edit = user_can_edit_tab(current_user, "Pagos")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
-    estatus_df = read_sheet_df(SHEET_ESTATUS)
-    render_payment_status_metrics(estatus_df)
-    cases_df = filter_payment_control_cases(estatus_df)
-    st.caption(
-        "Se muestran solo pagos activos creados por el flujo nuevo de la app "
-        "en TIEMPOS_APARATOS; no se mezclan registros históricos de la columna PAGO."
-    )
-    selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
+    if selected_row is None:
+        estatus_df = read_sheet_df(SHEET_ESTATUS)
+        render_payment_status_metrics(estatus_df)
+        cases_df = filter_payment_control_cases(estatus_df)
+        selected_id, row = render_case_selector(cases_df, "pagos_case_selector")
+    else:
+        row = selected_row
+        selected_id = clean_cell(row[ID_COLUMN]).strip()
     if row is None:
         return
     row_number, active_payment = get_active_tiempo_row(selected_id)
@@ -4365,7 +4396,9 @@ def render_pagos_tab(current_user: str) -> None:
             current_user=current_user,
             authorized_advance=authorize_advance,
         )
-        update_active_tiempo_row(selected_id, tiempo_changes)
+        if not update_active_tiempo_row(selected_id, tiempo_changes):
+            st.error("No se pudo registrar la autorización de pago. Actualiza el pedido e inténtalo de nuevo.")
+            return
         now_dt = app_now()
         estatus_changes = {"PAGO": selected_payment_status}
         if tiempo_changes["PUEDE_AVANZAR"] == "Sí":
@@ -4377,6 +4410,8 @@ def render_pagos_tab(current_user: str) -> None:
                 estatus_changes["FECHA PARA ENTREGA"] = format_sheet_date(add_business_days(now_dt.date(), DEFAULT_DELIVERY_BUSINESS_DAYS))
         result = update_row_by_columna_1(selected_id, estatus_changes)
         if result["success"]:
+            clear_sheet_data_cache()
+            reset_workbench()
             st.success("Estado de pago guardado.")
             st.rerun()
         else:
@@ -4395,12 +4430,13 @@ def render_pagos_tab(current_user: str) -> None:
                     st.rerun()
 
 
-def render_lesly_tab(current_user: str) -> None:
+def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = None) -> None:
     st.subheader("🖨️ Impresión y Sinterizado")
     can_edit = user_can_edit_tab(current_user, "Lesly")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
-    cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Lesly"])
+    cases_df = (filter_estatus_by_status(USER_TAB_STATUSES["Lesly"])
+                if selected_cases is None else selected_cases)
     if cases_df.empty:
         st.info("No hay casos para esta pestaña.")
         return
@@ -4411,12 +4447,9 @@ def render_lesly_tab(current_user: str) -> None:
         axis=1,
     )
     st.caption(f"Registros encontrados: {len(display_df)}")
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=build_dataframe_column_config(display_df),
-    )
+    if selected_cases is None:
+        st.dataframe(display_df, use_container_width=True, hide_index=True,
+                     column_config=build_dataframe_column_config(display_df))
     st.info(
         "Primero marca los pedidos como impresión. Solo los pedidos con "
         f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)} lleno pueden avanzar de STATUS."
@@ -4490,6 +4523,8 @@ def render_lesly_tab(current_user: str) -> None:
                 st.success(f"Pedidos marcados como impresión: {', '.join(successes)}.")
             if failures:
                 st.error("No se pudieron marcar: " + " | ".join(failures))
+            reset_workbench()
+            st.session_state["workbench_feedback"] = (successes, failures)
             st.rerun()
 
     with st.form("lesly_advance_printed_form"):
@@ -4539,6 +4574,8 @@ def render_lesly_tab(current_user: str) -> None:
                 st.success("Pedidos actualizados: " + " | ".join(successes))
             if failures:
                 st.error("Revisa estos pedidos: " + " | ".join(failures))
+            reset_workbench()
+            st.session_state["workbench_feedback"] = (successes, failures)
             st.rerun()
 
 
@@ -4623,39 +4660,454 @@ def render_active_app_tab(current_user: str) -> None:
 
 
 # ==============================
-# 🚀 APP STREAMLIT
+# 📋 MESA ÚNICA DE TRABAJO
 # ==============================
-st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
-apply_custom_css()
-st.title("🦷 Control de Aparatos – ARTTDLAB")
-st.caption(
-    "Primera versión para edición manual de estatus y registro automático de tiempos. "
-    f"Fechas y horas calculadas con zona horaria de {APP_TIMEZONE_LABEL} "
-    f"({APP_TIMEZONE_NAME})."
-)
+WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
+WORKBENCH_ADMIN_FIELDS = {
+    "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "VENDEDOR",
+    "SERVICIO", "ARCHIVOS RECIBIDOS", "DETALLES & COMENTARIOS FINALES",
+    *DATE_COLUMNS, *DATETIME_TEXT_COLUMNS, "DÍAS DE ENTREGA",
+} - {ESTATUS_PRINT_DATE_COLUMN, "FECHA PAGO PLANEACION", "FECHA PAGO CONFECCION"}
+WORKBENCH_COMPUTED_COLUMNS = [
+    "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
+    "DETALLE SEMÁFORO",
+]
+WORKBENCH_SIGNAL_COLORS = {
+    "🔴 Atrasado": ("#FEE2E2", "#991B1B"),
+    "🟡 Por vencer": ("#FEF3C7", "#92400E"),
+    "🟢 En tiempo": ("#DCFCE7", "#166534"),
+    "⚪ Sin medición": ("#F1F5F9", "#475569"),
+}
 
-if st.button("🔄 Recargar datos", type="secondary"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
 
-try:
-    current_user = require_authenticated_user()
-    if current_user is not None:
-        st.caption(f"👋 Bienvenido/a, {current_user}")
-        ensure_tiempos_headers()
-        render_global_alert_dashboard(current_user)
-        render_active_app_tab(current_user)
-except Exception as exc:
-    if is_google_sheets_rate_limit_error(exc):
-        st.error(
-            "Google Sheets alcanzó el límite temporal de lecturas. "
-            "Espera 1 minuto y vuelve a presionar ‘Recargar datos’."
-        )
-        st.info(
-            "Para reducir este problema, la app ahora conserva la conexión y los encabezados en caché "
-            "y reintenta automáticamente las llamadas que reciben cuota 429."
-        )
+def canonical_workbench_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza encabezados para la vista; conserva folios y valores de origen."""
+    result = df.copy()
+    result.columns = [canonical_column_name(column) for column in result.columns]
+    result = result.loc[:, ~result.columns.duplicated()].copy()
+    for column in result.columns:
+        result[column] = result[column].map(clean_cell)
+    if ID_COLUMN in result:
+        result[ID_COLUMN] = result[ID_COLUMN].str.strip()
+    if STATUS_COLUMN in result:
+        result[STATUS_COLUMN] = result[STATUS_COLUMN].map(normalize_status_alias)
+    return result
+
+
+def active_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
+    """ENVIADO histórico se oculta; PRODUCTO ENVIADO aún debe cerrar encuesta."""
+    result = canonical_workbench_df(df)
+    if not {ID_COLUMN, STATUS_COLUMN}.issubset(result.columns):
+        return result.iloc[0:0]
+    closed = {normalize_text(status) for status in WORKBENCH_CLOSED_STATUSES}
+    meaningful = [column for column in [APARATO_COLUMN, STATUS_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"]
+                  if column in result]
+    mask = (result[ID_COLUMN].ne("") & ~result[STATUS_COLUMN].map(normalize_text).isin(closed)
+            & result[meaningful].apply(lambda row: any(value.strip() for value in row), axis=1))
+    return result[mask].reset_index(drop=True)
+
+
+def workbench_signal(state: str) -> str:
+    if state.startswith("Atrasado"):
+        return "🔴 Atrasado"
+    if state.startswith("Próximo a vencer"):
+        return "🟡 Por vencer"
+    if state == "En tiempo":
+        return "🟢 En tiempo"
+    return "⚪ Sin medición"
+
+
+def workbench_signal_rank(signal: str) -> int:
+    return {"🔴 Atrasado": 0, "🟡 Por vencer": 1, "⚪ Sin medición": 2, "🟢 En tiempo": 3}.get(signal, 2)
+
+
+def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) -> pd.DataFrame:
+    """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas."""
+    cases = active_workbench_cases(estatus_df)
+    logs = canonical_workbench_df(tiempos_df)
+    active_logs: dict[str, pd.DataFrame] = {}
+    if {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
+        active_logs = dict(tuple(logs[logs["FECHA_FIN"].str.strip().eq("")].groupby(ID_COLUMN)))
+    lookup = {row[ID_COLUMN]: row.to_dict() for _, row in cases.iterrows()}
+    computed = []
+    now = app_now()
+    for _, case in cases.iterrows():
+        identifier = case[ID_COLUMN]
+        matches = active_logs.get(identifier, pd.DataFrame())
+        log: dict[str, Any] = {}
+        if len(matches) == 1 and normalize_text(matches.iloc[0][STATUS_COLUMN]) == normalize_text(case[STATUS_COLUMN]):
+            log = matches.iloc[0].to_dict()
+            stage_state = calculate_alert_state(log.get("FECHA_INICIO", ""), log.get("HORA_INICIO", ""),
+                                                log.get("TIEMPO_MAXIMO_HORAS", ""), now=now)
+        elif len(matches) > 1:
+            stage_state = "Varios registros activos; revisar tiempos"
+        elif len(matches) == 1:
+            stage_state = "El registro de tiempo no corresponde a la etapa actual"
+        else:
+            stage_state = "Sin registro de inicio de esta etapa"
+        if (cases[ID_COLUMN] == identifier).sum() > 1:
+            log = {}
+            stage_state = "Folio duplicado; corregir antes de editar"
+        start = parse_start_datetime(log.get("FECHA_INICIO", ""), log.get("HORA_INICIO", ""))
+        special_state = get_special_payment_sla_alert_state(case, lookup)
+        states = [stage_state, *([special_state] if special_state else [])]
+        signal = min((workbench_signal(state) for state in states), key=workbench_signal_rank)
+        configured_hours = pd.to_numeric(log.get("TIEMPO_MAXIMO_HORAS", ""), errors="coerce")
+        computed.append({
+            "SEMÁFORO": signal,
+            "RESPONSABLE": get_process_responsible(case[STATUS_COLUMN]) or "Por asignar",
+            "HORAS EN ETAPA": round(business_hours_elapsed(start, now), 2) if start else None,
+            "PLAZO HORAS": float(configured_hours) if pd.notna(configured_hours) and math.isfinite(configured_hours) and configured_hours > 0 else None,
+            "LÍMITE ETAPA": " ".join(filter(None, [log.get("FECHA_LIMITE", ""), log.get("HORA_LIMITE", "")])) or "—",
+            "DETALLE SEMÁFORO": " · ".join(states),
+        })
+    for column in WORKBENCH_COMPUTED_COLUMNS:
+        cases[column] = [item[column] for item in computed]
+    return cases
+
+
+def workbench_editable_columns(current_user: str) -> set[str]:
+    if current_user == "Admin":
+        return {STATUS_COLUMN, *WORKBENCH_ADMIN_FIELDS}
+    if current_user in USER_ALLOWED_TRANSITIONS:
+        return {STATUS_COLUMN}
+    return set()
+
+
+def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tuple[str, dict[str, Any]]]:
+    """Compara celdas por folio, nunca por el orden visual después de ordenar."""
+    changes = []
+    if ID_COLUMN not in edited or original[ID_COLUMN].duplicated().any() or edited[ID_COLUMN].duplicated().any():
+        raise ValueError("Hay folios duplicados. Corrige los identificadores antes de guardar.")
+    if set(original[ID_COLUMN]) != set(edited[ID_COLUMN]) or len(original) != len(edited):
+        raise ValueError("No se pueden agregar, borrar ni cambiar folios desde la tabla.")
+    lookup = original.set_index(ID_COLUMN, drop=False)
+    source_columns = [column for column in original if column not in WORKBENCH_COMPUTED_COLUMNS
+                      and column not in {ID_COLUMN, "SELECCIONAR"}]
+    for _, row in edited.iterrows():
+        identifier = row[ID_COLUMN]
+        previous = lookup.loc[identifier]
+        delta = {column: clean_cell(row[column]).strip() for column in source_columns
+                 if column in edited and not values_equivalent_for_column(column, previous[column], row[column])}
+        if delta:
+            changes.append((identifier, delta))
+    return changes
+
+
+def validate_workbench_changes(
+    original: pd.DataFrame, fresh: pd.DataFrame, changes: list[tuple[str, dict[str, Any]]], current_user: str
+) -> list[str]:
+    """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión."""
+    errors = []
+    allowed_columns = workbench_editable_columns(current_user)
+    if ID_COLUMN not in fresh:
+        return ["No se pudo volver a leer la columna de folios. Actualiza los datos antes de guardar."]
+    for identifier, delta in changes:
+        before = original[original[ID_COLUMN] == identifier]
+        current = fresh[fresh[ID_COLUMN] == identifier]
+        if len(before) != 1 or len(current) != 1:
+            errors.append(f"{identifier}: el folio desapareció o está duplicado. Actualiza la tabla.")
+            continue
+        row, old = current.iloc[0], before.iloc[0]
+        if set(delta) - allowed_columns:
+            errors.append(f"{identifier}: tu usuario no puede editar {', '.join(sorted(set(delta) - allowed_columns))}.")
+            continue
+        checked = {STATUS_COLUMN, APARATO_COLUMN, *delta}
+        conflicts = [column for column in checked
+                     if not values_equivalent_for_column(column, old.get(column, ""), row.get(column, ""))]
+        if conflicts:
+            errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
+            continue
+        for column, value in delta.items():
+            if column in SELECTBOX_OPTIONS_BY_COLUMN and column != STATUS_COLUMN:
+                if value not in SELECTBOX_OPTIONS_BY_COLUMN[column]:
+                    errors.append(f"{identifier}: valor no permitido para {column}.")
+            if column in DATE_COLUMNS and value and parse_simple_date(value) is None:
+                errors.append(f"{identifier}: fecha no reconocida en {column}.")
+            if column in DATETIME_TEXT_COLUMNS and value and parse_spanish_datetime(value) is None:
+                errors.append(f"{identifier}: fecha/hora no reconocida en {column}.")
+        if STATUS_COLUMN not in delta:
+            continue
+        previous_status, new_status = row[STATUS_COLUMN], normalize_status_alias(delta[STATUS_COLUMN])
+        apparatus = row.get(APARATO_COLUMN, "")
+        if new_status not in get_allowed_next_statuses(apparatus, previous_status):
+            errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
+        elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
+            errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
+        elif current_user == "Lesly" and not is_case_marked_for_printing(row):
+            errors.append(f"{identifier}: primero marca el pedido como impresión.")
+        elif previous_status in PAYMENT_STATUSES:
+            _, payment = get_active_tiempo_row(identifier)
+            if not payment or (clean_cell(payment.get("PUEDE_AVANZAR", "")) != "Sí"
+                               and clean_cell(row.get("PAGO", "")).strip().upper() != "TOTAL"):
+                errors.append(f"{identifier}: el pago todavía no autoriza avanzar.")
+    return errors
+
+
+def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current_user: str) -> tuple[list[str], list[str]]:
+    try:
+        changes = workbench_changes(original, edited)
+    except ValueError as exc:
+        return [], [str(exc)]
+    if not changes:
+        return [], []
+    clear_sheet_data_cache()
+    fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
+    errors = validate_workbench_changes(original, fresh, changes, current_user)
+    if errors:
+        return [], errors
+    saved = []
+    for identifier, delta in changes:
+        row = fresh[fresh[ID_COLUMN] == identifier].iloc[0]
+        expected = {column: row.get(column, "") for column in {STATUS_COLUMN, APARATO_COLUMN, *delta}}
+        try:
+            if STATUS_COLUMN in delta:
+                success = advance_case_status(identifier=identifier, row=row, new_status=delta[STATUS_COLUMN],
+                                              current_user=current_user, comment="Actualización desde la tabla de trabajo",
+                                              extra_changes={key: value for key, value in delta.items() if key != STATUS_COLUMN},
+                                              expected_values=expected)
+                if not success:
+                    errors.append(f"{identifier}: no se pudo guardar el cambio de etapa; revisa el mensaje anterior.")
+            else:
+                result = update_row_by_columna_1(identifier, delta, expected_values=expected)
+                success = result["success"] and not result["skipped_columns"]
+                if not success:
+                    errors.append(f"{identifier}: {result['error'] or 'faltan columnas en la hoja'}.")
+            if success:
+                saved.append(identifier)
+            else:
+                break
+        except Exception as exc:
+            errors.append(f"{identifier}: no se completó el guardado ({exc}). Actualiza y revisa su etapa y tiempos antes de reintentar.")
+            break
+    clear_sheet_data_cache()
+    reset_workbench()
+    return saved, errors
+
+
+def reset_workbench() -> None:
+    """Invalida la fotografía y la clave del editor después de una operación explícita."""
+    st.session_state.pop("workbench_snapshot", None)
+    st.session_state.pop("workbench_editor_key", None)
+    st.session_state["workbench_revision"] = st.session_state.get("workbench_revision", 0) + 1
+
+
+def workbench_has_pending_edits() -> bool:
+    key = st.session_state.get("workbench_editor_key", "")
+    state = st.session_state.get(key, {})
+    return any(set(delta) - {"SELECCIONAR"} for delta in state.get("edited_rows", {}).values())
+
+
+def style_workbench_cell(value: Any, column: str) -> str:
+    palette = WORKBENCH_SIGNAL_COLORS if column == "SEMÁFORO" else SHEET_STYLE_COLORS.get(column, {})
+    colors = palette.get(clean_cell(value))
+    return f"background-color: {colors[0]}; color: {colors[1]}; font-weight: 600" if colors else ""
+
+
+def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pending: bool) -> None:
+    if selected.empty:
+        st.caption("Marca la casilla de un pedido para ver archivos, pagos, historial y acciones aquí mismo.")
+        return
+    if pending:
+        st.info("Guarda o descarta los cambios de la tabla antes de usar las acciones del pedido.")
+        return
+    st.markdown(f"### Pedidos seleccionados · {len(selected)}")
+    print_cases = selected[selected[STATUS_COLUMN].isin(USER_TAB_STATUSES["Lesly"])]
+    if not print_cases.empty and user_can_edit_tab(current_user, "Lesly"):
+        with st.expander("Impresión y avance por lote", expanded=True):
+            render_lesly_tab(current_user, selected_cases=print_cases)
+    if len(selected) != 1:
+        st.caption("Selecciona un solo pedido para abrir sus datos y documentos.")
+        return
+    row = selected.iloc[0]
+    identifier = row[ID_COLUMN]
+    with st.container(border=True):
+        st.markdown(f"**Pedido {identifier} · {row.get(APARATO_COLUMN, '')} · {row[STATUS_COLUMN]}**")
+        st.caption(f"{row.get('NOMBRE DOCTOR', '')} · {row.get('NOMBRE PACIENTE', '')}")
+        st.write(f"{row['SEMÁFORO']} — {row['DETALLE SEMÁFORO']}")
+        targets = [target for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])
+                   if target != row[STATUS_COLUMN] and is_transition_allowed_for_user(current_user, row[STATUS_COLUMN], target, row.get(APARATO_COLUMN, ""))]
+        if targets:
+            st.caption("Etapas permitidas para tu usuario: " + " · ".join(targets))
+        else:
+            st.caption("Este pedido es de consulta para tu usuario en su etapa actual.")
+        latest_files = get_latest_estefano_files(identifier)
+        for url in latest_files.splitlines():
+            if url.strip().startswith(("https://", "http://")):
+                st.link_button("Abrir archivo del pedido", url.strip())
+        if row[STATUS_COLUMN] in USER_TAB_STATUSES["Estefano"] and user_can_edit_tab(current_user, "Estefano"):
+            with st.expander("Archivos de planeación y diseño"):
+                render_estefano_shipping_tab(current_user, True, selected_row=row)
+        if row[STATUS_COLUMN] in PAYMENT_STATUSES and user_can_edit_tab(current_user, "Pagos"):
+            with st.expander("Registrar y autorizar pago", expanded=True):
+                render_pagos_tab(current_user, selected_row=row)
+        with st.expander("Historial del pedido"):
+            history = canonical_workbench_df(read_sheet_df(SHEET_TIEMPOS))
+            if ID_COLUMN in history:
+                history = history[history[ID_COLUMN] == identifier]
+            fields = [column for column in [STATUS_COLUMN, "USUARIO", "FECHA_INICIO", "HORA_INICIO",
+                      "FECHA_FIN", "HORA_FIN", "COMENTARIOS_CAMBIO"] if column in history]
+            if history.empty:
+                st.info("Este pedido aún no tiene historial de tiempos registrado.")
+            else:
+                st.dataframe(history[fields], hide_index=True, use_container_width=True)
+
+
+def render_workbench(current_user: str) -> None:
+    """Una sola tabla con edición, semáforo y operaciones contextuales, sin pestañas."""
+    snapshot = st.session_state.get("workbench_snapshot")
+    if snapshot is None or snapshot["user"] != current_user:
+        table = build_workbench_table(read_sheet_df(SHEET_ESTATUS), read_sheet_df(SHEET_TIEMPOS))
+        snapshot = {"user": current_user, "table": table, "at": app_now()}
+        st.session_state["workbench_snapshot"] = snapshot
+    table = snapshot["table"]
+    pending = workbench_has_pending_edits()
+    heading, refresh = st.columns([5, 1])
+    with heading:
+        st.caption(f"{current_user} · Datos consultados {snapshot['at']:%d/%m/%Y %H:%M} · Hora de Ciudad de México")
+    with refresh:
+        if st.button("Actualizar datos", disabled=pending, use_container_width=True):
+            clear_sheet_data_cache()
+            reset_workbench()
+            st.rerun()
+    if "workbench_feedback" in st.session_state:
+        saved, errors = st.session_state.pop("workbench_feedback")
+        if saved:
+            st.success("Guardado: " + ", ".join(saved))
+        if errors:
+            st.error("Revisa estos pedidos: " + " | ".join(errors))
+    render_status_change_feedback()
+    metrics = st.columns(5)
+    metrics[0].metric("Pedidos activos", len(table))
+    for container, signal in zip(metrics[1:], ["🔴 Atrasado", "🟡 Por vencer", "🟢 En tiempo", "⚪ Sin medición"]):
+        container.metric(signal, int(table["SEMÁFORO"].eq(signal).sum()))
+    st.caption("Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes. "
+               "Se conservan los plazos hábiles de lunes a viernes y las alertas especiales de pagos.")
+    if table.empty:
+        st.info("No hay pedidos activos para mostrar.")
+    if pending:
+        st.info("Tienes celdas editadas. Guarda o descarta antes de cambiar filtros o actualizar datos.")
+    filters = st.columns([2, 1, 1, 1])
+    search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
+    signal = filters[1].selectbox("Semáforo", ["Todos", *WORKBENCH_SIGNAL_COLORS], disabled=pending, key="workbench_signal")
+    owner = filters[2].selectbox("Responsable", ["Todos", *sorted(table["RESPONSABLE"].unique())], disabled=pending, key="workbench_owner")
+    priority = filters[3].selectbox("Orden", ["Orden de la hoja", "Atender urgentes primero"], disabled=pending, key="workbench_order")
+    more_filters = st.columns(4)
+    chosen = {}
+    for container, column in zip(more_filters, [APARATO_COLUMN, STATUS_COLUMN, "VENDEDOR", "PAGO"]):
+        options = sorted(set(table[column].str.strip()) - {""}) if column in table else []
+        chosen[column] = container.multiselect(column.title(), options, disabled=pending, key=f"workbench_filter_{column}")
+    filtered = table.copy()
+    if search:
+        search_columns = [column for column in [ID_COLUMN, APARATO_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"] if column in table]
+        filtered = filtered[filtered[search_columns].apply(lambda row: normalize_text(search) in normalize_text(" ".join(row)), axis=1)]
+    if signal != "Todos":
+        filtered = filtered[filtered["SEMÁFORO"] == signal]
+    if owner != "Todos":
+        filtered = filtered[filtered["RESPONSABLE"] == owner]
+    for column, values in chosen.items():
+        if values:
+            filtered = filtered[filtered[column].str.strip().isin(values)]
+    if priority != "Orden de la hoja":
+        filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
+    filtered = filtered.reset_index(drop=True)
+    st.caption(f"{len(filtered)} de {len(table)} pedidos · Edita las celdas habilitadas y pulsa Guardar cambios. "
+               "El folio, aparato, pagos y semáforo se protegen; cada cambio de etapa se valida al guardar.")
+    if not filtered.empty:
+        grid = filtered.copy()
+        grid.insert(0, "SELECCIONAR", False)
+        signature = hashlib.sha256(json.dumps([current_user, st.session_state.get("workbench_revision", 0),
+                                              search, signal, owner, priority, chosen], sort_keys=True).encode()).hexdigest()[:16]
+        key = f"workbench_grid_{signature}"
+        st.session_state["workbench_editor_key"] = key
+        editable = workbench_editable_columns(current_user)
+        disabled = [column for column in grid if column not in {*editable, "SELECCIONAR"}]
+        config = {column: st.column_config.TextColumn(column.title(), width="medium") for column in grid}
+        config["SELECCIONAR"] = st.column_config.CheckboxColumn("Abrir", width=55, pinned=True, default=False)
+        config[ID_COLUMN] = st.column_config.TextColumn("Folio", width=85, pinned=True)
+        config["SEMÁFORO"] = st.column_config.TextColumn("Semáforo", width=145, pinned=True)
+        config[APARATO_COLUMN] = st.column_config.TextColumn("Aparato", width=125)
+        config["NOMBRE DOCTOR"] = st.column_config.TextColumn("Doctor", width=190)
+        config["NOMBRE PACIENTE"] = st.column_config.TextColumn("Paciente", width=190)
+        all_targets = sorted({target for _, row in filtered.iterrows()
+                              for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])})
+        config[STATUS_COLUMN] = st.column_config.SelectboxColumn("Etapa / status", options=sorted(set(all_targets) | set(filtered[STATUS_COLUMN])), width=240, required=True)
+        for column in editable & set(SELECTBOX_OPTIONS_BY_COLUMN) - {STATUS_COLUMN}:
+            if column in grid:
+                config[column] = st.column_config.SelectboxColumn(column.title(), options=sorted(set(SELECTBOX_OPTIONS_BY_COLUMN[column]) | set(grid[column])), width="medium")
+        for column in ["HORAS EN ETAPA", "PLAZO HORAS"]:
+            config[column] = st.column_config.NumberColumn(column.title(), format="%.2f h", width="small")
+        config["DETALLE SEMÁFORO"] = st.column_config.TextColumn("Motivo del semáforo", width="large")
+        order = ["SELECCIONAR", ID_COLUMN, "SEMÁFORO", APARATO_COLUMN, STATUS_COLUMN, "NOMBRE DOCTOR",
+                 "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS",
+                 "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
+        order = [column for column in order if column in grid] + [column for column in grid if column not in order]
+        styled = grid.style
+        for column in ["SEMÁFORO", APARATO_COLUMN, "PAGO", "SERVICIO", "ARCHIVOS RECIBIDOS"]:
+            if column in grid and column in disabled:
+                styled = styled.map(lambda value, name=column: style_workbench_cell(value, name), subset=[column])
+        edited = st.data_editor(styled, column_config=config, column_order=order, hide_index=True,
+                               num_rows="fixed", disabled=disabled, use_container_width=True,
+                               height=min(680, max(250, 36 * (len(grid) + 1))), row_height=36, key=key)
+        try:
+            changes = workbench_changes(grid, edited)
+        except ValueError as exc:
+            st.error(str(exc))
+            changes = []
+        save_col, discard_col, count_col = st.columns([1, 1, 3])
+        if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
+            saved, errors = save_workbench_changes(grid, edited, current_user)
+            if errors and not saved and "workbench_snapshot" in st.session_state:
+                for error in errors:
+                    st.error(error)
+            else:
+                st.session_state["workbench_feedback"] = (saved, errors)
+                st.rerun()
+        if discard_col.button("Descartar cambios", disabled=not pending, use_container_width=True):
+            reset_workbench()
+            st.rerun()
+        count_col.caption(f"{len(changes)} pedidos con cambios pendientes")
+        selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
+        selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
+        render_workbench_case_actions(selected, current_user, bool(changes))
     else:
-        st.error("Ocurrió un problema al cargar la app.")
-        st.exception(exc)
+        st.info("No hay pedidos que coincidan con los filtros.")
+    if current_user in {"Admin", "Jime"}:
+        if st.toggle("Nuevo pedido", key="workbench_new", disabled=pending) and not pending:
+            with st.container(border=True):
+                render_nuevo_pedido_tab()
+        if st.toggle("Consultar respuestas de Forms", key="workbench_forms", disabled=pending) and not pending:
+            render_estefano_forms_review(user_can_edit_tab(current_user, "Estefano"))
+    if current_user == "Admin" and st.toggle("Consultar procesos y plazos", key="workbench_processes", disabled=pending) and not pending:
+        render_procesos_tab()
+
+
+def main() -> None:
+    st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
+    st.markdown("""<style>
+        .stApp {background: #F6F7FB;}
+        .block-container {padding-top: 1.5rem; padding-bottom: 2rem; max-width: 100%;}
+        h1 {color: #403361; font-size: 1.9rem !important; letter-spacing: -.025em;}
+        [data-testid="stMetric"] {background: white; border: 1px solid #E2DDED;
+            border-radius: 10px; padding: 10px 14px;}
+        [data-testid="stMetricValue"] {font-size: 1.6rem;}
+        [data-testid="stDataFrame"] {border: 1px solid #D7D2E3; border-radius: 8px;}
+        [data-testid="stForm"] {background: white; border: 1px solid #E2DDED; padding: 18px; border-radius: 10px;}
+        </style>""", unsafe_allow_html=True)
+    st.title("Control de aparatos")
+    st.caption("ARTTDLAB · Todos los pedidos activos, una sola mesa de trabajo")
+    try:
+        current_user = require_authenticated_user()
+        if current_user is not None:
+            ensure_tiempos_headers()
+            render_workbench(current_user)
+    except Exception as exc:
+        if is_google_sheets_rate_limit_error(exc):
+            st.error("Google Sheets alcanzó el límite temporal de lecturas. Espera 1 minuto y actualiza los datos.")
+        else:
+            st.error("Ocurrió un problema al cargar la app.")
+            st.exception(exc)
+
+
+if __name__ == "__main__":
+    main()
