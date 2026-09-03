@@ -90,6 +90,29 @@ def test_compare_by_folio_not_visual_position():
     assert app.workbench_changes(original,edited) == [("001", {"NOMBRE DOCTOR":"Nombre corregido"})]
 
 
+def test_visual_stage_labels_roundtrip_without_false_changes():
+    for index, status in enumerate(app.STATUS_DISPLAY):
+        original = pd.DataFrame([case(str(index),status=status)])
+        displayed = app.workbench_display_df(original)
+        assert displayed.iloc[0]["STATUS"] == app.display_selectbox_value("STATUS",status)
+        assert app.workbench_changes(original,displayed) == []
+        assert app.workbench_cell_value("STATUS",displayed.iloc[0]["STATUS"]) == app.normalize_status_alias(status)
+    original = pd.DataFrame([case()])
+    displayed = app.workbench_display_df(original)
+    displayed.loc[0,"STATUS"] = "🔴 ESCANEO MAL (EN REPETICIÓN)"
+    assert app.workbench_changes(original,displayed) == [("001", {"STATUS":"ESCANEO MAL (EN REPETICIÓN)"})]
+
+
+def test_labeled_metadata_is_saved_without_emojis():
+    original = pd.DataFrame([case(**{"SERVICIO":"CONFECCIÓN","VENDEDOR":"JIMENA","ARCHIVOS RECIBIDOS":"STL"})])
+    displayed = app.workbench_display_df(original)
+    displayed.loc[0,"SERVICIO"] = "🔵 PLANEACIÓN & CONFECCIÓN"
+    displayed.loc[0,"VENDEDOR"] = "👨 JUAN"
+    displayed.loc[0,"ARCHIVOS RECIBIDOS"] = "📁🩻 STL+TOMO"
+    assert app.workbench_changes(original,displayed) == [("001",{
+        "SERVICIO":"PLANEACIÓN & CONFECCIÓN","VENDEDOR":"JUAN","ARCHIVOS RECIBIDOS":"STL+TOMO"})]
+
+
 @pytest.mark.parametrize("user,column,value", [("Lesly","PAGO","TOTAL"), ("Vero","NOMBRE DOCTOR","Otro"),
                                              ("Jime",app.APARATO_COLUMN,"TIGER")])
 def test_readonly_columns_are_enforced_server_side(user,column,value):
@@ -200,7 +223,7 @@ def test_new_log_respects_actual_header_order(monkeypatch):
 
 
 @pytest.mark.parametrize("user",["Admin","Jime","Lesly","Vero"])
-def test_unified_ui_renders_without_tabs(user):
+def test_followup_tabs_keep_one_operational_table(user):
     from streamlit.testing.v1 import AppTest
     script = f'''
 import sys
@@ -214,13 +237,19 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert len(at.dataframe) == 1
-    assert not at.tabs
+    assert len(at.tabs[0].dataframe) == 1
+    expected_tabs = {
+        "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms", "⚙️ Procesos y plazos"],
+        "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms"],
+        "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
+    }
+    assert [tab.label for tab in at.tabs] == expected_tabs[user]
+    assert not at.toggle
     assert not at.get("segmented_control")
     assert at.metric[0].value == "1"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception
-    assert len(at.dataframe) == 0
+    assert len(at.tabs[0].dataframe) == 0
 
 
 def test_empty_workbench_renders():
@@ -278,7 +307,40 @@ app.main()
     assert at.session_state["demo_rows"][0][app.ID_COLUMN] == "001"
     assert at.session_state["demo_rows"][0]["NOMBRE DOCTOR"] == "Nombre corregido"
     assert not at.text_input(key="workbench_search").disabled
-    assert any("Guardado: 001" in message.value for message in at.success)
+    assert any("Guardado: 001" in message.value for message in at.get("toast"))
+
+
+def test_editing_stage_keeps_editor_identity_and_revert_unlocks_filters():
+    from streamlit.testing.v1 import AppTest
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import pandas as pd
+app.require_authenticated_user = lambda: "Admin"
+app.ensure_tiempos_headers = lambda: None
+app.read_sheet_df = lambda name: pd.DataFrame([{case()!r}]) if name == app.SHEET_ESTATUS else pd.DataFrame()
+app.main()
+'''
+    at = AppTest.from_string(script,default_timeout=15).run()
+    initial_id = at.tabs[0].dataframe[0].proto.id
+    initial_height = at.tabs[0].dataframe[0].proto.height
+    initial_count = len(at.tabs[0].children[0].children)
+    key = at.session_state["workbench_editor_key"]
+    for status, pending in [("🔴 ESCANEO MAL (EN REPETICIÓN)", True), ("🔵 REVISIÓN DE ARCHIVOS", False)]:
+        at.session_state[key] = {"edited_rows":{0:{"STATUS":status}},"added_rows":[],"deleted_rows":[]}
+        at.run()
+        assert not at.exception
+        assert at.session_state["workbench_editor_key"] == key
+        assert at.tabs[0].dataframe[0].proto.id == initial_id
+        assert at.tabs[0].dataframe[0].proto.height == initial_height
+        assert len(at.tabs[0].children[0].children) == initial_count
+        assert at.text_input(key="workbench_search").disabled == pending
+        bars = [item.value for item in at.tabs[0].markdown if 'class="lab-edit-bar' in item.value]
+        assert len(bars) == 1
+        assert not any("Tienes celdas editadas" in item.value for item in at.info)
+        if pending:
+            assert not at.tabs[1].get("form")
 
 
 @pytest.mark.parametrize("user,status",[("Admin","EN PLANEACIÓN"),("Jime","PAGO PLANEACIÓN"),
@@ -306,6 +368,6 @@ app.main()
     at.session_state[key] = {"edited_rows":{0:{"SELECCIONAR":True}},"added_rows":[],"deleted_rows":[]}
     at.run()
     assert not at.exception
-    assert not at.tabs
+    assert at.tabs[0].label == "📋 Seguimiento"
     assert at.text_input(key="workbench_search").disabled is False
     assert any("Pedido 001" in item.value for item in at.markdown)
