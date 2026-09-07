@@ -1,5 +1,6 @@
 import html
 import hashlib
+import hmac
 import json
 import math
 import time
@@ -17,6 +18,7 @@ import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
+from workbench_grid import build_grid_options, render_grid
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -83,11 +85,11 @@ TIEMPOS_HEADERS = [
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
-USER_PASSWORD_DEFAULTS = {
-    "Admin": "AdminLab73",
-    "Jime": "JimeLab48",
-    "Lesly": "LeslyLab64",
-    "Vero": "VeroLab27",
+USER_PASSWORD_HASH_DEFAULTS = {
+    "Admin": "pbkdf2_sha256$600000$34f8abf29a43f7ac49915eb87e240b5c$2d6f651e7e22e0ea8b2822743e7a15d5593f1167763e2218f0a22cbce46dd8d1",
+    "Jime": "pbkdf2_sha256$600000$14246b262532617a02daaae3a5341afc$0ffe44c76647c73b79b83e404ca575d1f3c4baeb520f6b1e2161830f5bd74a5f",
+    "Lesly": "pbkdf2_sha256$600000$d26b1d117522c98c143ace22d4ae1289$6826f9026b3276a7ca91c0ce9448cf7f4dac2001784b267aad83d39c530b6f6b",
+    "Vero": "pbkdf2_sha256$600000$7a88c4e27712e7777b1d3c4cb99181a1$52f87112218b954bf37cc6d6902dab9d2e8db18ec285319bef991312d29bda0d",
 }
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
@@ -1239,7 +1241,7 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
 
 
 def get_user_passwords() -> dict[str, str]:
-    """Lee contraseñas por usuario desde secrets, con defaults de desarrollo."""
+    """Lee secretos configurados; los accesos heredados quedan sólo como hashes."""
 
     configured_passwords = {}
     auth_config = st.secrets.get("auth", {}) if hasattr(st, "secrets") else {}
@@ -1256,7 +1258,21 @@ def get_user_passwords() -> dict[str, str]:
             {str(user): str(password) for user, password in root_passwords.items()}
         )
 
-    return {**USER_PASSWORD_DEFAULTS, **configured_passwords}
+    return {**USER_PASSWORD_HASH_DEFAULTS, **configured_passwords}
+
+
+def password_matches(password: str, stored_value: str) -> bool:
+    """Acepta secretos configurados y verifica los defaults sin guardarlos en claro."""
+    if stored_value.startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds_text, salt, expected = stored_value.split("$", 3)
+            candidate = hashlib.pbkdf2_hmac(
+                "sha256", password.encode(), salt.encode(), int(rounds_text)
+            ).hex()
+        except (TypeError, ValueError):
+            return False
+        return hmac.compare_digest(candidate, expected)
+    return hmac.compare_digest(password, stored_value)
 
 
 def get_query_param_value(key: str) -> str:
@@ -1302,7 +1318,7 @@ def login_user(username: str, password: str) -> bool:
     """Valida credenciales y guarda el usuario autenticado en sesión."""
 
     expected_password = get_user_passwords().get(username, "")
-    if not expected_password or password != expected_password:
+    if not expected_password or not password_matches(password, expected_password):
         return False
     set_authenticated_user(username)
     return True
@@ -1341,7 +1357,7 @@ def require_authenticated_user() -> str | None:
         "Después de entrar, el usuario queda guardado en el link para la próxima vez."
     )
     with st.form("login_form"):
-        username = st.selectbox("Usuario", list(USER_PASSWORD_DEFAULTS.keys()))
+        username = st.selectbox("Usuario", list(USER_PASSWORD_HASH_DEFAULTS.keys()))
         password = st.text_input("Contraseña", type="password")
         submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
 
@@ -4775,6 +4791,40 @@ def workbench_editable_columns(current_user: str) -> set[str]:
     return set()
 
 
+def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
+    """Opciones de una sola fila, desde su etapa guardada y con permisos del usuario."""
+    current = normalize_status_alias(row.get(STATUS_COLUMN, ""))
+    apparatus = row.get(APARATO_COLUMN, "")
+    options = [current]
+    if (STATUS_COLUMN in workbench_editable_columns(current_user)
+            and not (current_user == "Lesly" and not is_case_marked_for_printing(row))):
+        options.extend(target for target in get_allowed_next_statuses(apparatus, current)
+                       if is_transition_allowed_for_user(current_user, current, target, apparatus))
+    return list(dict.fromkeys(display_selectbox_value(STATUS_COLUMN, value) for value in options))
+
+
+def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str) -> dict:
+    editable = workbench_editable_columns(current_user)
+    duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
+    stages = {row[ID_COLUMN]: workbench_stage_options(row, current_user)
+              if row[ID_COLUMN] not in duplicates else [display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])]
+              for _, row in source.iterrows()}
+    selections = {column: list(dict.fromkeys([
+        *(display_selectbox_value(column, value) for value in SELECTBOX_OPTIONS_BY_COLUMN[column]),
+        *grid[column],
+    ])) for column in editable & set(SELECTBOX_OPTIONS_BY_COLUMN) - {STATUS_COLUMN} if column in grid}
+    dates = {}
+    for column in editable & (DATE_COLUMNS | DATETIME_TEXT_COLUMNS) & set(grid):
+        parser = parse_simple_date if column in DATE_COLUMNS else parse_spanish_datetime
+        dates[column] = {value: parsed.isoformat() for value in set(grid[column]) if (parsed := parser(value))}
+    palettes = {column: {display_selectbox_value(column, value): colors for value, colors in palette.items()}
+                for column, palette in SHEET_STYLE_COLORS.items()}
+    palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
+    return build_grid_options(grid, editable=editable, stage_options=stages, select_options=selections,
+                              date_values=dates, datetime_columns=DATETIME_TEXT_COLUMNS,
+                              palettes=palettes, time_zone=APP_TIMEZONE_NAME)
+
+
 def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
     """Añade las etiquetas visuales existentes sólo a la copia del editor."""
     displayed = df.copy()
@@ -4916,16 +4966,15 @@ def reset_workbench() -> None:
 
 def workbench_pending_count() -> int:
     key = st.session_state.get("workbench_editor_key", "")
-    state = st.session_state.get(key, {})
+    state = st.session_state.get(key) or {}
     baseline = st.session_state.get("workbench_editor_baseline")
-    count = 0
-    for index, delta in state.get("edited_rows", {}).items():
-        original = baseline.iloc[int(index)] if baseline is not None and int(index) < len(baseline) else {}
-        if any(column != "SELECCIONAR" and not values_equivalent_for_column(
-            column, original.get(column, ""), value
-        ) for column, value in delta.items()):
-            count += 1
-    return count
+    if baseline is None or state.get("rows") is None:
+        return 0
+    try:
+        return len(workbench_changes(baseline, pd.DataFrame(state["rows"])))
+    except ValueError:
+        # Un resultado incompleto tampoco debe permitir refrescar y perder ediciones.
+        return 1
 
 
 def workbench_has_pending_edits() -> bool:
@@ -5060,8 +5109,8 @@ def render_workbench(current_user: str) -> None:
     if priority != "Orden de la hoja":
         filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
     filtered = filtered.reset_index(drop=True)
-    st.caption(f"{len(filtered)} de {len(table)} pedidos · Edita las celdas habilitadas y pulsa Guardar cambios. "
-               "El folio, aparato, pagos y semáforo se protegen; cada cambio de etapa se valida al guardar.")
+    st.caption(f"{len(filtered)} de {len(table)} pedidos · Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
+               "En las fechas, elige calendario o Ahora; después pulsa Guardar cambios.")
     if not filtered.empty:
         grid = workbench_display_df(filtered)
         grid.insert(0, "SELECCIONAR", False)
@@ -5070,39 +5119,7 @@ def render_workbench(current_user: str) -> None:
         key = f"workbench_grid_{signature}"
         st.session_state["workbench_editor_key"] = key
         st.session_state["workbench_editor_baseline"] = grid.copy()
-        editable = workbench_editable_columns(current_user)
-        disabled = [column for column in grid if column not in {*editable, "SELECCIONAR"}]
-        config = {column: st.column_config.TextColumn(column.title(), width="medium") for column in grid}
-        config["SELECCIONAR"] = st.column_config.CheckboxColumn("Abrir", width=55, pinned=True, default=False)
-        config[ID_COLUMN] = st.column_config.TextColumn("Folio", width=85, pinned=True)
-        config["SEMÁFORO"] = st.column_config.TextColumn("Semáforo", width=145, pinned=True)
-        config[APARATO_COLUMN] = st.column_config.TextColumn("Aparato", width=125)
-        config["NOMBRE DOCTOR"] = st.column_config.TextColumn("Doctor", width=190)
-        config["NOMBRE PACIENTE"] = st.column_config.TextColumn("Paciente", width=190)
-        all_targets = sorted({target for _, row in filtered.iterrows()
-                              for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])})
-        stage_options = [display_selectbox_value(STATUS_COLUMN, value)
-                         for value in sorted(set(all_targets) | set(filtered[STATUS_COLUMN]))]
-        config[STATUS_COLUMN] = st.column_config.SelectboxColumn("🎨 Etapa / status", options=stage_options, width=280, required=True)
-        for column in editable & set(SELECTBOX_OPTIONS_BY_COLUMN) - {STATUS_COLUMN}:
-            if column in grid:
-                options = [display_selectbox_value(column, value)
-                           for value in sorted(set(SELECTBOX_OPTIONS_BY_COLUMN[column]) | set(filtered[column]))]
-                config[column] = st.column_config.SelectboxColumn(column.title(), options=list(dict.fromkeys(options)), width="medium")
-        for column in ["HORAS EN ETAPA", "PLAZO HORAS"]:
-            config[column] = st.column_config.NumberColumn(column.title(), format="%.2f h", width="small")
-        config["DETALLE SEMÁFORO"] = st.column_config.TextColumn("Motivo del semáforo", width="large")
-        order = ["SELECCIONAR", ID_COLUMN, "SEMÁFORO", APARATO_COLUMN, STATUS_COLUMN, "NOMBRE DOCTOR",
-                 "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS",
-                 "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
-        order = [column for column in order if column in grid] + [column for column in grid if column not in order]
-        styled = grid.style.set_uuid(f"lab_{signature}")
-        for column in ["SEMÁFORO", APARATO_COLUMN, "PAGO", "SERVICIO", "ARCHIVOS RECIBIDOS"]:
-            if column in grid and column in disabled:
-                styled = styled.map(lambda value, name=column: style_workbench_cell(value, name), subset=[column])
-        edited = st.data_editor(styled, column_config=config, column_order=order, hide_index=True,
-                               num_rows="fixed", disabled=disabled, use_container_width=True,
-                               height=min(680, max(250, 36 * (len(grid) + 1))), row_height=36, key=key)
+        edited = render_grid(grid, workbench_grid_options(grid, filtered, current_user), key)
         try:
             changes = workbench_changes(grid, edited)
         except ValueError as exc:
@@ -5245,7 +5262,14 @@ def main() -> None:
             background: linear-gradient(110deg,#7A40BE,#5942A1); border-color: #68419D;
             color: #FFF; box-shadow: 0 4px 12px #6637A82B;
         }
-        button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {box-shadow: 0 5px 16px #6637A84D;}
+        button[kind="primary"]:not(:disabled):hover, [data-testid="stBaseButton-primary"]:not(:disabled):hover {box-shadow: 0 5px 16px #6637A84D;}
+        button[kind="primary"]:disabled, [data-testid="stBaseButton-primary"]:disabled {
+            background: #DDD2EC; border-color: #B6A1CF; color: #58436F; opacity: 1;
+            box-shadow: none; cursor: not-allowed;
+        }
+        button[kind="primary"]:disabled *, [data-testid="stBaseButton-primary"]:disabled * {
+            color: #58436F !important; -webkit-text-fill-color: #58436F; opacity: 1;
+        }
         .lab-stage-chip {display: inline-block; border-radius: 9px; padding: 8px 13px; font-size: .85rem; font-weight: 750; margin-bottom: 10px;}
         @media (max-width: 700px) {
             .lab-hero {padding: 20px;}

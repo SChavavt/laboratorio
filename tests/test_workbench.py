@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
+import json
 
 import pandas as pd
 import pytest
@@ -22,6 +23,13 @@ def log(identifier="001", status="REVISIÓN DE ARCHIVOS", hours=2, limit="5", **
     start = NOW - timedelta(hours=hours)
     return {app.ID_COLUMN: identifier, app.STATUS_COLUMN: status, "FECHA_INICIO": start.strftime("%Y-%m-%d"),
             "HORA_INICIO": start.strftime("%H:%M:%S"), "FECHA_FIN": "", "TIEMPO_MAXIMO_HORAS": limit, **extra}
+
+
+def grid_event(at, edits):
+    rows = at.session_state["workbench_editor_baseline"].to_dict("records")
+    for row in rows:
+        row.update(edits.get(row[app.ID_COLUMN], {}))
+    return {"rows": rows}
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +119,69 @@ def test_labeled_metadata_is_saved_without_emojis():
     displayed.loc[0,"ARCHIVOS RECIBIDOS"] = "📁🩻 STL+TOMO"
     assert app.workbench_changes(original,displayed) == [("001",{
         "SERVICIO":"PLANEACIÓN & CONFECCIÓN","VENDEDOR":"JUAN","ARCHIVOS RECIBIDOS":"STL+TOMO"})]
+
+
+def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
+    source = pd.DataFrame([
+        case("001", status="REVISIÓN DE ARCHIVOS", apparatus="MSE"),
+        case("002", status="LISTO P/CONFECCIÓN", apparatus="HYRAX"),
+    ])
+    grid = app.workbench_display_df(source)
+    grid.insert(0, "SELECCIONAR", False)
+    options = app.workbench_grid_options(grid, source, "Admin")["context"]["stageOptions"]
+    assert options["001"] == [
+        app.display_selectbox_value(app.STATUS_COLUMN, value)
+        for value in app.get_allowed_next_statuses("MSE", "REVISIÓN DE ARCHIVOS")
+    ]
+    assert options["002"] == [
+        app.display_selectbox_value(app.STATUS_COLUMN, value)
+        for value in app.get_allowed_next_statuses("HYRAX", "LISTO P/CONFECCIÓN")
+    ]
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "PULIDO (EN CONFECCIÓN)") not in options["001"]
+
+
+def test_status_options_also_apply_user_and_printing_permissions():
+    jime_row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "CANCELO") not in app.workbench_stage_options(jime_row, "Jime")
+    lesly_row = pd.Series(case(status="LISTO P/SINTERIZADO"))
+    assert app.workbench_stage_options(lesly_row, "Lesly") == [
+        app.display_selectbox_value(app.STATUS_COLUMN, "LISTO P/SINTERIZADO")
+    ]
+    lesly_row[app.ESTATUS_PRINT_DATE_COLUMN] = "2026/09/03"
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") in app.workbench_stage_options(lesly_row, "Lesly")
+
+
+def test_editable_dates_use_calendar_time_and_now_shortcut():
+    source = pd.DataFrame([case(**{
+        "FECHA DE RECEPCIÓN": "3 septiembre 2026",
+        "FECHA/HORA ENVÍO STEFANO": "3 septiembre 2026 14:25",
+    })])
+    grid = app.workbench_display_df(source)
+    grid.insert(0, "SELECCIONAR", False)
+    options = app.workbench_grid_options(grid, source, "Admin")
+    columns = {column["field"]: column for column in options["columnDefs"]}
+    date_config = columns["FECHA DE RECEPCIÓN"]
+    datetime_config = columns["FECHA/HORA ENVÍO STEFANO"]
+    assert date_config["cellEditorParams"]["withTime"] is False
+    assert datetime_config["cellEditorParams"]["withTime"] is True
+    assert date_config["cellEditorParams"]["timeZone"] == "America/Mexico_City"
+    assert date_config["cellEditorParams"]["initialValues"]["3 septiembre 2026"] == "2026-09-03"
+    assert datetime_config["cellEditorParams"]["initialValues"]["3 septiembre 2026 14:25"] == "2026-09-03T14:25:00"
+    assert "Ahora" in date_config["cellEditor"].js_code
+    assert 'addInput("date", "Fecha"' in date_config["cellEditor"].js_code
+    assert 'if (this.withTime) this.time = addInput("time", "Hora"' in date_config["cellEditor"].js_code
+
+
+def test_legacy_passwords_are_stored_as_pbkdf2_hashes():
+    for stored in app.USER_PASSWORD_HASH_DEFAULTS.values():
+        assert stored.startswith("pbkdf2_sha256$")
+        algorithm, rounds, salt, digest = stored.split("$")
+        assert algorithm == "pbkdf2_sha256" and int(rounds) >= 600_000
+        assert len(salt) >= 32 and len(digest) == 64
+    test_hash = "pbkdf2_sha256$1$salt$8fa3d7592a7aedf30af5a656525188ac17c254fbc8cab1c56610278639fb64e2"
+    assert app.password_matches("prueba", test_hash)
+    assert not app.password_matches("incorrecta", test_hash)
+    assert app.password_matches("configurado", "configurado")
 
 
 @pytest.mark.parametrize("user,column,value", [("Lesly","PAGO","TOTAL"), ("Vero","NOMBRE DOCTOR","Otro"),
@@ -237,7 +308,7 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert len(at.tabs[0].dataframe) == 1
+    assert len(at.tabs[0].get("component_instance")) == 1
     expected_tabs = {
         "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms", "⚙️ Procesos y plazos"],
         "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms"],
@@ -249,7 +320,7 @@ app.main()
     assert at.metric[0].value == "1"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception
-    assert len(at.tabs[0].dataframe) == 0
+    assert len(at.tabs[0].get("component_instance")) == 0
 
 
 def test_empty_workbench_renders():
@@ -293,14 +364,14 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     key = at.session_state["workbench_editor_key"]
-    delta = {"edited_rows": {0:{"NOMBRE DOCTOR":"Nombre corregido"}},"added_rows":[],"deleted_rows":[]}
+    delta = grid_event(at, {"001": {"NOMBRE DOCTOR":"Nombre corregido"}})
     at.session_state[key] = delta
     at.run()
     assert not at.exception
     assert at.text_input(key="workbench_search").disabled
     assert next(button for button in at.button if button.label == "Actualizar datos").disabled
     next(button for button in at.button if button.label == "Guardar cambios").click()
-    # AppTest no serializa automáticamente los cambios de data_editor.
+    # Simula el mensaje del componente sin conectar a Sheets/S3.
     at.session_state[key] = delta
     at.run()
     assert not at.exception
@@ -323,17 +394,17 @@ app.read_sheet_df = lambda name: pd.DataFrame([{case()!r}]) if name == app.SHEET
 app.main()
 '''
     at = AppTest.from_string(script,default_timeout=15).run()
-    initial_id = at.tabs[0].dataframe[0].proto.id
-    initial_height = at.tabs[0].dataframe[0].proto.height
+    initial_id = at.tabs[0].get("component_instance")[0].proto.id
+    initial_height = json.loads(at.tabs[0].get("component_instance")[0].proto.json_args)["height"]
     initial_count = len(at.tabs[0].children[0].children)
     key = at.session_state["workbench_editor_key"]
     for status, pending in [("🔴 ESCANEO MAL (EN REPETICIÓN)", True), ("🔵 REVISIÓN DE ARCHIVOS", False)]:
-        at.session_state[key] = {"edited_rows":{0:{"STATUS":status}},"added_rows":[],"deleted_rows":[]}
+        at.session_state[key] = grid_event(at, {"001": {"STATUS": status}})
         at.run()
         assert not at.exception
         assert at.session_state["workbench_editor_key"] == key
-        assert at.tabs[0].dataframe[0].proto.id == initial_id
-        assert at.tabs[0].dataframe[0].proto.height == initial_height
+        assert at.tabs[0].get("component_instance")[0].proto.id == initial_id
+        assert json.loads(at.tabs[0].get("component_instance")[0].proto.json_args)["height"] == initial_height
         assert len(at.tabs[0].children[0].children) == initial_count
         assert at.text_input(key="workbench_search").disabled == pending
         bars = [item.value for item in at.tabs[0].markdown if 'class="lab-edit-bar' in item.value]
@@ -365,7 +436,7 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     key = at.session_state["workbench_editor_key"]
-    at.session_state[key] = {"edited_rows":{0:{"SELECCIONAR":True}},"added_rows":[],"deleted_rows":[]}
+    at.session_state[key] = grid_event(at, {"001": {"SELECCIONAR": True}})
     at.run()
     assert not at.exception
     assert at.tabs[0].label == "📋 Seguimiento"
