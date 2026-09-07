@@ -5,6 +5,8 @@
 **Procesos y plazos**, en ese orden. Se respetan los permisos de cada usuario:
 Admin tiene las cuatro pestañas, Jime las primeras tres y Lesly/Vero Seguimiento.
 Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
+Las contraseñas configuradas en `secrets` se respetan; los accesos heredados ya
+no aparecen en texto legible dentro del repositorio público.
 
 ## Operación
 
@@ -13,6 +15,10 @@ Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
 2. Edita las celdas habilitadas. **Guardar cambios** valida todos los pedidos
    modificados antes de comenzar las escrituras. Cada usuario conserva sus
    permisos de transición; Admin puede corregir los datos generales.
+   El selector de etapa se calcula por pedido: incluye la etapa actual y sólo
+   los destinos inmediatos admitidos por ese aparato y ese usuario. Las fechas
+   editables abren calendario y, cuando corresponde, hora; **Ahora** registra
+   el momento de Ciudad de México y los valores antiguos se conservan al cancelar.
 3. La columna **Abrir** selecciona pedidos sin guardarlos ni modificar Sheets.
    Con un pedido seleccionado se muestran archivos, historial y las acciones
    de pago o diseño correspondientes. Con pedidos de impresión seleccionados,
@@ -33,6 +39,9 @@ posición y tamaño del editor. La barra de cambios ocupa siempre 40 px; el mens
 de pendientes ya no inserta un bloque encima de la tabla. Las confirmaciones de
 guardado se muestran como avisos flotantes y los efectos visuales son de color
 y sombra al pasar el cursor, sin animaciones que desplacen las filas.
+La cuadrícula conserva su posición al editar y la navegación por filtros sólo se
+bloquea cuando hay cambios reales. El botón Guardar deshabilitado mantiene texto
+oscuro sobre morado claro para que su estado siga siendo legible.
 
 ## Semáforo
 
