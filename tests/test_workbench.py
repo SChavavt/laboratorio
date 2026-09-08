@@ -151,25 +151,26 @@ def test_status_options_also_apply_user_and_printing_permissions():
     assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") in app.workbench_stage_options(lesly_row, "Lesly")
 
 
-def test_editable_dates_use_calendar_time_and_now_shortcut():
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Estefano", "Lesly", "Vero"])
+def test_editable_dates_use_calendar_and_now_shortcut_for_every_user(user):
     source = pd.DataFrame([case(**{
         "FECHA DE RECEPCIÓN": "3 septiembre 2026",
         "FECHA/HORA ENVÍO STEFANO": "3 septiembre 2026 14:25",
     })])
     grid = app.workbench_display_df(source)
     grid.insert(0, "SELECCIONAR", False)
-    options = app.workbench_grid_options(grid, source, "Admin")
+    options = app.workbench_grid_options(grid, source, user)
     columns = {column["field"]: column for column in options["columnDefs"]}
     date_config = columns["FECHA DE RECEPCIÓN"]
     datetime_config = columns["FECHA/HORA ENVÍO STEFANO"]
     assert date_config["cellEditorParams"]["withTime"] is False
-    assert datetime_config["cellEditorParams"]["withTime"] is True
     assert date_config["cellEditorParams"]["timeZone"] == "America/Mexico_City"
     assert date_config["cellEditorParams"]["initialValues"]["3 septiembre 2026"] == "2026-09-03"
-    assert datetime_config["cellEditorParams"]["initialValues"]["3 septiembre 2026 14:25"] == "2026-09-03T14:25:00"
     assert "Ahora" in date_config["cellEditor"].js_code
     assert 'addInput("date", "Fecha"' in date_config["cellEditor"].js_code
     assert 'if (this.withTime) this.time = addInput("time", "Hora"' in date_config["cellEditor"].js_code
+    assert datetime_config["editable"] is False
+    assert "cellEditorParams" not in datetime_config
 
 
 def test_status_menu_and_columns_expose_visual_categories():
@@ -226,12 +227,20 @@ def test_legacy_passwords_are_stored_as_pbkdf2_hashes():
     assert app.password_matches("configurado", "configurado")
 
 
-@pytest.mark.parametrize("user,column,value", [("Lesly","PAGO","TOTAL"), ("Vero","NOMBRE DOCTOR","Otro"),
+@pytest.mark.parametrize("user,column,value", [("Lesly","PAGO","TOTAL"),
+                                             ("Vero","FECHA PARA ENTREGA","2026/09/20"),
                                              ("Jime",app.APARATO_COLUMN,"TIGER")])
 def test_readonly_columns_are_enforced_server_side(user,column,value):
     original = pd.DataFrame([case()])
     errors = app.validate_workbench_changes(original, original, [("001",{column:value})],user)
     assert errors and "no puede editar" in errors[0]
+
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Estefano", "Lesly", "Vero"])
+def test_every_user_can_edit_manual_fields(user):
+    original = pd.DataFrame([case(**{"FECHA DE RECEPCIÓN": "2026/09/03"})])
+    changes = [("001", {"NOMBRE DOCTOR": "Nombre corregido", "FECHA DE RECEPCIÓN": "2026/09/04"})]
+    assert not app.validate_workbench_changes(original, original, changes, user)
 
 
 def test_skip_stage_and_foreign_role_rejected():

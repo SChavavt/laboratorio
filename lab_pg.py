@@ -4755,11 +4755,11 @@ def render_active_app_tab(current_user: str) -> None:
 # 📋 MESA ÚNICA DE TRABAJO
 # ==============================
 WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
-WORKBENCH_ADMIN_FIELDS = {
+WORKBENCH_MANUAL_FIELDS = {
     "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "VENDEDOR",
     "SERVICIO", "ARCHIVOS RECIBIDOS", "DETALLES & COMENTARIOS FINALES",
-    *DATE_COLUMNS, *DATETIME_TEXT_COLUMNS, "DÍAS DE ENTREGA",
-} - {ESTATUS_PRINT_DATE_COLUMN, "FECHA PAGO PLANEACION", "FECHA PAGO CONFECCION"}
+    "FECHA DE RECEPCIÓN",
+}
 WORKBENCH_COMPUTED_COLUMNS = [
     "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
     "DETALLE SEMÁFORO",
@@ -4867,10 +4867,8 @@ def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) ->
 
 
 def workbench_editable_columns(current_user: str) -> set[str]:
-    if current_user == "Admin":
-        return {STATUS_COLUMN, *WORKBENCH_ADMIN_FIELDS}
-    if current_user in USER_ALLOWED_TRANSITIONS:
-        return {STATUS_COLUMN}
+    if current_user in USER_PASSWORD_HASH_DEFAULTS:
+        return {STATUS_COLUMN, *WORKBENCH_MANUAL_FIELDS}
     return set()
 
 
@@ -5220,7 +5218,8 @@ def render_workbench(current_user: str) -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"{len(filtered)} de {len(table)} pedidos · Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
-               "En las fechas, elige calendario o Ahora; después pulsa Guardar cambios.")
+               "En las fechas, elige calendario o Ahora; después pulsa Guardar cambios. "
+               "Para personalizar la tabla, arrastra un encabezado y pulsa Guardar orden cuando se active.")
     if not filtered.empty:
         grid = workbench_display_df(filtered)
         grid.insert(0, "SELECCIONAR", False)
@@ -5263,7 +5262,8 @@ def render_workbench(current_user: str) -> None:
         normalized_current_order = normalize_column_order(current_order, grid.columns)
         effective_saved_order = saved_order or initial_order
         if order_col.button("Guardar orden", disabled=pending or normalized_current_order == effective_saved_order,
-                            use_container_width=True, help="Guarda este acomodo sólo para tu usuario."):
+                            use_container_width=True,
+                            help="Se activa después de mover una columna y guarda el acomodo en PREFERENCIAS APP sólo para tu usuario."):
             ok, message = save_user_column_order(current_user, normalized_current_order, grid.columns)
             if ok:
                 st.session_state[f"workbench_saved_column_order_{current_user}"] = normalized_current_order
