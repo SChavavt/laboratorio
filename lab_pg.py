@@ -30,6 +30,7 @@ SCOPE = [
 
 SHEET_ESTATUS = "ESTATUS APARATOS"
 SHEET_TIEMPOS = "TIEMPOS_APARATOS"
+SHEET_USER_PREFERENCES = "PREFERENCIAS APP"
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
 FORMS_FILE_COLUMN_HINT = "Favor de adjuntar archivos STL"
@@ -88,12 +89,14 @@ ACTIVE_USER_LABEL = "Usuario Streamlit"
 USER_PASSWORD_HASH_DEFAULTS = {
     "Admin": "pbkdf2_sha256$600000$34f8abf29a43f7ac49915eb87e240b5c$2d6f651e7e22e0ea8b2822743e7a15d5593f1167763e2218f0a22cbce46dd8d1",
     "Jime": "pbkdf2_sha256$600000$14246b262532617a02daaae3a5341afc$0ffe44c76647c73b79b83e404ca575d1f3c4baeb520f6b1e2161830f5bd74a5f",
+    "Estefano": "pbkdf2_sha256$600000$a3f123ecfa8838e9ea8de3ce93cac944$3bd0e93fca81d135920dc2c487f6aab4bdc517ec72e9684a66224a922a66659f",
     "Lesly": "pbkdf2_sha256$600000$d26b1d117522c98c143ace22d4ae1289$6826f9026b3276a7ca91c0ce9448cf7f4dac2001784b267aad83d39c530b6f6b",
     "Vero": "pbkdf2_sha256$600000$7a88c4e27712e7777b1d3c4cb99181a1$52f87112218b954bf37cc6d6902dab9d2e8db18ec285319bef991312d29bda0d",
 }
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
     "Jime": ["nuevo", "jime", "estefano", "pagos"],
+    "Estefano": ["estefano"],
     "Lesly": ["lesly"],
     "Vero": ["vero"],
 }
@@ -1890,6 +1893,78 @@ def get_worksheet(sheet_name: str):
                 cols=str(len(TIEMPOS_HEADERS)),
             )
         )
+
+
+def get_user_preferences_worksheet():
+    """Obtiene la hoja pequeña donde se conserva el orden elegido por cada usuario."""
+    spreadsheet = get_spreadsheet()
+    try:
+        worksheet = run_gsheets_request(lambda: spreadsheet.worksheet(SHEET_USER_PREFERENCES))
+    except gspread.WorksheetNotFound:
+        worksheet = run_gsheets_request(lambda: spreadsheet.add_worksheet(
+            title=SHEET_USER_PREFERENCES, rows="30", cols=str(len(USER_PREFERENCE_HEADERS))
+        ))
+    headers = run_gsheets_request(lambda: worksheet.row_values(1))
+    if headers != USER_PREFERENCE_HEADERS:
+        if headers and any(clean_cell(value).strip() for value in headers):
+            raise ValueError(f"{SHEET_USER_PREFERENCES} tiene encabezados incompatibles.")
+        run_gsheets_request(lambda: worksheet.update("A1", [USER_PREFERENCE_HEADERS]))
+    return worksheet
+
+
+def normalize_column_order(order: Any, available_columns: Any) -> list[str]:
+    """Elimina columnas fijas, desconocidas o repetidas de una preferencia."""
+    available = [clean_cell(column).strip() for column in available_columns
+                 if clean_cell(column).strip() not in WORKBENCH_FIXED_COLUMNS]
+    requested = order if isinstance(order, (list, tuple)) else []
+    result = []
+    for column in [*requested, *available]:
+        cleaned = clean_cell(column).strip()
+        if cleaned in available and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+def read_user_column_order(current_user: str, available_columns: Any) -> list[str]:
+    """Lee una preferencia persistente; si no existe, conserva el orden de la app."""
+    try:
+        worksheet = get_user_preferences_worksheet()
+        values = run_gsheets_request(lambda: worksheet.get_all_values())
+        if len(values) < 2:
+            return []
+        headers = values[0]
+        user_pos = headers.index("USUARIO")
+        order_pos = headers.index("ORDEN_COLUMNAS")
+        for row in reversed(values[1:]):
+            if len(row) > user_pos and clean_cell(row[user_pos]).strip() == current_user:
+                raw = row[order_pos] if len(row) > order_pos else ""
+                return normalize_column_order(json.loads(raw), available_columns)
+    except Exception:
+        # Las preferencias son opcionales: una falla aquí nunca bloquea Seguimiento.
+        return []
+    return []
+
+
+def save_user_column_order(current_user: str, order: list[str], available_columns: Any) -> tuple[bool, str]:
+    """Crea o actualiza una fila por usuario sin mezclar sus preferencias."""
+    normalized = normalize_column_order(order, available_columns)
+    try:
+        worksheet = get_user_preferences_worksheet()
+        values = run_gsheets_request(lambda: worksheet.get_all_values())
+        headers = values[0] if values else USER_PREFERENCE_HEADERS
+        user_pos, order_pos, updated_pos = (headers.index(name) for name in USER_PREFERENCE_HEADERS)
+        row_number = next((index for index, row in enumerate(values[1:], start=2)
+                           if len(row) > user_pos and clean_cell(row[user_pos]).strip() == current_user), None)
+        payload = [current_user, json.dumps(normalized, ensure_ascii=False), format_sheet_datetime(app_now())]
+        if row_number is None:
+            run_gsheets_request(lambda: worksheet.append_row(payload, value_input_option="RAW"))
+        else:
+            cells = [Cell(row_number, user_pos + 1, payload[0]), Cell(row_number, order_pos + 1, payload[1]),
+                     Cell(row_number, updated_pos + 1, payload[2])]
+            run_gsheets_request(lambda: worksheet.update_cells(cells, value_input_option="RAW"))
+    except Exception as exc:
+        return False, f"No se pudo guardar el orden: {exc}"
+    return True, "Orden de columnas guardado para tu usuario."
 
 
 @st.cache_data(ttl=3600)
@@ -4689,12 +4764,20 @@ WORKBENCH_COMPUTED_COLUMNS = [
     "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
     "DETALLE SEMÁFORO",
 ]
+WORKBENCH_AUTOMATIC_COLUMNS = {
+    *WORKBENCH_COMPUTED_COLUMNS,
+    "FECHA/HORA ENVÍO STEFANO", "FECHA/HORA ENTREGA STEFANO", "FECHA ENVÍO",
+    "FECHA PAGO PLANEACION", "FECHA PAGO CONFECCION", "FECHA IMPRESIÓN",
+    "DÍAS DE ENTREGA", "FECHA PARA ENTREGA",
+}
 WORKBENCH_SIGNAL_COLORS = {
     "🔴 Atrasado": ("#FEE2E2", "#991B1B"),
     "🟡 Por vencer": ("#FEF3C7", "#92400E"),
     "🟢 En tiempo": ("#DCFCE7", "#166534"),
     "⚪ Sin medición": ("#F1F5F9", "#475569"),
 }
+WORKBENCH_FIXED_COLUMNS = {"SELECCIONAR", ID_COLUMN, "SEMÁFORO"}
+USER_PREFERENCE_HEADERS = ["USUARIO", "ORDEN_COLUMNAS", "ACTUALIZADO"]
 
 
 def canonical_workbench_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -4803,7 +4886,9 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     return list(dict.fromkeys(display_selectbox_value(STATUS_COLUMN, value) for value in options))
 
 
-def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str) -> dict:
+def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str,
+                           *, preferred_order: list[str] | None = None,
+                           hidden_columns: set[str] | None = None) -> dict:
     editable = workbench_editable_columns(current_user)
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
     stages = {row[ID_COLUMN]: workbench_stage_options(row, current_user)
@@ -4820,9 +4905,19 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
     palettes = {column: {display_selectbox_value(column, value): colors for value, colors in palette.items()}
                 for column, palette in SHEET_STYLE_COLORS.items()}
     palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
-    return build_grid_options(grid, editable=editable, stage_options=stages, select_options=selections,
+    return build_grid_options(grid, editable=editable, automatic=WORKBENCH_AUTOMATIC_COLUMNS,
+                              stage_options=stages, select_options=selections,
                               date_values=dates, datetime_columns=DATETIME_TEXT_COLUMNS,
-                              palettes=palettes, time_zone=APP_TIMEZONE_NAME)
+                              palettes=palettes, time_zone=APP_TIMEZONE_NAME,
+                              preferred_order=preferred_order, hidden_columns=hidden_columns)
+
+
+def workbench_saved_column_order(current_user: str, available_columns: Any) -> list[str]:
+    key = f"workbench_saved_column_order_{current_user}"
+    if key not in st.session_state:
+        st.session_state[key] = read_user_column_order(current_user, available_columns)
+    saved = st.session_state[key]
+    return normalize_column_order(saved, available_columns) if saved else []
 
 
 def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -5109,23 +5204,50 @@ def render_workbench(current_user: str) -> None:
     if priority != "Orden de la hoja":
         filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
     filtered = filtered.reset_index(drop=True)
+    visibility = st.columns([2, 2, 5])
+    hide_readonly = visibility[0].checkbox(
+        "Ocultar solo lectura", disabled=pending, key="workbench_hide_readonly",
+        help="Oculta datos de origen que tu usuario no puede modificar; el folio permanece visible.",
+    )
+    hide_automatic = visibility[1].checkbox(
+        "Ocultar automáticas", disabled=pending, key="workbench_hide_automatic",
+        help="Oculta semáforo, responsable, horas y demás valores calculados por la app.",
+    )
+    visibility[2].markdown(
+        '<div class="lab-column-legend"><span class="editable">✎ Editable</span>'
+        '<span class="readonly">🔒 Solo lectura</span><span class="automatic">⚙ Automática</span>'
+        '<span class="auto-editable">✎⚙ Auto/corregible</span></div>',
+        unsafe_allow_html=True,
+    )
     st.caption(f"{len(filtered)} de {len(table)} pedidos · Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
                "En las fechas, elige calendario o Ahora; después pulsa Guardar cambios.")
     if not filtered.empty:
         grid = workbench_display_df(filtered)
         grid.insert(0, "SELECCIONAR", False)
         signature = hashlib.sha256(json.dumps([current_user, st.session_state.get("workbench_revision", 0),
-                                              search, signal, owner, priority, chosen], sort_keys=True).encode()).hexdigest()[:16]
+                                              search, signal, owner, priority, chosen,
+                                              hide_readonly, hide_automatic], sort_keys=True).encode()).hexdigest()[:16]
         key = f"workbench_grid_{signature}"
         st.session_state["workbench_editor_key"] = key
         st.session_state["workbench_editor_baseline"] = grid.copy()
-        edited = render_grid(grid, workbench_grid_options(grid, filtered, current_user), key)
+        editable = workbench_editable_columns(current_user)
+        hidden = set(WORKBENCH_AUTOMATIC_COLUMNS) if hide_automatic else set()
+        if hide_readonly:
+            hidden |= set(grid) - editable - set(WORKBENCH_AUTOMATIC_COLUMNS) - {"SELECCIONAR", ID_COLUMN}
+        saved_order = workbench_saved_column_order(current_user, grid.columns)
+        grid_options = workbench_grid_options(
+            grid, filtered, current_user, preferred_order=saved_order, hidden_columns=hidden
+        )
+        initial_order = normalize_column_order(
+            [column["field"] for column in grid_options["columnDefs"]], grid.columns
+        )
+        edited, current_order = render_grid(grid, grid_options, key)
         try:
             changes = workbench_changes(grid, edited)
         except ValueError as exc:
             st.error(str(exc))
             changes = []
-        save_col, discard_col, count_col = st.columns([1, 1, 3])
+        save_col, discard_col, order_col, count_col = st.columns([1, 1, 1, 2])
         if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
             st.session_state.pop("workbench_save_errors", None)
             saved, errors = save_workbench_changes(grid, edited, current_user)
@@ -5138,6 +5260,16 @@ def render_workbench(current_user: str) -> None:
         if discard_col.button("Descartar cambios", disabled=not pending, use_container_width=True):
             reset_workbench()
             st.rerun()
+        normalized_current_order = normalize_column_order(current_order, grid.columns)
+        effective_saved_order = saved_order or initial_order
+        if order_col.button("Guardar orden", disabled=pending or normalized_current_order == effective_saved_order,
+                            use_container_width=True, help="Guarda este acomodo sólo para tu usuario."):
+            ok, message = save_user_column_order(current_user, normalized_current_order, grid.columns)
+            if ok:
+                st.session_state[f"workbench_saved_column_order_{current_user}"] = normalized_current_order
+                st.toast(message, icon="✅")
+            else:
+                st.error(message)
         count_col.caption(f"{len(changes)} pedidos con cambios pendientes")
         for error in st.session_state.get("workbench_save_errors", []):
             st.error(error)
@@ -5249,6 +5381,17 @@ def main() -> None:
         }
         .lab-edit-bar.is-ready {background: #E7DFF7; color: #53357F;}
         .lab-edit-bar.is-pending {background: #FCE9BA; border-color: #DCA544; color: #805410;}
+        .lab-column-legend {
+            min-height: 38px; display: flex; align-items: end; justify-content: flex-end;
+            gap: 8px; padding-bottom: 2px; flex-wrap: wrap;
+        }
+        .lab-column-legend span {
+            border-radius: 999px; padding: 5px 10px; color: #FFF; font-size: .76rem; font-weight: 700;
+        }
+        .lab-column-legend .editable {background: #7443AA;}
+        .lab-column-legend .readonly {background: #52667D;}
+        .lab-column-legend .automatic {background: #147C84;}
+        .lab-column-legend .auto-editable {background: linear-gradient(100deg,#147C84 0 48%,#7443AA 52% 100%);}
         [data-testid="stWidgetLabel"] p {color: #493064; font-weight: 650;}
         [data-baseweb="input"], [data-baseweb="select"] > div {border-color: #CCBDE3; border-radius: 9px;}
         [data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within {box-shadow: 0 0 0 2px #9B72D529;}

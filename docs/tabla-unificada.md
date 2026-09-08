@@ -3,7 +3,7 @@
 `lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa en
 **Seguimiento**, seguida de **Nuevo pedido**, **Respuestas de Forms** y
 **Procesos y plazos**, en ese orden. Se respetan los permisos de cada usuario:
-Admin tiene las cuatro pestañas, Jime las primeras tres y Lesly/Vero Seguimiento.
+Admin tiene las cuatro pestañas, Jime las primeras tres y Estefano/Lesly/Vero Seguimiento.
 Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
 Las contraseñas configuradas en `secrets` se respetan; los accesos heredados ya
 no aparecen en texto legible dentro del repositorio público.
@@ -33,6 +33,14 @@ La interfaz usa acentos morados y turquesa, contadores con los colores del
 semáforo y las etiquetas originales con emojis en las etapas y desplegables.
 Los emojis son sólo presentación: Sheets recibe siempre el valor canónico.
 Las fichas de pedido también muestran la etapa con su color configurado.
+El menú de etapa pinta cada opción con el mismo color de su celda. Los encabezados
+identifican columnas editables, de solo lectura y automáticas; estas dos últimas
+categorías se pueden ocultar de forma independiente.
+
+Las columnas no fijas se pueden arrastrar desde su encabezado. **Guardar orden**
+persiste el acomodo por usuario en `PREFERENCIAS APP`, por lo que se recupera en
+otra sesión o equipo. El historial de cada pedido ya muestra `USUARIO`, que se
+registra en `TIEMPOS_APARATOS` al cambiar de etapa.
 
 La edición se ejecuta en un fragmento de Streamlit y conserva la misma clave,
 posición y tamaño del editor. La barra de cambios ocupa siempre 40 px; el mensaje
@@ -87,6 +95,6 @@ python -m streamlit run lab_pg.py
 
 Las pruebas usan datos ficticios, sin conexión a Sheets ni S3. Incluyen colores,
 fines de semana, estados históricos, encabezados, permisos, pagos, impresión,
-concurrencia y renderizado/guardado del editor para los cuatro usuarios.
+concurrencia y renderizado/guardado del editor para los cinco usuarios.
 La revisión visual en el despliegue real debe comprobar el desplazamiento,
 las columnas fijas y los adjuntos con las credenciales de ese entorno.

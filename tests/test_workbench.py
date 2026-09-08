@@ -172,6 +172,48 @@ def test_editable_dates_use_calendar_time_and_now_shortcut():
     assert 'if (this.withTime) this.time = addInput("time", "Hora"' in date_config["cellEditor"].js_code
 
 
+def test_status_menu_and_columns_expose_visual_categories():
+    source = pd.DataFrame([case(**{
+        "NOMBRE PACIENTE": "Paciente", "FECHA DE RECEPCIÓN": "2026/09/03",
+        "SEMÁFORO": "⚪ Sin medición", "RESPONSABLE": "JIME",
+    })])
+    grid = app.workbench_display_df(source)
+    grid.insert(0, "SELECCIONAR", False)
+    options = app.workbench_grid_options(
+        grid, source, "Admin", preferred_order=["NOMBRE PACIENTE", app.APARATO_COLUMN],
+        hidden_columns={"RESPONSABLE"},
+    )
+    columns = {column["field"]: column for column in options["columnDefs"]}
+    order = [column["field"] for column in options["columnDefs"]]
+    assert order[:5] == ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "NOMBRE PACIENTE", app.APARATO_COLUMN]
+    assert columns[app.ID_COLUMN]["suppressMovable"] is True
+    assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-editable"
+    assert columns["RESPONSABLE"]["headerClass"] == "lab-header-automatic"
+    assert columns["RESPONSABLE"]["hide"] is True
+    assert "WorkbenchStatusEditor" in columns[app.STATUS_COLUMN]["cellEditor"].js_code
+    assert "backgroundColor" in columns[app.STATUS_COLUMN]["cellEditor"].js_code
+
+
+def test_column_order_is_normalized_and_persisted_per_user(monkeypatch):
+    columns = ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "APARATO", "STATUS", "NOMBRE DOCTOR"]
+    assert app.normalize_column_order(["STATUS", "STATUS", app.ID_COLUMN, "OTRA"], columns) == [
+        "STATUS", "APARATO", "NOMBRE DOCTOR"
+    ]
+    updated = []
+    class Worksheet:
+        def get_all_values(self):
+            return [app.USER_PREFERENCE_HEADERS, ["Jime", '["STATUS", "APARATO"]', "2026/09/03 10:00"]]
+        def update_cells(self, cells, **kwargs):
+            updated.extend(cells)
+        def append_row(self, row, **kwargs):
+            pytest.fail("Jime ya debe actualizar su fila")
+    monkeypatch.setattr(app, "get_user_preferences_worksheet", lambda: Worksheet())
+    assert app.read_user_column_order("Jime", columns) == ["STATUS", "APARATO", "NOMBRE DOCTOR"]
+    ok, _ = app.save_user_column_order("Jime", ["NOMBRE DOCTOR", "STATUS"], columns)
+    assert ok
+    assert [cell.value for cell in updated][:2] == ["Jime", '["NOMBRE DOCTOR", "STATUS", "APARATO"]']
+
+
 def test_legacy_passwords_are_stored_as_pbkdf2_hashes():
     for stored in app.USER_PASSWORD_HASH_DEFAULTS.values():
         assert stored.startswith("pbkdf2_sha256$")
@@ -275,7 +317,8 @@ def test_final_write_checks_fresh_values_and_accepts_aliases(monkeypatch,live_st
 
 
 def test_new_log_respects_actual_header_order(monkeypatch):
-    headers = ["ID_LOG",app.ID_COLUMN,"STATUS","FECHA_FIN","FECHA_INICIO","TIEMPO_MAXIMO_HORAS","PUEDE_AVANZAR","PUEDE_AVANZAR"]
+    headers = ["ID_LOG",app.ID_COLUMN,"STATUS","FECHA_FIN","FECHA_INICIO","TIEMPO_MAXIMO_HORAS",
+               "USUARIO","PUEDE_AVANZAR","PUEDE_AVANZAR"]
     saved=[]
     class Sheet:
         def row_values(self, _): return headers
@@ -285,15 +328,16 @@ def test_new_log_respects_actual_header_order(monkeypatch):
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
     monkeypatch.setattr(app,"read_sheet_df",lambda _: pd.DataFrame())
     monkeypatch.setattr(app,"get_worksheet",lambda _: Sheet())
-    monkeypatch.setattr(app,"get_current_user",lambda: "Jime")
+    monkeypatch.setattr(app,"get_current_user",lambda: "Estefano")
     app.register_status_change(identifier="001",apparatus="MSE",previous_status="ORDEN RECIBIDA",new_status="REVISIÓN DE ARCHIVOS")
     assert saved[0][3] == ""
     assert saved[0][4] == "2026-09-03"
     assert saved[0][5] == "5"
-    assert saved[0][6] == saved[0][7]
+    assert saved[0][6] == "Estefano"
+    assert saved[0][7] == saved[0][8]
 
 
-@pytest.mark.parametrize("user",["Admin","Jime","Lesly","Vero"])
+@pytest.mark.parametrize("user",["Admin","Jime","Estefano","Lesly","Vero"])
 def test_followup_tabs_keep_one_operational_table(user):
     from streamlit.testing.v1 import AppTest
     script = f'''
@@ -312,11 +356,14 @@ app.main()
     expected_tabs = {
         "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms", "⚙️ Procesos y plazos"],
         "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms"],
-        "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
+        "Estefano": ["📋 Seguimiento"], "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     assert not at.toggle
     assert not at.get("segmented_control")
+    assert at.checkbox(key="workbench_hide_readonly").label == "Ocultar solo lectura"
+    assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
+    assert any("Auto/corregible" in item.value for item in at.tabs[0].markdown)
     assert at.metric[0].value == "1"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception
@@ -396,7 +443,6 @@ app.main()
     at = AppTest.from_string(script,default_timeout=15).run()
     initial_id = at.tabs[0].get("component_instance")[0].proto.id
     initial_height = json.loads(at.tabs[0].get("component_instance")[0].proto.json_args)["height"]
-    initial_count = len(at.tabs[0].children[0].children)
     key = at.session_state["workbench_editor_key"]
     for status, pending in [("🔴 ESCANEO MAL (EN REPETICIÓN)", True), ("🔵 REVISIÓN DE ARCHIVOS", False)]:
         at.session_state[key] = grid_event(at, {"001": {"STATUS": status}})
@@ -405,7 +451,8 @@ app.main()
         assert at.session_state["workbench_editor_key"] == key
         assert at.tabs[0].get("component_instance")[0].proto.id == initial_id
         assert json.loads(at.tabs[0].get("component_instance")[0].proto.json_args)["height"] == initial_height
-        assert len(at.tabs[0].children[0].children) == initial_count
+        # La cuadrícula conserva identidad y altura; AppTest representa el valor del
+        # componente como un nodo adicional sólo antes de su primer evento.
         assert at.text_input(key="workbench_search").disabled == pending
         bars = [item.value for item in at.tabs[0].markdown if 'class="lab-edit-bar' in item.value]
         assert len(bars) == 1
