@@ -38,9 +38,15 @@ identifican columnas editables, de solo lectura y automáticas; estas dos últim
 categorías se pueden ocultar de forma independiente.
 
 Las columnas no fijas se pueden arrastrar desde su encabezado. **Guardar orden**
-persiste el acomodo por usuario en `PREFERENCIAS APP`, por lo que se recupera en
-otra sesión o equipo. El historial de cada pedido ya muestra `USUARIO`, que se
-registra en `TIEMPOS_APARATOS` al cambiar de etapa.
+se activa después de mover una columna y persiste el acomodo por usuario en
+`PREFERENCIAS APP`, dentro del mismo archivo de Google Sheets configurado para
+la app, por lo que se recupera en otra sesión o equipo. El historial de cada
+pedido ya muestra `USUARIO`, que se registra en `TIEMPOS_APARATOS` al cambiar de
+etapa.
+
+Todos los usuarios autenticados pueden corregir los campos manuales (doctor,
+paciente, comentarios, vendedor, servicio, archivos y fecha de recepción). El
+folio, el aparato y los campos calculados o autollenados permanecen protegidos.
 
 La edición se ejecuta en un fragmento de Streamlit y conserva la misma clave,
 posición y tamaño del editor. La barra de cambios ocupa siempre 40 px; el mensaje
