@@ -3,10 +3,30 @@
 `lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa en
 **Seguimiento**, seguida de **Nuevo pedido**, **Respuestas de Forms** y
 **Procesos y plazos**, en ese orden. Se respetan los permisos de cada usuario:
-Admin tiene las cuatro pestañas, Jime las primeras tres y Estefano/Lesly/Vero Seguimiento.
+Admin tiene las cuatro pestañas, Jime las primeras tres y Lesly/Vero Seguimiento.
+Jime también atiende las etapas de planeación y diseño que antes correspondían a
+Estefano; Estefano ya no aparece como usuario de acceso.
 Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
-Las contraseñas configuradas en `secrets` se respetan; los accesos heredados ya
-no aparecen en texto legible dentro del repositorio público.
+Las credenciales de acceso se leen exclusivamente desde Streamlit Secrets; no
+se publica ninguna contraseña ni hash en el repositorio.
+
+## Configuración de acceso en Streamlit Cloud
+
+Antes de desplegar esta versión, abre la app en Streamlit Cloud y entra a
+**Settings → Secrets**. Conserva las secciones existentes de Google Sheets y
+AWS, y agrega los cuatro hashes con esta estructura:
+
+```toml
+[auth.passwords]
+Admin = "HASH_PBKDF2_DE_ADMIN"
+Jime = "HASH_PBKDF2_DE_JIME"
+Lesly = "HASH_PBKDF2_DE_LESLY"
+Vero = "HASH_PBKDF2_DE_VERO"
+```
+
+Los valores deben ser los hashes PBKDF2 completos que ya usaba la aplicación.
+Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
+`Estefano` no debe agregarse porque dejó de ser usuario de la app.
 
 ## Operación
 
@@ -44,9 +64,11 @@ la app, por lo que se recupera en otra sesión o equipo. El historial de cada
 pedido ya muestra `USUARIO`, que se registra en `TIEMPOS_APARATOS` al cambiar de
 etapa.
 
-Todos los usuarios autenticados pueden corregir los campos manuales (doctor,
-paciente, comentarios, vendedor, servicio, archivos y fecha de recepción). El
-folio, el aparato y los campos calculados o autollenados permanecen protegidos.
+Todos los usuarios autenticados pueden corregir pago, comentarios, vendedor,
+servicio, archivos y fecha de recepción. Doctor, paciente, folio, aparato y los
+campos calculados o autollenados permanecen protegidos. El filtro Responsable
+elige inicialmente al usuario activo cuando su nombre existe en los datos; en
+caso contrario comienza en Todos y siempre permite cambiar la selección.
 
 La edición se ejecuta en un fragmento de Streamlit y conserva la misma clave,
 posición y tamaño del editor. La barra de cambios ocupa siempre 40 px; el mensaje
@@ -101,6 +123,6 @@ python -m streamlit run lab_pg.py
 
 Las pruebas usan datos ficticios, sin conexión a Sheets ni S3. Incluyen colores,
 fines de semana, estados históricos, encabezados, permisos, pagos, impresión,
-concurrencia y renderizado/guardado del editor para los cinco usuarios.
+concurrencia y renderizado/guardado del editor para los cuatro usuarios.
 La revisión visual en el despliegue real debe comprobar el desplazamiento,
 las columnas fijas y los adjuntos con las credenciales de ese entorno.

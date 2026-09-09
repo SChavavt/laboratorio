@@ -79,7 +79,9 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     """Mantiene opciones ligadas a la fotografía guardada, incluso tras editar STATUS."""
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
-              "NOMBRE PACIENTE": "Paciente", "DETALLE SEMÁFORO": "Motivo del semáforo"}
+              "NOMBRE PACIENTE": "Paciente", "DETALLE SEMÁFORO": "Motivo del semáforo",
+              "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Jime",
+              "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Jime"}
     widths = {"SELECCIONAR": 65, "Columna 1": 90, "SEMÁFORO": 160, "APARATO": 140,
               "STATUS": 300, "NOMBRE DOCTOR": 200, "NOMBRE PACIENTE": 200, "DETALLE SEMÁFORO": 380}
     default_order = ["SELECCIONAR", "Columna 1", "SEMÁFORO", "APARATO", "STATUS", "NOMBRE DOCTOR",

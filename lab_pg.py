@@ -86,24 +86,18 @@ TIEMPOS_HEADERS = [
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
-USER_PASSWORD_HASH_DEFAULTS = {
-    "Admin": "pbkdf2_sha256$600000$34f8abf29a43f7ac49915eb87e240b5c$2d6f651e7e22e0ea8b2822743e7a15d5593f1167763e2218f0a22cbce46dd8d1",
-    "Jime": "pbkdf2_sha256$600000$14246b262532617a02daaae3a5341afc$0ffe44c76647c73b79b83e404ca575d1f3c4baeb520f6b1e2161830f5bd74a5f",
-    "Estefano": "pbkdf2_sha256$600000$a3f123ecfa8838e9ea8de3ce93cac944$3bd0e93fca81d135920dc2c487f6aab4bdc517ec72e9684a66224a922a66659f",
-    "Lesly": "pbkdf2_sha256$600000$d26b1d117522c98c143ace22d4ae1289$6826f9026b3276a7ca91c0ce9448cf7f4dac2001784b267aad83d39c530b6f6b",
-    "Vero": "pbkdf2_sha256$600000$7a88c4e27712e7777b1d3c4cb99181a1$52f87112218b954bf37cc6d6902dab9d2e8db18ec285319bef991312d29bda0d",
-}
+APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
     "Jime": ["nuevo", "jime", "estefano", "pagos"],
-    "Estefano": ["estefano"],
     "Lesly": ["lesly"],
     "Vero": ["vero"],
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
+PLANNING_STATUSES = ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"]
 USER_TAB_STATUSES = {
-    "Estefano": ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"],
     "Jime": [
+        *PLANNING_STATUSES,
         "ORDEN RECIBIDA",
         "REVISIÓN DE ARCHIVOS",
         "ESCANEO MAL (EN REPETICIÓN)",
@@ -144,12 +138,6 @@ APP_TAB_OPTIONS = {
     "procesos": "⚙️ Procesos por Aparato",
 }
 USER_ALLOWED_TRANSITIONS = {
-    "Estefano": {
-        "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR"],
-        "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR"],
-        "STL PSM ENVIADO": ["EN DISEÑO"],
-        "EN DISEÑO": ["PAGO CONFECCIÓN"],
-    },
     "Jime": {
         "EN PLANEACIÓN": ["REVISIÓN DISEÑO DOCTOR"],
         "SOLICITUD DE CAMBIOS": ["EN PLANEACIÓN", "REVISIÓN DISEÑO DOCTOR"],
@@ -289,10 +277,10 @@ PROCESS_RESPONSIBLES = {
     "EMPACADO/LISTO P/ENVÍO": "JIME",
     "PRODUCTO ENVIADO": "JIME",
     "ENVÍO DE ENCUESTA": "JIME",
-    "EN PLANEACIÓN": "STEFANO",
-    "SOLICITUD DE CAMBIOS": "STEFANO",
-    "STL PSM ENVIADO": "STEFANO",
-    "EN DISEÑO": "STEFANO",
+    "EN PLANEACIÓN": "JIME",
+    "SOLICITUD DE CAMBIOS": "JIME",
+    "STL PSM ENVIADO": "JIME",
+    "EN DISEÑO": "JIME",
     "LISTO P/SINTERIZADO": "LESLY",
     "ELABORACIÓN PLATINA": "LESLY",
     "EN SINTERIZADO Y HORNEADO": "LESLY",
@@ -547,8 +535,8 @@ FIELD_LABEL_DISPLAY = {
     "FECHA PARA ENTREGA": "📦 FECHA PARA ENTREGA",
     "FECHA IMPRESIÓN": "🖨️ FECHA IMPRESIÓN",
     "FECHA ENVÍO": "🚚 FECHA ENVÍO",
-    "FECHA/HORA ENVÍO STEFANO": "🚚 FECHA/HORA ENVÍO STEFANO",
-    "FECHA/HORA ENTREGA STEFANO": "📬 FECHA/HORA ENTREGA STEFANO",
+    "FECHA/HORA ENVÍO STEFANO": "🚚 FECHA/HORA ENVÍO JIME",
+    "FECHA/HORA ENTREGA STEFANO": "📬 FECHA/HORA ENTREGA JIME",
     "ID_LOG": "🔢 ID_LOG",
     "FASE_ORDEN": "🧭 FASE_ORDEN",
     "STATUS_SIGUIENTE": "➡️ STATUS_SIGUIENTE",
@@ -574,7 +562,7 @@ FIELD_LABEL_DISPLAY = {
     "PAGO_VALIDADO_POR": "👤 PAGO_VALIDADO_POR",
     "PUEDE_AVANZAR": "➡️ PUEDE_AVANZAR",
     "MOTIVO_BLOQUEO": "⛔ MOTIVO_BLOQUEO",
-    "ARCHIVOS_ESTEFANO_URL": "📁 ARCHIVOS_ESTEFANO_URL",
+    "ARCHIVOS_ESTEFANO_URL": "📁 ARCHIVOS PLANEACIÓN / JIME",
     "REGISTRO_ACTIVO": "🟢 REGISTRO_ACTIVO",
     "ESTADO_ALERTA_VISUAL": "🚦 ESTADO_ALERTA_VISUAL",
     "HORAS_TRANSCURRIDAS": "⌛ HORAS_TRANSCURRIDAS",
@@ -1243,11 +1231,12 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
 
 
 
-def get_user_passwords() -> dict[str, str]:
-    """Lee secretos configurados; los accesos heredados quedan sólo como hashes."""
+def get_user_passwords(secret_source: Any | None = None) -> dict[str, str]:
+    """Lee las credenciales exclusivamente desde Streamlit Secrets."""
 
+    source = st.secrets if secret_source is None and hasattr(st, "secrets") else (secret_source or {})
     configured_passwords = {}
-    auth_config = st.secrets.get("auth", {}) if hasattr(st, "secrets") else {}
+    auth_config = source.get("auth", {}) if hasattr(source, "get") else {}
     if hasattr(auth_config, "get"):
         passwords_config = auth_config.get("passwords", {})
         if hasattr(passwords_config, "items"):
@@ -1255,13 +1244,21 @@ def get_user_passwords() -> dict[str, str]:
                 {str(user): str(password) for user, password in passwords_config.items()}
             )
 
-    root_passwords = st.secrets.get("user_passwords", {}) if hasattr(st, "secrets") else {}
+    root_passwords = source.get("user_passwords", {}) if hasattr(source, "get") else {}
     if hasattr(root_passwords, "items"):
         configured_passwords.update(
             {str(user): str(password) for user, password in root_passwords.items()}
         )
 
-    return {**USER_PASSWORD_HASH_DEFAULTS, **configured_passwords}
+    return {user: configured_passwords[user] for user in APP_USERS
+            if clean_cell(configured_passwords.get(user, "")).strip()}
+
+
+def missing_user_passwords(passwords: dict[str, str] | None = None) -> list[str]:
+    """Indica qué usuarios todavía no tienen credencial en Secrets."""
+
+    configured = get_user_passwords() if passwords is None else passwords
+    return [user for user in APP_USERS if not clean_cell(configured.get(user, "")).strip()]
 
 
 def password_matches(password: str, stored_value: str) -> bool:
@@ -1354,13 +1351,24 @@ def require_authenticated_user() -> str | None:
             st.rerun()
         return authenticated_user
 
+    missing_users = missing_user_passwords()
+    if missing_users:
+        st.error(
+            "Falta configurar la contraseña de: " + ", ".join(missing_users) + "."
+        )
+        st.info(
+            "Agrega sus hashes en Streamlit Cloud → Settings → Secrets, "
+            "dentro de la sección [auth.passwords]."
+        )
+        return None
+
     st.subheader("🔐 Acceso requerido")
     st.caption(
         "Selecciona tu usuario e ingresa tu contraseña. "
         "Después de entrar, el usuario queda guardado en el link para la próxima vez."
     )
     with st.form("login_form"):
-        username = st.selectbox("Usuario", list(USER_PASSWORD_HASH_DEFAULTS.keys()))
+        username = st.selectbox("Usuario", list(APP_USERS))
         password = st.text_input("Contraseña", type="password")
         submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
 
@@ -1384,7 +1392,7 @@ def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
 
     if current_user == "Admin" or current_user == tab_owner:
         return True
-    return current_user == "Jime" and tab_owner in {"Estefano", "Pagos"}
+    return current_user == "Jime" and tab_owner == "Pagos"
 
 
 def get_user_operational_statuses(current_user: str) -> list[str]:
@@ -1392,11 +1400,6 @@ def get_user_operational_statuses(current_user: str) -> list[str]:
 
     if current_user == "Admin":
         return []
-    if current_user == "Jime":
-        return [
-            *USER_TAB_STATUSES.get("Jime", []),
-            *USER_TAB_STATUSES.get("Estefano", []),
-        ]
     return USER_TAB_STATUSES.get(current_user, [])
 
 
@@ -1428,7 +1431,6 @@ def get_case_selector_key_for_user(tab_owner: str) -> str:
     """Devuelve el key del selector de casos para sincronizar desde alertas."""
 
     return {
-        "Estefano": "estefano_case_selector",
         "Jime": "jime_case_selector",
         "Pagos": "pagos_case_selector",
         "Lesly": "lesly_alert_selected_case",
@@ -3868,7 +3870,7 @@ def get_status_datetime_autofill_changes(
     # Estas fechas deben reflejar el último evento real del flujo,
     # por eso se actualizan aunque ya tuvieran un valor previo.
     if (
-        current_user in {"Estefano", "Jime"}
+        current_user == "Jime"
         and previous_status in {"EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "EN DISEÑO"}
         and new_status in {"REVISIÓN DISEÑO DOCTOR", "PAGO CONFECCIÓN"}
     ):
@@ -4195,12 +4197,12 @@ def render_estefano_forms_review(can_edit: bool) -> None:
 def render_estefano_shipping_tab(
     current_user: str, can_edit: bool, selected_row: pd.Series | None = None
 ) -> None:
-    """Subtab operativo para enviar documentos y avanzar casos de Estefano."""
+    """Subtab operativo de Jime para enviar documentos de planeación y diseño."""
 
     st.markdown("### 📤 Envío de documentos")
     if selected_row is None:
         render_status_change_feedback()
-        cases_df = filter_estatus_by_status(USER_TAB_STATUSES["Estefano"])
+        cases_df = filter_estatus_by_status(PLANNING_STATUSES)
         selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
     else:
         row = selected_row
@@ -4212,10 +4214,10 @@ def render_estefano_shipping_tab(
     allowed_targets = [
         status
         for status in get_allowed_next_statuses(apparatus, current_status)
-        if status != current_status and is_transition_allowed_for_user("Estefano", current_status, status, apparatus)
+        if status != current_status and is_transition_allowed_for_user(current_user, current_status, status, apparatus)
     ]
     with st.form(f"estefano_form_{selected_id}"):
-        uploaded_files = st.file_uploader("Subir archivos de Estefano/STL", accept_multiple_files=True, disabled=not can_edit)
+        uploaded_files = st.file_uploader("Subir archivos de planeación/STL", accept_multiple_files=True, disabled=not can_edit)
         file_url = st.text_input(
             "O pegar link de archivos",
             value=st.session_state.pop("estefano_forms_selected_url", ""),
@@ -4229,7 +4231,7 @@ def render_estefano_shipping_tab(
             disabled=not can_edit,
         )
         comment = st.text_area("Comentario técnico", disabled=not can_edit)
-        submitted = st.form_submit_button("💾 Guardar cambio Estefano", disabled=not can_edit)
+        submitted = st.form_submit_button("💾 Guardar cambio de planeación", disabled=not can_edit)
     if submitted:
         files_value = ""
         if uploaded_files:
@@ -4244,7 +4246,7 @@ def render_estefano_shipping_tab(
             update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
         full_comment = comment
         if files_value:
-            full_comment = f"{comment}\nArchivos de Estefano: {files_value}" if comment else f"Archivos de Estefano: {files_value}"
+            full_comment = f"{comment}\nArchivos de planeación: {files_value}" if comment else f"Archivos de planeación: {files_value}"
         if advance_case_status(
             identifier=selected_id,
             row=row,
@@ -4259,7 +4261,7 @@ def render_estefano_shipping_tab(
 
 def render_estefano_tab(current_user: str) -> None:
     st.subheader("📐 Planeación y Diseño")
-    can_edit = user_can_edit_tab(current_user, "Estefano")
+    can_edit = user_can_edit_tab(current_user, "Jime")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
     shipping_tab, received_tab = st.tabs(["🚚 Envío de documentos", "📋 Recibidos de Forms"])
@@ -4280,9 +4282,9 @@ def render_jime_tab(current_user: str) -> None:
         return
     files_url = get_latest_estefano_files(selected_id)
     if files_url:
-        st.markdown(f"**Archivos Estefano:** {files_url}")
+        st.markdown(f"**Archivos de planeación:** {files_url}")
     else:
-        st.info("No hay link de archivos de Estefano en TIEMPOS_APARATOS.")
+        st.info("No hay link de archivos de planeación en TIEMPOS_APARATOS.")
     current_status = normalize_status_alias(get_row_value_by_column(row, STATUS_COLUMN, ""))
     allowed_targets = [status for status in get_allowed_next_statuses(clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")), current_status) if status != current_status]
     jime_targets = [status for status in allowed_targets if is_transition_allowed_for_user("Jime", current_status, status, clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))]
@@ -4756,8 +4758,8 @@ def render_active_app_tab(current_user: str) -> None:
 # ==============================
 WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
 WORKBENCH_MANUAL_FIELDS = {
-    "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "VENDEDOR",
-    "SERVICIO", "ARCHIVOS RECIBIDOS", "DETALLES & COMENTARIOS FINALES",
+    "PAGO", "DETALLE COMENTARIOS", "VENDEDOR", "SERVICIO", "ARCHIVOS RECIBIDOS",
+    "DETALLES & COMENTARIOS FINALES",
     "FECHA DE RECEPCIÓN",
 }
 WORKBENCH_COMPUTED_COLUMNS = [
@@ -4821,6 +4823,15 @@ def workbench_signal_rank(signal: str) -> int:
     return {"🔴 Atrasado": 0, "🟡 Por vencer": 1, "⚪ Sin medición": 2, "🟢 En tiempo": 3}.get(signal, 2)
 
 
+def workbench_default_owner(current_user: str, owners: Any) -> str:
+    """Selecciona al usuario activo cuando aparece entre los responsables."""
+    current_key = normalize_text(current_user)
+    return next(
+        (owner for owner in owners if normalize_text(owner) == current_key),
+        "Todos",
+    )
+
+
 def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) -> pd.DataFrame:
     """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas."""
     cases = active_workbench_cases(estatus_df)
@@ -4867,7 +4878,7 @@ def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) ->
 
 
 def workbench_editable_columns(current_user: str) -> set[str]:
-    if current_user in USER_PASSWORD_HASH_DEFAULTS:
+    if current_user in APP_USERS:
         return {STATUS_COLUMN, *WORKBENCH_MANUAL_FIELDS}
     return set()
 
@@ -5117,7 +5128,7 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
         for url in latest_files.splitlines():
             if url.strip().startswith(("https://", "http://")):
                 st.link_button("Abrir archivo del pedido", url.strip())
-        if row[STATUS_COLUMN] in USER_TAB_STATUSES["Estefano"] and user_can_edit_tab(current_user, "Estefano"):
+        if row[STATUS_COLUMN] in PLANNING_STATUSES and user_can_edit_tab(current_user, "Jime"):
             with st.expander("Archivos de planeación y diseño"):
                 render_estefano_shipping_tab(current_user, True, selected_row=row)
         if row[STATUS_COLUMN] in PAYMENT_STATUSES and user_can_edit_tab(current_user, "Pagos"):
@@ -5179,7 +5190,14 @@ def render_workbench(current_user: str) -> None:
     filters = st.columns([2, 1, 1, 1])
     search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
     signal = filters[1].selectbox("Semáforo", ["Todos", *WORKBENCH_SIGNAL_COLORS], disabled=pending, key="workbench_signal")
-    owner = filters[2].selectbox("Responsable", ["Todos", *sorted(table["RESPONSABLE"].unique())], disabled=pending, key="workbench_owner")
+    owner_values = sorted({clean_cell(value).strip() for value in table["RESPONSABLE"] if clean_cell(value).strip()})
+    owner_options = ["Todos", *owner_values]
+    owner_default = workbench_default_owner(current_user, owner_values)
+    if (st.session_state.get("workbench_owner_active_user") != current_user
+            or st.session_state.get("workbench_owner") not in owner_options):
+        st.session_state["workbench_owner"] = owner_default
+        st.session_state["workbench_owner_active_user"] = current_user
+    owner = filters[2].selectbox("Responsable", owner_options, disabled=pending, key="workbench_owner")
     priority = filters[3].selectbox("Orden", ["Orden de la hoja", "Atender urgentes primero"], disabled=pending, key="workbench_order")
     more_filters = st.columns(4)
     chosen = {}
@@ -5246,7 +5264,7 @@ def render_workbench(current_user: str) -> None:
         except ValueError as exc:
             st.error(str(exc))
             changes = []
-        save_col, discard_col, order_col, count_col = st.columns([1, 1, 1, 2])
+        save_col, discard_col, count_col, _, order_col = st.columns([1.2, 1.2, 1.5, 2.8, 1.2])
         if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
             st.session_state.pop("workbench_save_errors", None)
             saved, errors = save_workbench_changes(grid, edited, current_user)
@@ -5302,7 +5320,7 @@ def render_workbench_auxiliary(label: str, current_user: str) -> None:
             return
         render_nuevo_pedido_tab()
     elif label == "📨 Respuestas de Forms":
-        render_estefano_forms_review(user_can_edit_tab(current_user, "Estefano"))
+        render_estefano_forms_review(user_can_edit_tab(current_user, "Jime"))
     elif label == "⚙️ Procesos y plazos":
         render_procesos_tab()
 
@@ -5324,7 +5342,7 @@ def main() -> None:
             background: radial-gradient(ellipse at 0 0, #DED1FF 0, transparent 48%),
                         radial-gradient(ellipse at 100% 30%, #CDEDEA 0, transparent 45%), #F1EEFA;
         }
-        .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 100%;}
+        .block-container {padding-top: 3rem; padding-bottom: 2rem; max-width: 100%;}
         [data-testid="stHeader"] {background: transparent;}
         [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
         h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
