@@ -151,7 +151,7 @@ def test_status_options_also_apply_user_and_printing_permissions():
     assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") in app.workbench_stage_options(lesly_row, "Lesly")
 
 
-@pytest.mark.parametrize("user", ["Admin", "Jime", "Estefano", "Lesly", "Vero"])
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])
 def test_editable_dates_use_calendar_and_now_shortcut_for_every_user(user):
     source = pd.DataFrame([case(**{
         "FECHA DE RECEPCIÓN": "3 septiembre 2026",
@@ -188,7 +188,8 @@ def test_status_menu_and_columns_expose_visual_categories():
     order = [column["field"] for column in options["columnDefs"]]
     assert order[:5] == ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "NOMBRE PACIENTE", app.APARATO_COLUMN]
     assert columns[app.ID_COLUMN]["suppressMovable"] is True
-    assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-editable"
+    assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-readonly"
+    assert columns["PAGO"]["headerClass"] == "lab-header-editable"
     assert columns["RESPONSABLE"]["headerClass"] == "lab-header-automatic"
     assert columns["RESPONSABLE"]["hide"] is True
     assert "WorkbenchStatusEditor" in columns[app.STATUS_COLUMN]["cellEditor"].js_code
@@ -215,32 +216,54 @@ def test_column_order_is_normalized_and_persisted_per_user(monkeypatch):
     assert [cell.value for cell in updated][:2] == ["Jime", '["NOMBRE DOCTOR", "STATUS", "APARATO"]']
 
 
-def test_legacy_passwords_are_stored_as_pbkdf2_hashes():
-    for stored in app.USER_PASSWORD_HASH_DEFAULTS.values():
-        assert stored.startswith("pbkdf2_sha256$")
-        algorithm, rounds, salt, digest = stored.split("$")
-        assert algorithm == "pbkdf2_sha256" and int(rounds) >= 600_000
-        assert len(salt) >= 32 and len(digest) == 64
+def test_passwords_are_loaded_only_from_secrets_for_allowed_users():
+    assert app.APP_USERS == ("Admin", "Jime", "Lesly", "Vero")
+    assert "Estefano" not in app.USER_VISIBLE_TABS
+    assert "Estefano" not in app.USER_ALLOWED_TRANSITIONS
+    assert app.get_user_passwords({}) == {}
+    configured = app.get_user_passwords({
+        "auth": {"passwords": {"Admin": "admin-hash", "Jime": "jime-hash", "Estefano": "omitido"}},
+        "user_passwords": {"Lesly": "lesly-hash", "Vero": "vero-hash", "Otro": "omitido"},
+    })
+    assert configured == {
+        "Admin": "admin-hash", "Jime": "jime-hash", "Lesly": "lesly-hash", "Vero": "vero-hash"
+    }
+    assert app.missing_user_passwords(configured) == []
+    assert app.missing_user_passwords({"Jime": "hash"}) == ["Admin", "Lesly", "Vero"]
+
+
+def test_pbkdf2_password_verification_remains_supported():
     test_hash = "pbkdf2_sha256$1$salt$8fa3d7592a7aedf30af5a656525188ac17c254fbc8cab1c56610278639fb64e2"
     assert app.password_matches("prueba", test_hash)
     assert not app.password_matches("incorrecta", test_hash)
     assert app.password_matches("configurado", "configurado")
 
 
-@pytest.mark.parametrize("user,column,value", [("Lesly","PAGO","TOTAL"),
-                                             ("Vero","FECHA PARA ENTREGA","2026/09/20"),
-                                             ("Jime",app.APARATO_COLUMN,"TIGER")])
+@pytest.mark.parametrize("user,column,value", [("Lesly","NOMBRE DOCTOR","Otro"),
+                                             ("Vero","NOMBRE PACIENTE","Otro"),
+                                             ("Jime","FECHA PARA ENTREGA","2026/09/20"),
+                                             ("Admin",app.APARATO_COLUMN,"TIGER")])
 def test_readonly_columns_are_enforced_server_side(user,column,value):
     original = pd.DataFrame([case()])
     errors = app.validate_workbench_changes(original, original, [("001",{column:value})],user)
     assert errors and "no puede editar" in errors[0]
 
 
-@pytest.mark.parametrize("user", ["Admin", "Jime", "Estefano", "Lesly", "Vero"])
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])
 def test_every_user_can_edit_manual_fields(user):
     original = pd.DataFrame([case(**{"FECHA DE RECEPCIÓN": "2026/09/03"})])
-    changes = [("001", {"NOMBRE DOCTOR": "Nombre corregido", "FECHA DE RECEPCIÓN": "2026/09/04"})]
+    changes = [("001", {"PAGO": "TOTAL", "FECHA DE RECEPCIÓN": "2026/09/04"})]
     assert not app.validate_workbench_changes(original, original, changes, user)
+
+
+def test_jime_owns_planning_and_is_default_responsible_filter():
+    for status in app.PLANNING_STATUSES:
+        assert app.get_process_responsible(status) == "JIME"
+        assert app.get_status_tab_owner(status) == "Jime"
+    owners = ["JIME", "LESLY", "VERO"]
+    assert app.workbench_default_owner("Jime", owners) == "JIME"
+    assert app.workbench_default_owner("Lesly", owners) == "LESLY"
+    assert app.workbench_default_owner("Admin", owners) == "Todos"
 
 
 def test_skip_stage_and_foreign_role_rejected():
@@ -270,14 +293,14 @@ def test_payment_blocks_advancement_without_authorization(monkeypatch):
 def test_concurrent_status_change_blocks_even_metadata_edit():
     original = pd.DataFrame([case()])
     fresh = pd.DataFrame([case(status="EN PLANEACIÓN")])
-    errors = app.validate_workbench_changes(original,fresh,[("001",{"NOMBRE DOCTOR":"Otro"})],"Admin")
+    errors = app.validate_workbench_changes(original,fresh,[("001",{"PAGO":"TOTAL"})],"Admin")
     assert errors and "otro usuario" in errors[0]
 
 
 def test_batch_preflight_does_not_write_any_row_on_error(monkeypatch):
     original = pd.DataFrame([case("001"),case("002")])
     edited = original.copy()
-    edited.loc[0,"NOMBRE DOCTOR"] = "Corregido"
+    edited.loc[0,"PAGO"] = "TOTAL"
     edited.loc[1,"STATUS"] = "PRODUCTO ENVIADO"
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
     monkeypatch.setattr(app,"read_sheet_df",lambda _: original)
@@ -292,7 +315,7 @@ def test_batch_preflight_does_not_write_any_row_on_error(monkeypatch):
 def test_metadata_save_only_changes_requested_cell(monkeypatch):
     original = pd.DataFrame([case()])
     edited = original.copy()
-    edited.loc[0,"NOMBRE DOCTOR"] = "Corregido"
+    edited.loc[0,"PAGO"] = "TOTAL"
     calls=[]
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
     monkeypatch.setattr(app,"reset_workbench",lambda: None)
@@ -302,7 +325,7 @@ def test_metadata_save_only_changes_requested_cell(monkeypatch):
         return {"success":True,"skipped_columns":[],"error":""}
     monkeypatch.setattr(app,"update_row_by_columna_1",save)
     assert app.save_workbench_changes(original,edited,"Admin") == (["001"],[])
-    assert calls[0][1] == {"NOMBRE DOCTOR":"Corregido"}
+    assert calls[0][1] == {"PAGO":"TOTAL"}
     assert app.STATUS_COLUMN in calls[0][2]["expected_values"]
 
 
@@ -337,16 +360,16 @@ def test_new_log_respects_actual_header_order(monkeypatch):
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
     monkeypatch.setattr(app,"read_sheet_df",lambda _: pd.DataFrame())
     monkeypatch.setattr(app,"get_worksheet",lambda _: Sheet())
-    monkeypatch.setattr(app,"get_current_user",lambda: "Estefano")
+    monkeypatch.setattr(app,"get_current_user",lambda: "Jime")
     app.register_status_change(identifier="001",apparatus="MSE",previous_status="ORDEN RECIBIDA",new_status="REVISIÓN DE ARCHIVOS")
     assert saved[0][3] == ""
     assert saved[0][4] == "2026-09-03"
     assert saved[0][5] == "5"
-    assert saved[0][6] == "Estefano"
+    assert saved[0][6] == "Jime"
     assert saved[0][7] == saved[0][8]
 
 
-@pytest.mark.parametrize("user",["Admin","Jime","Estefano","Lesly","Vero"])
+@pytest.mark.parametrize("user",["Admin","Jime","Lesly","Vero"])
 def test_followup_tabs_keep_one_operational_table(user):
     from streamlit.testing.v1 import AppTest
     script = f'''
@@ -365,13 +388,14 @@ app.main()
     expected_tabs = {
         "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms", "⚙️ Procesos y plazos"],
         "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms"],
-        "Estefano": ["📋 Seguimiento"], "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
+        "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     assert not at.toggle
     assert not at.get("segmented_control")
     assert at.checkbox(key="workbench_hide_readonly").label == "Ocultar solo lectura"
     assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
+    assert at.selectbox(key="workbench_owner").value == ("JIME" if user == "Jime" else "Todos")
     assert any("Auto/corregible" in item.value for item in at.tabs[0].markdown)
     assert at.metric[0].value == "1"
     at.text_input(key="workbench_search").set_value("no existe").run()
@@ -420,7 +444,7 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     key = at.session_state["workbench_editor_key"]
-    delta = grid_event(at, {"001": {"NOMBRE DOCTOR":"Nombre corregido"}})
+    delta = grid_event(at, {"001": {"PAGO":"🟢 TOTAL"}})
     at.session_state[key] = delta
     at.run()
     assert not at.exception
@@ -432,7 +456,7 @@ app.main()
     at.run()
     assert not at.exception
     assert at.session_state["demo_rows"][0][app.ID_COLUMN] == "001"
-    assert at.session_state["demo_rows"][0]["NOMBRE DOCTOR"] == "Nombre corregido"
+    assert at.session_state["demo_rows"][0]["PAGO"] == "TOTAL"
     assert not at.text_input(key="workbench_search").disabled
     assert any("Guardado: 001" in message.value for message in at.get("toast"))
 
