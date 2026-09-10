@@ -279,6 +279,14 @@ def test_existing_password_hash_format_is_reused():
     assert not app.password_matches("incorrecta", stored)
 
 
+def test_remembered_url_user_is_signed_and_cannot_be_renamed():
+    passwords = {"Admin": "admin-secret", "Jime": "jime-secret"}
+    signature = app.login_url_signature("Admin", passwords)
+    assert app.valid_url_login("Admin", signature, passwords)
+    assert not app.valid_url_login("Jime", signature, passwords)
+    assert not app.valid_url_login("Admin", "altered", passwords)
+
+
 def test_main_dashboard_renders_with_sheet_snapshot():
     from streamlit.testing.v1 import AppTest
 

@@ -685,12 +685,74 @@ def password_matches(password: str, stored_value: str) -> bool:
     return hmac.compare_digest(password, stored_value)
 
 
+def get_query_param_value(key: str) -> str:
+    """Lee un parámetro del URL de Streamlit de forma compatible."""
+
+    value = st.query_params.get(key, "")
+    if isinstance(value, list):
+        return clean_cell(value[0]).strip() if value else ""
+    return clean_cell(value).strip()
+
+
+def login_url_signature(
+    username: str, passwords: dict[str, str] | None = None
+) -> str:
+    """Firma el usuario recordado para impedir cambiarlo editando el URL."""
+
+    configured = get_user_passwords() if passwords is None else passwords
+    signing_value = clean_cell(configured.get(username, "")).strip()
+    if username not in APP_USERS or not signing_value:
+        return ""
+    return hmac.new(
+        signing_value.encode(),
+        f"control-alineadores:{username}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def valid_url_login(
+    username: str,
+    signature: str,
+    passwords: dict[str, str] | None = None,
+) -> bool:
+    expected = login_url_signature(username, passwords)
+    return bool(expected and signature and hmac.compare_digest(signature, expected))
+
+
+def persist_login_in_url(username: str) -> None:
+    """Recuerda la sesión en el enlace mediante un usuario firmado."""
+
+    signature = login_url_signature(username)
+    if not signature:
+        return
+    st.query_params["usuario"] = username
+    st.query_params["firma"] = signature
+
+
+def clear_persisted_login_url() -> None:
+    for key in ("usuario", "firma"):
+        if key in st.query_params:
+            del st.query_params[key]
+
+
+def restore_user_from_url() -> str:
+    username = get_query_param_value("usuario")
+    signature = get_query_param_value("firma")
+    return username if valid_url_login(username, signature) else ""
+
+
+def set_authenticated_user(username: str, *, remember_in_url: bool = True) -> None:
+    st.session_state["aligners_authenticated_user"] = username
+    st.session_state.pop("aligners_login_error", None)
+    if remember_in_url:
+        persist_login_in_url(username)
+
+
 def login_user(username: str, password: str) -> bool:
     expected = get_user_passwords().get(username, "")
     if not expected or not password_matches(password, expected):
         return False
-    st.session_state["aligners_authenticated_user"] = username
-    st.session_state.pop("aligners_login_error", None)
+    set_authenticated_user(username)
     return True
 
 
@@ -702,13 +764,22 @@ def logout_user() -> None:
         "aligners_editor_baseline",
     ]:
         st.session_state.pop(key, None)
+    clear_persisted_login_url()
 
 
 def require_authenticated_user() -> str | None:
     current_user = st.session_state.get("aligners_authenticated_user")
+    if current_user not in APP_USERS:
+        remembered_user = restore_user_from_url()
+        if remembered_user:
+            set_authenticated_user(remembered_user, remember_in_url=False)
+            current_user = remembered_user
+
     if current_user in APP_USERS:
         st.sidebar.success(f"Sesión activa: {current_user}")
-        st.sidebar.caption("Todos los usuarios pueden atender cualquier producto por ahora.")
+        st.sidebar.caption(
+            "El usuario queda recordado en el link. Todos pueden atender cualquier producto."
+        )
         if st.sidebar.button("🚪 Cerrar sesión", key="aligners_logout"):
             logout_user()
             st.rerun()
@@ -724,11 +795,14 @@ def require_authenticated_user() -> str | None:
         return None
 
     st.subheader("🔐 Acceso requerido")
-    st.caption("Selecciona tu usuario e ingresa la misma contraseña de Control de aparatos.")
+    st.caption(
+        "Selecciona tu usuario e ingresa la misma contraseña de Control de aparatos. "
+        "Después de entrar quedará recordado en el link."
+    )
     with st.form("aligners_login_form"):
         username = st.selectbox("Usuario", list(APP_USERS))
         password = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("🔓 Entrar")
+        submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
     if submitted:
         if login_user(username, password):
             st.rerun()
@@ -2097,6 +2171,20 @@ def apply_custom_css() -> None:
         [data-testid="stWidgetLabel"] p {color:#493064;font-weight:650;}
         button[kind="primary"], [data-testid="stBaseButton-primary"] {
             background:linear-gradient(110deg,#7A40BE,#5942A1);border-color:#68419D;color:#FFF;
+            box-shadow:0 4px 12px #6637A82B;
+        }
+        button[kind="primary"]:not(:disabled):hover,
+        [data-testid="stBaseButton-primary"]:not(:disabled):hover {
+            box-shadow:0 5px 16px #6637A84D;
+        }
+        button[kind="primary"]:disabled,
+        [data-testid="stBaseButton-primary"]:disabled {
+            background:#DDD2EC;border-color:#B6A1CF;color:#58436F;opacity:1;
+            box-shadow:none;cursor:not-allowed;
+        }
+        button[kind="primary"]:disabled *,
+        [data-testid="stBaseButton-primary"]:disabled * {
+            color:#58436F !important;-webkit-text-fill-color:#58436F;opacity:1;
         }
         @media (max-width: 800px) {
             .align-hero {padding:20px;}.align-hero h1 {font-size:1.55rem;}.align-hero-badge {display:none;}
