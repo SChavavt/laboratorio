@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lab_pg as app
+from workbench_grid import build_grid_options
 
 
 NOW = datetime(2026, 9, 3, 12)
@@ -119,6 +120,29 @@ def test_labeled_metadata_is_saved_without_emojis():
     displayed.loc[0,"ARCHIVOS RECIBIDOS"] = "📁🩻 STL+TOMO"
     assert app.workbench_changes(original,displayed) == [("001",{
         "SERVICIO":"PLANEACIÓN & CONFECCIÓN","VENDEDOR":"JUAN","ARCHIVOS RECIBIDOS":"STL+TOMO"})]
+
+
+def test_outsourced_work_datetime_labels_reference_stefano():
+    assert app.display_field_label("FECHA/HORA ENVÍO STEFANO") == "🚚 FECHA/HORA ENVÍO STEFANO"
+    assert app.display_field_label("FECHA/HORA ENTREGA STEFANO") == "📬 FECHA/HORA ENTREGA STEFANO"
+
+    grid = pd.DataFrame(columns=["FECHA/HORA ENVÍO STEFANO", "FECHA/HORA ENTREGA STEFANO"])
+    options = build_grid_options(
+        grid,
+        editable=set(),
+        automatic=set(),
+        stage_options={},
+        select_options={},
+        date_values={},
+        datetime_columns=set(),
+        palettes={},
+        time_zone="UTC",
+    )
+    headers = {column["field"]: column["headerName"] for column in options["columnDefs"]}
+    assert headers == {
+        "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
+        "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano",
+    }
 
 
 def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
