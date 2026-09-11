@@ -54,8 +54,10 @@ semáforo y las etiquetas originales con emojis en las etapas y desplegables.
 Los emojis son sólo presentación: Sheets recibe siempre el valor canónico.
 Las fichas de pedido también muestran la etapa con su color configurado.
 El menú de etapa pinta cada opción con el mismo color de su celda. Los encabezados
-identifican columnas editables, de solo lectura y automáticas; estas dos últimas
-categorías se pueden ocultar de forma independiente.
+distinguen las columnas manuales de las que la app llena o calcula
+automáticamente. Sólo **Folio** y **Semáforo** son columnas fijas de consulta (la
+casilla **Abrir** es únicamente un control); todas las demás columnas provenientes
+de Sheets se pueden corregir. Las columnas automáticas se pueden ocultar en grupo.
 
 Las columnas no fijas se pueden arrastrar desde su encabezado. **Guardar orden**
 se activa después de mover una columna y persiste el acomodo por usuario en
@@ -64,9 +66,10 @@ la app, por lo que se recupera en otra sesión o equipo. El historial de cada
 pedido ya muestra `USUARIO`, que se registra en `TIEMPOS_APARATOS` al cambiar de
 etapa.
 
-Todos los usuarios autenticados pueden corregir pago, comentarios, vendedor,
-servicio, archivos y fecha de recepción. Doctor, paciente, folio, aparato y los
-campos calculados o autollenados permanecen protegidos. El filtro Responsable
+Todos los usuarios autenticados pueden corregir las columnas provenientes de
+`ESTATUS APARATOS`, incluidas doctor, paciente, aparato y las fechas que la app
+autollena. Folio, semáforo y los cálculos exclusivos de la vista permanecen
+protegidos. El filtro Responsable
 elige inicialmente al usuario activo cuando su nombre existe en los datos; en
 caso contrario comienza en Todos y siempre permite cambiar la selección.
 

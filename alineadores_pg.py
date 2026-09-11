@@ -103,25 +103,12 @@ PRIMARY_COLUMNS = [
     "FECHA OBJETIVO ENVÍO",
 ]
 
-EDITABLE_COLUMNS = {
-    STATUS_COLUMN,
-    "ETAPA SOLICITUD",
-    "DETALLE COMENTARIOS",
-    "VENDEDOR",
-    "SERVICIO",
-    "PAQUETE MARCA BLANCA",
-    "ARCHIVOS RECIBIDOS",
-    "FECHA DE RECEPCIÓN",
-    "FECHA PAGO PLANEACION",
-    "FECHA SUBIDO A TITAN",
-    "FECHA ENTREGA TITAN",
-}
-
 DATE_COLUMNS = {
     "FECHA DE RECEPCIÓN",
     "FECHA PAGO PLANEACION",
     "FECHA SUBIDO A TITAN",
     "FECHA ENTREGA TITAN",
+    "FECHA OBJETIVO ENVÍO",
 }
 
 SELECT_COLUMNS = {
@@ -141,6 +128,12 @@ COMPUTED_COLUMNS = [
     "DETALLE SEMÁFORO",
 ]
 AUTOMATIC_COLUMNS = {*COMPUTED_COLUMNS, "FECHA OBJETIVO ENVÍO"}
+
+
+def aligners_editable_columns(available_columns: Any = ()) -> set[str]:
+    """Devuelve las columnas de la hoja que se pueden corregir desde Seguimiento."""
+    protected = {"SELECCIONAR", ID_COLUMN, *COMPUTED_COLUMNS}
+    return set(available_columns) - protected
 
 GRID_COLUMNS = [
     ID_COLUMN,
@@ -1447,7 +1440,7 @@ def grid_changes(
         identifier = clean_cell(row[ID_COLUMN]).strip()
         previous = source.loc[identifier]
         delta: dict[str, str] = {}
-        for column in EDITABLE_COLUMNS & set(original.columns) & set(edited.columns):
+        for column in aligners_editable_columns(original.columns) & set(edited.columns):
             old_value = grid_cell_value(column, previous[column], definitions)
             new_value = grid_cell_value(column, row[column], definitions)
             if not values_equivalent(column, old_value, new_value):
@@ -1464,7 +1457,7 @@ def validate_delta(
 ) -> list[str]:
     errors: list[str] = []
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
-    invalid_columns = set(delta) - EDITABLE_COLUMNS
+    invalid_columns = set(delta) - aligners_editable_columns(row.index)
     if invalid_columns:
         errors.append(f"{identifier}: no se puede editar {', '.join(sorted(invalid_columns))}.")
     for column in DATE_COLUMNS & set(delta):
@@ -1621,7 +1614,7 @@ def build_grid_configuration(
     }
     return build_aligners_grid_options(
         grid,
-        editable=EDITABLE_COLUMNS,
+        editable=aligners_editable_columns(grid.columns),
         automatic=AUTOMATIC_COLUMNS,
         stage_options=stages,
         select_options=selections,
@@ -1945,21 +1938,17 @@ def render_workbench(current_user: str) -> None:
         order_mode=order_mode,
     )
 
-    visibility = st.columns([1.7, 1.7, 5])
-    hide_readonly = visibility[0].checkbox(
-        "Ocultar solo lectura",
-        disabled=pending_before_grid,
-        key="aligners_hide_readonly",
-    )
-    hide_automatic = visibility[1].checkbox(
+    visibility = st.columns([1.7, 6.7])
+    hide_automatic = visibility[0].checkbox(
         "Ocultar automáticas",
         disabled=pending_before_grid,
         key="aligners_hide_automatic",
     )
-    visibility[2].markdown(
-        '<div class="align-column-legend"><span class="editable">✎ Editable</span>'
-        '<span class="readonly">🔒 Solo lectura</span>'
-        '<span class="automatic">⚙ Automática</span></div>',
+    visibility[1].markdown(
+        '<div class="align-column-legend"><span class="readonly">🔒 Fijas: No. Orden y Semáforo</span>'
+        '<span class="editable">✎ Editable manual</span>'
+        '<span class="auto-editable">✎⚙ Editable automática</span>'
+        '<span class="automatic">⚙ Cálculo automático</span></div>',
         unsafe_allow_html=True,
     )
     st.caption(
@@ -1984,7 +1973,6 @@ def render_workbench(current_user: str) -> None:
                 products,
                 statuses,
                 order_mode,
-                hide_readonly,
                 hide_automatic,
             ],
             ensure_ascii=False,
@@ -1998,8 +1986,6 @@ def render_workbench(current_user: str) -> None:
     hidden: set[str] = set()
     if hide_automatic:
         hidden |= AUTOMATIC_COLUMNS
-    if hide_readonly:
-        hidden |= set(grid) - EDITABLE_COLUMNS - AUTOMATIC_COLUMNS - {"SELECCIONAR", ID_COLUMN}
     options = build_grid_configuration(
         grid, source_grid, definitions, hidden_columns=hidden
     )
@@ -2167,6 +2153,7 @@ def apply_custom_css() -> None:
         .align-column-legend .editable {background:#7443AA;}
         .align-column-legend .readonly {background:#52667D;}
         .align-column-legend .automatic {background:#147C84;}
+        .align-column-legend .auto-editable {background:linear-gradient(100deg,#147C84 0 48%,#7443AA 52% 100%);}
         .align-stage-chip {display:inline-block;border-radius:9px;padding:8px 13px;font-size:.85rem;font-weight:750;margin-bottom:10px;}
         [data-testid="stWidgetLabel"] p {color:#493064;font-weight:650;}
         button[kind="primary"], [data-testid="stBaseButton-primary"] {

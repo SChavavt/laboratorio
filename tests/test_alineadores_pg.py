@@ -262,6 +262,47 @@ def test_visual_status_roundtrips_without_false_change(definitions):
     assert app.grid_changes(displayed, displayed.copy(), definitions) == []
 
 
+def test_all_sheet_columns_except_order_are_editable(definitions):
+    original = pd.DataFrame([order(**{
+        "FECHA OBJETIVO ENVÍO": "2026/09/20",
+        "TIPO": "Inicial",
+    })])
+    displayed = app.display_workbench_df(original, definitions)
+    edited = displayed.copy()
+    edited.loc[0, "NOMBRE DOCTOR"] = "Doctor corregido"
+    edited.loc[0, app.PRODUCT_COLUMN] = app.product_display_value("GRAPHY")
+    edited.loc[0, "FECHA OBJETIVO ENVÍO"] = "2026/09/21"
+    edited.loc[0, "TIPO"] = "Refinamiento"
+
+    assert app.grid_changes(displayed, edited, definitions) == [("001", {
+        app.PRODUCT_COLUMN: "GRAPHY",
+        "NOMBRE DOCTOR": "Doctor corregido",
+        "TIPO": "Refinamiento",
+        "FECHA OBJETIVO ENVÍO": "2026/09/21",
+    })]
+
+
+@pytest.mark.parametrize("column", [app.ID_COLUMN, "SEMÁFORO", "HORAS EN ETAPA"])
+def test_fixed_and_computed_aligner_columns_remain_protected(column, definitions):
+    row = pd.Series(order(**{"SEMÁFORO": "⚪ Sin medición", "HORAS EN ETAPA": 1}))
+    assert app.validate_delta(row, {column: "cambio"}, definitions)
+
+
+def test_grid_marks_automatic_sheet_date_as_editable(definitions):
+    source = pd.DataFrame([order(**{"FECHA OBJETIVO ENVÍO": "2026/09/20"})])
+    source["SEMÁFORO"] = "⚪ Sin medición"
+    grid = app.display_workbench_df(source, definitions)
+    grid.insert(0, "SELECCIONAR", False)
+    options = app.build_grid_configuration(grid, source, definitions)
+    columns = {item["field"]: item for item in options["columnDefs"]}
+
+    assert columns[app.ID_COLUMN]["editable"] is False
+    assert columns["SEMÁFORO"]["editable"] is False
+    assert columns["FECHA OBJETIVO ENVÍO"]["editable"] is True
+    assert columns["FECHA OBJETIVO ENVÍO"]["headerClass"] == "lab-header-auto-editable"
+    assert columns["FECHA OBJETIVO ENVÍO"]["cellEditorParams"]["withTime"] is False
+
+
 def test_aligner_sheet_id_never_reuses_apparatus_sheet_id():
     source = {
         "gsheets": {
