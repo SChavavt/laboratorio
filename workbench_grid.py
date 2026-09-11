@@ -80,8 +80,8 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
               "NOMBRE PACIENTE": "Paciente", "DETALLE SEMÁFORO": "Motivo del semáforo",
-              "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Jime",
-              "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Jime"}
+              "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
+              "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano"}
     widths = {"SELECCIONAR": 65, "Columna 1": 90, "SEMÁFORO": 160, "APARATO": 140,
               "STATUS": 300, "NOMBRE DOCTOR": 200, "NOMBRE PACIENTE": 200, "DETALLE SEMÁFORO": 380}
     default_order = ["SELECCIONAR", "Columna 1", "SEMÁFORO", "APARATO", "STATUS", "NOMBRE DOCTOR",
