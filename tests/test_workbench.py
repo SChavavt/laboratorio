@@ -169,8 +169,8 @@ def test_editable_dates_use_calendar_and_now_shortcut_for_every_user(user):
     assert "Ahora" in date_config["cellEditor"].js_code
     assert 'addInput("date", "Fecha"' in date_config["cellEditor"].js_code
     assert 'if (this.withTime) this.time = addInput("time", "Hora"' in date_config["cellEditor"].js_code
-    assert datetime_config["editable"] is False
-    assert "cellEditorParams" not in datetime_config
+    assert datetime_config["editable"] is True
+    assert datetime_config["cellEditorParams"]["withTime"] is True
 
 
 def test_status_menu_and_columns_expose_visual_categories():
@@ -188,7 +188,7 @@ def test_status_menu_and_columns_expose_visual_categories():
     order = [column["field"] for column in options["columnDefs"]]
     assert order[:5] == ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "NOMBRE PACIENTE", app.APARATO_COLUMN]
     assert columns[app.ID_COLUMN]["suppressMovable"] is True
-    assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-readonly"
+    assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-editable"
     assert columns["PAGO"]["headerClass"] == "lab-header-editable"
     assert columns["RESPONSABLE"]["headerClass"] == "lab-header-automatic"
     assert columns["RESPONSABLE"]["hide"] is True
@@ -239,11 +239,11 @@ def test_pbkdf2_password_verification_remains_supported():
     assert app.password_matches("configurado", "configurado")
 
 
-@pytest.mark.parametrize("user,column,value", [("Lesly","NOMBRE DOCTOR","Otro"),
-                                             ("Vero","NOMBRE PACIENTE","Otro"),
-                                             ("Jime","FECHA PARA ENTREGA","2026/09/20"),
-                                             ("Admin",app.APARATO_COLUMN,"TIGER")])
-def test_readonly_columns_are_enforced_server_side(user,column,value):
+@pytest.mark.parametrize("user,column,value", [("Lesly", app.ID_COLUMN, "002"),
+                                             ("Vero", "SEMÁFORO", "🔴 Atrasado"),
+                                             ("Jime", "RESPONSABLE", "OTRO"),
+                                             ("Admin", "HORAS EN ETAPA", "1")])
+def test_fixed_and_computed_columns_are_enforced_server_side(user,column,value):
     original = pd.DataFrame([case()])
     errors = app.validate_workbench_changes(original, original, [("001",{column:value})],user)
     assert errors and "no puede editar" in errors[0]
@@ -253,6 +253,17 @@ def test_readonly_columns_are_enforced_server_side(user,column,value):
 def test_every_user_can_edit_manual_fields(user):
     original = pd.DataFrame([case(**{"FECHA DE RECEPCIÓN": "2026/09/03"})])
     changes = [("001", {"PAGO": "TOTAL", "FECHA DE RECEPCIÓN": "2026/09/04"})]
+    assert not app.validate_workbench_changes(original, original, changes, user)
+
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])
+def test_every_user_can_correct_sheet_columns_including_automatic_fields(user):
+    original = pd.DataFrame([case(**{"FECHA PARA ENTREGA": "2026/09/20"})])
+    changes = [("001", {
+        "NOMBRE DOCTOR": "Otro",
+        app.APARATO_COLUMN: "TIGER",
+        "FECHA PARA ENTREGA": "2026/09/21",
+    })]
     assert not app.validate_workbench_changes(original, original, changes, user)
 
 
@@ -393,10 +404,10 @@ app.main()
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     assert not at.toggle
     assert not at.get("segmented_control")
-    assert at.checkbox(key="workbench_hide_readonly").label == "Ocultar solo lectura"
     assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
     assert at.selectbox(key="workbench_owner").value == ("JIME" if user == "Jime" else "Todos")
-    assert any("Auto/corregible" in item.value for item in at.tabs[0].markdown)
+    assert any("Fijas: Folio y Semáforo" in item.value for item in at.tabs[0].markdown)
+    assert any("Editable automática" in item.value for item in at.tabs[0].markdown)
     assert at.metric[0].value == "1"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception

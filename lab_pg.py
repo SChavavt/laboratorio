@@ -4757,11 +4757,6 @@ def render_active_app_tab(current_user: str) -> None:
 # 📋 MESA ÚNICA DE TRABAJO
 # ==============================
 WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
-WORKBENCH_MANUAL_FIELDS = {
-    "PAGO", "DETALLE COMENTARIOS", "VENDEDOR", "SERVICIO", "ARCHIVOS RECIBIDOS",
-    "DETALLES & COMENTARIOS FINALES",
-    "FECHA DE RECEPCIÓN",
-}
 WORKBENCH_COMPUTED_COLUMNS = [
     "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
     "DETALLE SEMÁFORO",
@@ -4877,10 +4872,12 @@ def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) ->
     return cases
 
 
-def workbench_editable_columns(current_user: str) -> set[str]:
-    if current_user in APP_USERS:
-        return {STATUS_COLUMN, *WORKBENCH_MANUAL_FIELDS}
-    return set()
+def workbench_editable_columns(current_user: str, available_columns: Any = ()) -> set[str]:
+    """Permite corregir toda columna respaldada por Sheets salvo las columnas fijas."""
+    if current_user not in APP_USERS:
+        return set()
+    protected = {"SELECCIONAR", ID_COLUMN, *WORKBENCH_COMPUTED_COLUMNS}
+    return set(available_columns) - protected
 
 
 def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
@@ -4888,7 +4885,7 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     current = normalize_status_alias(row.get(STATUS_COLUMN, ""))
     apparatus = row.get(APARATO_COLUMN, "")
     options = [current]
-    if (STATUS_COLUMN in workbench_editable_columns(current_user)
+    if (current_user in APP_USERS
             and not (current_user == "Lesly" and not is_case_marked_for_printing(row))):
         options.extend(target for target in get_allowed_next_statuses(apparatus, current)
                        if is_transition_allowed_for_user(current_user, current, target, apparatus))
@@ -4898,7 +4895,7 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
 def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str,
                            *, preferred_order: list[str] | None = None,
                            hidden_columns: set[str] | None = None) -> dict:
-    editable = workbench_editable_columns(current_user)
+    editable = workbench_editable_columns(current_user, grid.columns)
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
     stages = {row[ID_COLUMN]: workbench_stage_options(row, current_user)
               if row[ID_COLUMN] not in duplicates else [display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])]
@@ -4973,7 +4970,7 @@ def validate_workbench_changes(
 ) -> list[str]:
     """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión."""
     errors = []
-    allowed_columns = workbench_editable_columns(current_user)
+    allowed_columns = workbench_editable_columns(current_user, original.columns)
     if ID_COLUMN not in fresh:
         return ["No se pudo volver a leer la columna de folios. Actualiza los datos antes de guardar."]
     for identifier, delta in changes:
@@ -5220,19 +5217,16 @@ def render_workbench(current_user: str) -> None:
     if priority != "Orden de la hoja":
         filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
     filtered = filtered.reset_index(drop=True)
-    visibility = st.columns([2, 2, 5])
-    hide_readonly = visibility[0].checkbox(
-        "Ocultar solo lectura", disabled=pending, key="workbench_hide_readonly",
-        help="Oculta datos de origen que tu usuario no puede modificar; el folio permanece visible.",
-    )
-    hide_automatic = visibility[1].checkbox(
+    visibility = st.columns([2, 7])
+    hide_automatic = visibility[0].checkbox(
         "Ocultar automáticas", disabled=pending, key="workbench_hide_automatic",
-        help="Oculta semáforo, responsable, horas y demás valores calculados por la app.",
+        help="Oculta las columnas que la app llena o calcula; Folio permanece visible.",
     )
-    visibility[2].markdown(
-        '<div class="lab-column-legend"><span class="editable">✎ Editable</span>'
-        '<span class="readonly">🔒 Solo lectura</span><span class="automatic">⚙ Automática</span>'
-        '<span class="auto-editable">✎⚙ Auto/corregible</span></div>',
+    visibility[1].markdown(
+        '<div class="lab-column-legend"><span class="readonly">🔒 Fijas: Folio y Semáforo</span>'
+        '<span class="editable">✎ Editable manual</span>'
+        '<span class="auto-editable">✎⚙ Editable automática</span>'
+        '<span class="automatic">⚙ Cálculo automático</span></div>',
         unsafe_allow_html=True,
     )
     st.caption(f"{len(filtered)} de {len(table)} pedidos · Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
@@ -5243,14 +5237,12 @@ def render_workbench(current_user: str) -> None:
         grid.insert(0, "SELECCIONAR", False)
         signature = hashlib.sha256(json.dumps([current_user, st.session_state.get("workbench_revision", 0),
                                               search, signal, owner, priority, chosen,
-                                              hide_readonly, hide_automatic], sort_keys=True).encode()).hexdigest()[:16]
+                                              hide_automatic], sort_keys=True).encode()).hexdigest()[:16]
         key = f"workbench_grid_{signature}"
         st.session_state["workbench_editor_key"] = key
         st.session_state["workbench_editor_baseline"] = grid.copy()
-        editable = workbench_editable_columns(current_user)
+        editable = workbench_editable_columns(current_user, grid.columns)
         hidden = set(WORKBENCH_AUTOMATIC_COLUMNS) if hide_automatic else set()
-        if hide_readonly:
-            hidden |= set(grid) - editable - set(WORKBENCH_AUTOMATIC_COLUMNS) - {"SELECCIONAR", ID_COLUMN}
         saved_order = workbench_saved_column_order(current_user, grid.columns)
         grid_options = workbench_grid_options(
             grid, filtered, current_user, preferred_order=saved_order, hidden_columns=hidden

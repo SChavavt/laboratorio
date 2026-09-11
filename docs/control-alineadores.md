@@ -38,6 +38,11 @@ la app de alineadores no la reutiliza.
   entre 80 % y 100 %, rojo al vencer y morado durante una pausa.
 - No se asignan responsables por etapa; todos los usuarios pueden trabajar cualquier
   producto.
+- En Seguimiento, sólo **No. Orden** y **Semáforo** quedan fijos y bloqueados. La
+  casilla **Abrir** sigue siendo únicamente un control de selección. Las demás
+  columnas provenientes de `ALINEADORES (nuevo)` son editables, incluidas las que
+  se llenan automáticamente; los cálculos exclusivos de la vista permanecen
+  automáticos.
 
 ## Pruebas
 
