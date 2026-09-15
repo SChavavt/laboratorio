@@ -354,3 +354,36 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
+
+
+def test_only_selected_aligners_tab_executes():
+    from streamlit.testing.v1 import AppTest
+
+    repository_root = str(Path(__file__).resolve().parents[1])
+    script = f'''
+import sys
+sys.path.insert(0, {repository_root!r})
+import streamlit as st
+import alineadores_pg as app
+from unittest.mock import patch
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_times_headers", lambda: None),
+    patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_alerts", lambda _: st.write("alertas ejecutadas")),
+    patch.object(app, "render_processes", lambda _: st.write("procesos ejecutados")),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
+    assert not at.tabs[1].markdown
+    assert not at.tabs[2].markdown
+
+    at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
+    at.run()
+    assert not at.exception
+    assert not at.tabs[0].markdown
+    assert [item.value for item in at.tabs[1].markdown] == ["alertas ejecutadas"]
+    assert not at.tabs[2].markdown
