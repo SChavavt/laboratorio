@@ -26,6 +26,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
+from streamlit.errors import StreamlitAPIException
 
 from aligners_grid import build_aligners_grid_options, render_aligners_grid
 
@@ -909,7 +910,18 @@ def read_times_values() -> list[list[str]]:
 
 
 def clear_sheet_data_cache() -> None:
-    st.cache_data.clear()
+    """Invalida sólo lecturas de Sheets y conserva validaciones estables."""
+    read_order_values.clear()
+    read_process_values.clear()
+    read_times_values.clear()
+
+
+def rerun_active_tab() -> None:
+    """Recalcula la pestaña activa; fuera de un fragmento recarga la app completa."""
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
 
 
 def read_orders_df() -> pd.DataFrame:
@@ -1634,6 +1646,8 @@ def reset_workbench() -> None:
 
 def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
     key = st.session_state.get("aligners_editor_key", "")
+    if not key:
+        return 0
     state = st.session_state.get(key) or {}
     baseline = st.session_state.get("aligners_editor_baseline")
     if baseline is None or state.get("rows") is None:
@@ -1794,7 +1808,7 @@ def render_case_actions(
                         [],
                         "Medición iniciada en la etapa actual.",
                     )
-                    st.rerun()
+                    rerun_active_tab()
                 except Exception as exc:
                     st.error(f"No se pudo iniciar la medición: {exc}")
 
@@ -1838,7 +1852,6 @@ def render_case_actions(
             st.dataframe(pd.DataFrame(details), hide_index=True, use_container_width=True)
 
 
-@st.fragment
 def render_workbench(current_user: str) -> None:
     snapshot = get_snapshot(current_user)
     definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
@@ -1861,7 +1874,7 @@ def render_workbench(current_user: str) -> None:
         ):
             clear_sheet_data_cache()
             reset_workbench()
-            st.rerun()
+            rerun_active_tab()
 
     feedback = st.session_state.pop("aligners_feedback", None)
     if feedback:
@@ -2009,7 +2022,7 @@ def render_workbench(current_user: str) -> None:
             filtered, grid, edited, current_user, definitions
         )
         st.session_state["aligners_feedback"] = (saved, errors, "")
-        st.rerun()
+        rerun_active_tab()
     if discard_column.button(
         "Descartar cambios",
         disabled=not pending_before_grid and not pending,
@@ -2017,7 +2030,7 @@ def render_workbench(current_user: str) -> None:
         key="aligners_discard",
     ):
         reset_workbench()
-        st.rerun()
+        rerun_active_tab()
     count_column.caption(f"{len(changes)} pedidos con cambios pendientes")
 
     selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
@@ -2092,6 +2105,34 @@ def render_processes(current_user: str) -> None:
                     + " · ".join(f"⏸️ {pause}" for pause in definition.pauses)
                 )
             st.caption("🗄️ CANCELADO está disponible desde cualquier etapa activa y archiva el pedido.")
+
+
+ALIGNERS_TAB_LABELS = (
+    "📋 Seguimiento",
+    "🚨 Alertas y pausas",
+    "⚙️ Procesos y plazos",
+)
+
+
+@st.fragment(key="aligners_active_tab_content")
+def render_app_tabs(current_user: str) -> None:
+    """Ejecuta únicamente el contenido de la pestaña visible."""
+    tabs = st.tabs(
+        ALIGNERS_TAB_LABELS,
+        key=f"aligners_primary_tabs_{current_user}",
+        on_change="rerun",
+    )
+    for label, tab in zip(ALIGNERS_TAB_LABELS, tabs):
+        if not tab.open:
+            continue
+        with tab:
+            if label == "📋 Seguimiento":
+                render_workbench(current_user)
+            elif label == "🚨 Alertas y pausas":
+                render_alerts(current_user)
+            else:
+                render_processes(current_user)
+        break
 
 
 def apply_custom_css() -> None:
@@ -2198,13 +2239,7 @@ def main() -> None:
         if current_user is None:
             return
         ensure_times_headers()
-        tabs = st.tabs(["📋 Seguimiento", "🚨 Alertas y pausas", "⚙️ Procesos y plazos"])
-        with tabs[0]:
-            render_workbench(current_user)
-        with tabs[1]:
-            render_alerts(current_user)
-        with tabs[2]:
-            render_processes(current_user)
+        render_app_tabs(current_user)
     except Exception as exc:
         if is_google_sheets_rate_limit_error(exc):
             st.error("Google Sheets alcanzó el límite temporal de lecturas. Espera un minuto y actualiza.")

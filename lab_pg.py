@@ -18,6 +18,7 @@ import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
+from streamlit.errors import StreamlitAPIException
 from workbench_grid import build_grid_options, render_grid
 
 # ==============================
@@ -1977,13 +1978,13 @@ def ensure_tiempos_headers() -> None:
     headers = run_gsheets_request(lambda: worksheet.row_values(1))
     if not headers:
         run_gsheets_request(lambda: worksheet.update("A1", [TIEMPOS_HEADERS]))
-        st.cache_data.clear()
+        clear_sheet_data_cache()
         return
 
     missing_headers = [header for header in TIEMPOS_HEADERS if header not in headers]
     if missing_headers:
         run_gsheets_request(lambda: worksheet.update("A1", [headers + missing_headers]))
-        st.cache_data.clear()
+        clear_sheet_data_cache()
 
 
 @st.cache_data(ttl=30)
@@ -2104,6 +2105,14 @@ def clear_sheet_data_cache() -> None:
     read_sheet_df.clear()
     read_sheet_values.clear()
     read_forms_responses_df.clear()
+
+
+def rerun_active_tab() -> None:
+    """Recalcula la pestaña activa; fuera de un fragmento recarga la app completa."""
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
 
 
 @st.cache_data(ttl=30)
@@ -2936,7 +2945,7 @@ def render_success_feedback(
     st.success(message)
     if st.button("✅ Aceptar y limpiar mensaje", key=clear_button_key):
         st.session_state.pop(message_key, None)
-        st.rerun()
+        rerun_active_tab()
 
 
 def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
@@ -2949,7 +2958,7 @@ def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
     st.warning(message)
     if st.button("⚠️ Aceptar y limpiar advertencia", key=clear_button_key):
         st.session_state.pop(message_key, None)
-        st.rerun()
+        rerun_active_tab()
 
 
 def render_nuevo_pedido_tab() -> None:
@@ -3113,7 +3122,7 @@ def render_nuevo_pedido_tab() -> None:
     st.session_state["nuevo_pedido_form_version"] = form_version + 1
     st.session_state["nuevo_pedido_show_celebration"] = True
     reset_workbench()
-    st.rerun()
+    rerun_active_tab()
 
 
 def render_estatus_tab(current_user: str = "Admin") -> None:
@@ -3283,7 +3292,7 @@ def render_estatus_tab(current_user: str = "Admin") -> None:
                 )
             else:
                 st.session_state.pop("estatus_warning_message", None)
-            st.rerun()
+            rerun_active_tab()
         else:
             skipped_columns = ", ".join(
                 display_field_label(column) for column in update_result["skipped_columns"]
@@ -3519,7 +3528,7 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
         )
         clear_sheet_data_cache()
         st.success(f"Pedido {selected_id} actualizado a {new_status}.")
-        st.rerun()
+        rerun_active_tab()
 
 
 def render_global_alert_dashboard(current_user: str) -> None:
@@ -3573,7 +3582,7 @@ def render_global_alert_dashboard(current_user: str) -> None:
                 selector_key = get_case_selector_key_for_user(owner)
                 if selector_key:
                     st.session_state[selector_key] = selected_alert_id
-                st.rerun()
+                rerun_active_tab()
             else:
                 st.warning("Esta alerta no pertenece a una pestaña visible para tu usuario.")
 
@@ -3797,7 +3806,7 @@ def render_status_change_feedback() -> None:
     st.success(message)
     if st.button("Entendido, ocultar confirmación", key="clear_status_change_success_message"):
         st.session_state.pop("status_change_success_message", None)
-        st.rerun()
+        rerun_active_tab()
 
 
 def render_case_selector(cases_df: pd.DataFrame, key: str) -> tuple[str, pd.Series | None]:
@@ -4256,7 +4265,7 @@ def render_estefano_shipping_tab(
         ):
             if files_value:
                 update_active_tiempo_row(selected_id, {"ARCHIVOS_ESTEFANO_URL": files_value})
-            st.rerun()
+            rerun_active_tab()
 
 
 def render_estefano_tab(current_user: str) -> None:
@@ -4292,7 +4301,7 @@ def render_jime_tab(current_user: str) -> None:
     comment = st.text_area("Comentario de revisión", disabled=not can_edit)
     if st.button("💾 Guardar cambio Jime", disabled=not can_edit):
         if advance_case_status(identifier=selected_id, row=row, new_status=new_status, current_user=current_user, comment=comment):
-            st.rerun()
+            rerun_active_tab()
 
 
 def render_payment_status_metrics(estatus_df: pd.DataFrame) -> None:
@@ -4507,7 +4516,7 @@ def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -
             clear_sheet_data_cache()
             reset_workbench()
             st.success("Estado de pago guardado.")
-            st.rerun()
+            rerun_active_tab()
         else:
             st.error(result["error"] or "No se pudo actualizar el estado de pago.")
     if current_status in PAYMENT_STATUSES:
@@ -4521,7 +4530,7 @@ def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -
                 next_status = options[0] if options else current_status
             if st.button(f"➡️ Avanzar al siguiente proceso: {next_status}", disabled=not can_edit):
                 if advance_case_status(identifier=selected_id, row=row, new_status=next_status, current_user=current_user, comment="Avance posterior a aprobación de pago"):
-                    st.rerun()
+                    rerun_active_tab()
 
 
 def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = None) -> None:
@@ -4619,7 +4628,7 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
                 st.error("No se pudieron marcar: " + " | ".join(failures))
             reset_workbench()
             st.session_state["workbench_feedback"] = (successes, failures)
-            st.rerun()
+            rerun_active_tab()
 
     with st.form("lesly_advance_printed_form"):
         st.markdown("### ➡️ Cambiar STATUS de pedidos ya marcados")
@@ -4670,7 +4679,7 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
                 st.error("Revisa estos pedidos: " + " | ".join(failures))
             reset_workbench()
             st.session_state["workbench_feedback"] = (successes, failures)
-            st.rerun()
+            rerun_active_tab()
 
 
 def render_vero_tab(current_user: str) -> None:
@@ -4702,7 +4711,7 @@ def render_vero_tab(current_user: str) -> None:
             comment=comment,
         ):
             st.session_state["vero_case_selector_pending_selection"] = selected_id
-            st.rerun()
+            rerun_active_tab()
     elif not next_status:
         st.info("No hay un siguiente STATUS permitido para Vero en este caso.")
 
@@ -5067,6 +5076,8 @@ def reset_workbench() -> None:
 
 def workbench_pending_count() -> int:
     key = st.session_state.get("workbench_editor_key", "")
+    if not key:
+        return 0
     state = st.session_state.get(key) or {}
     baseline = st.session_state.get("workbench_editor_baseline")
     if baseline is None or state.get("rows") is None:
@@ -5143,9 +5154,8 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
                 st.dataframe(history[fields], hide_index=True, use_container_width=True)
 
 
-@st.fragment
 def render_workbench(current_user: str) -> None:
-    """La edición actualiza sólo Seguimiento, conservando estructura y clave del editor."""
+    """Renderiza Seguimiento dentro del fragmento de la pestaña activa."""
     snapshot = st.session_state.get("workbench_snapshot")
     if snapshot is None or snapshot["user"] != current_user:
         table = build_workbench_table(read_sheet_df(SHEET_ESTATUS), read_sheet_df(SHEET_TIEMPOS))
@@ -5161,7 +5171,7 @@ def render_workbench(current_user: str) -> None:
         if st.button("Actualizar datos", disabled=pending, use_container_width=True):
             clear_sheet_data_cache()
             reset_workbench()
-            st.rerun()
+            rerun_active_tab()
     if "workbench_feedback" in st.session_state:
         saved, errors = st.session_state.pop("workbench_feedback")
         if saved:
@@ -5265,10 +5275,10 @@ def render_workbench(current_user: str) -> None:
                     st.error(error)
             else:
                 st.session_state["workbench_feedback"] = (saved, errors)
-                st.rerun()
+                rerun_active_tab()
         if discard_col.button("Descartar cambios", disabled=not pending, use_container_width=True):
             reset_workbench()
-            st.rerun()
+            rerun_active_tab()
         normalized_current_order = normalize_column_order(current_order, grid.columns)
         effective_saved_order = saved_order or initial_order
         if order_col.button("Guardar orden", disabled=pending or normalized_current_order == effective_saved_order,
@@ -5304,7 +5314,6 @@ def workbench_tab_options(current_user: str) -> list[str]:
     return options
 
 
-@st.fragment
 def render_workbench_auxiliary(label: str, current_user: str) -> None:
     if label == "➕ Nuevo pedido":
         if workbench_has_pending_edits():
@@ -5317,14 +5326,24 @@ def render_workbench_auxiliary(label: str, current_user: str) -> None:
         render_procesos_tab()
 
 
+@st.fragment(key="lab_active_tab_content")
 def render_workbench_tabs(current_user: str) -> None:
+    """Ejecuta únicamente el contenido de la pestaña visible."""
     labels = workbench_tab_options(current_user)
-    tabs = st.tabs(labels)
-    with tabs[0]:
-        render_workbench(current_user)
-    for label, tab in zip(labels[1:], tabs[1:]):
+    tabs = st.tabs(
+        labels,
+        key=f"lab_primary_tabs_{current_user}",
+        on_change="rerun",
+    )
+    for label, tab in zip(labels, tabs):
+        if not tab.open:
+            continue
         with tab:
-            render_workbench_auxiliary(label, current_user)
+            if label == "📋 Seguimiento":
+                render_workbench(current_user)
+            else:
+                render_workbench_auxiliary(label, current_user)
+        break
 
 
 def main() -> None:

@@ -455,6 +455,37 @@ app.main()
     assert at.metric[0].value == "0"
 
 
+def test_only_selected_lab_tab_executes():
+    from streamlit.testing.v1 import AppTest
+
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import streamlit as st
+import lab_pg as app
+from unittest.mock import patch
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_tiempos_headers", lambda: None),
+    patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_workbench_auxiliary", lambda label, _: st.write(f"auxiliar ejecutado: {{label}}")),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
+    assert all(not tab.markdown for tab in at.tabs[1:])
+
+    at.session_state["lab_primary_tabs_Admin"] = "⚙️ Procesos y plazos"
+    at.run()
+    assert not at.exception
+    assert not at.tabs[0].markdown
+    assert [item.value for item in at.tabs[3].markdown] == [
+        "auxiliar ejecutado: ⚙️ Procesos y plazos"
+    ]
+
+
 def test_ui_edits_freeze_filters_and_save_to_same_folio():
     from streamlit.testing.v1 import AppTest
     script = f'''
