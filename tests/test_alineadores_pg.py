@@ -387,9 +387,10 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
-    assert at.button(key="aligners_signal_card_total").type == "primary"
     assert at.button(key="aligners_signal_card_total").label.startswith("🦷 Pedidos activos")
     assert all(item.key != "aligners_signal" for item in at.selectbox)
+    at.button(key="aligners_signal_card_green").click().run()
+    assert at.session_state[app.ALIGNERS_SIGNAL_FILTER_KEY] == "🟢 En tiempo"
 
 
 def test_only_selected_aligners_tab_executes():

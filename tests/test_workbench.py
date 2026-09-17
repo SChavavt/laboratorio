@@ -453,9 +453,10 @@ app.main()
     assert any("Fijas: Folio, Semáforo y columnas principales" in item.value for item in at.tabs[0].markdown)
     assert any("Editable automática" in item.value for item in at.tabs[0].markdown)
     assert all(item.key != "workbench_signal" for item in at.selectbox)
-    assert at.button(key="workbench_signal_card_total").type == "primary"
     assert at.button(key="workbench_signal_card_total").label.startswith("🦷 Pedidos activos")
     assert at.multiselect(key=f"workbench_filter_{app.APARATO_COLUMN}").label == "Aparato"
+    at.button(key="workbench_signal_card_gray").click().run()
+    assert at.session_state[app.WORKBENCH_SIGNAL_FILTER_KEY] == "⚪ Sin medición"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception
     assert len(at.tabs[0].get("component_instance")) == 0
