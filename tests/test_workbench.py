@@ -630,18 +630,23 @@ import sys
 sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 import streamlit as st
 import lab_pg as app
+from unittest.mock import patch
 
 st.session_state[app.LAB_WORKSPACE_STATE_KEY] = app.LAB_VIEW_ALIGNERS
 st.session_state["apparatus_loaded"] = False
 st.session_state["aligners_loaded"] = ""
 
-app.require_authenticated_user = lambda: "Admin"
-app.ensure_tiempos_headers = lambda: st.session_state.__setitem__("apparatus_loaded", True)
-app.alineadores_pg.apply_custom_css = lambda: None
-app.alineadores_pg.render_embedded_workspace = (
-    lambda user: st.session_state.__setitem__("aligners_loaded", user)
-)
-app.main()
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_tiempos_headers", lambda: st.session_state.__setitem__("apparatus_loaded", True)),
+    patch.object(app.alineadores_pg, "apply_custom_css", lambda: None),
+    patch.object(
+        app.alineadores_pg,
+        "render_embedded_workspace",
+        lambda user: st.session_state.__setitem__("aligners_loaded", user),
+    ),
+):
+    app.main()
 """
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
