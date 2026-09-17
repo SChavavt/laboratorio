@@ -139,13 +139,13 @@ def aligners_editable_columns(available_columns: Any = ()) -> set[str]:
 GRID_COLUMNS = [
     ID_COLUMN,
     "SEMÁFORO",
-    PRODUCT_COLUMN,
     STATUS_COLUMN,
+    "TIPO",
+    PRODUCT_COLUMN,
+    "ETAPA SOLICITUD",
     "NOMBRE DOCTOR",
     "NOMBRE PACIENTE",
     "DETALLE COMENTARIOS",
-    "TIPO",
-    "ETAPA SOLICITUD",
     "VENDEDOR",
     "SERVICIO",
     "PAQUETE MARCA BLANCA",
@@ -221,6 +221,7 @@ ALERT_COLORS = {
     "🟢 En tiempo": ("#BFEBDC", "#13654E"),
     "⚪ Sin medición": ("#DCE3F2", "#4C5E7D"),
 }
+ALIGNERS_SIGNAL_FILTER_KEY = "aligners_signal_filter"
 
 SPANISH_MONTHS = {
     "ENERO": 1,
@@ -1679,21 +1680,60 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
     return snapshot
 
 
-def render_metrics(table: pd.DataFrame, *, namespace: str = "") -> None:
-    metrics = st.columns(6)
+def set_aligners_signal_filter(signal: str) -> None:
+    """Actualiza el filtro de semáforo desde una tarjeta."""
+
+    st.session_state[ALIGNERS_SIGNAL_FILTER_KEY] = (
+        signal if signal in {"Todos", *ALERT_COLORS} else "Todos"
+    )
+
+
+def current_aligners_signal_filter() -> str:
+    signal = st.session_state.get(ALIGNERS_SIGNAL_FILTER_KEY, "Todos")
+    if signal not in {"Todos", *ALERT_COLORS}:
+        signal = "Todos"
+        st.session_state[ALIGNERS_SIGNAL_FILTER_KEY] = signal
+    return signal
+
+
+def render_metrics(
+    table: pd.DataFrame,
+    *,
+    namespace: str = "",
+    interactive: bool = False,
+    disabled: bool = False,
+) -> str:
+    """Muestra métricas; en Seguimiento también funcionan como filtros."""
+
     labels = [
-        ("align_total", "🦷 Pedidos activos", None),
-        ("align_red", "🔴 Atrasados", "🔴 Atrasado"),
-        ("align_amber", "🟡 Por vencer", "🟡 Por vencer"),
-        ("align_pause", "🟣 En pausa", "🟣 En pausa"),
-        ("align_green", "🟢 En tiempo", "🟢 En tiempo"),
-        ("align_gray", "⚪ Sin medición", "⚪ Sin medición"),
+        ("total", "🦷 Pedidos activos", "Todos"),
+        ("red", "🔴 Atrasado", "🔴 Atrasado"),
+        ("amber", "🟡 Por vencer", "🟡 Por vencer"),
+        ("pause", "🟣 En pausa", "🟣 En pausa"),
+        ("green", "🟢 En tiempo", "🟢 En tiempo"),
+        ("gray", "⚪ Sin medición", "⚪ Sin medición"),
     ]
-    for container, (key, label, signal) in zip(metrics, labels):
-        value = len(table) if signal is None else int(table["SEMÁFORO"].eq(signal).sum())
-        namespaced_key = f"{key}_{namespace}" if namespace else key
-        with container.container(key=namespaced_key):
-            st.metric(label, value)
+    selected = current_aligners_signal_filter()
+    metrics = st.columns(len(labels))
+    for container, (tone, label, signal) in zip(metrics, labels):
+        value = len(table) if signal == "Todos" else int(table["SEMÁFORO"].eq(signal).sum())
+        if interactive:
+            with container.container(key=f"align_filter_{tone}"):
+                st.button(
+                    f"{label}\n\n**{value}**",
+                    key=f"aligners_signal_card_{tone}",
+                    type="primary" if selected == signal else "secondary",
+                    disabled=disabled,
+                    use_container_width=True,
+                    on_click=set_aligners_signal_filter,
+                    args=(signal,),
+                    help="Mostrar todos los pedidos" if signal == "Todos" else f"Filtrar por {label}",
+                )
+        else:
+            key = f"align_{tone}_{namespace}" if namespace else f"align_{tone}"
+            with container.container(key=key):
+                st.metric(label, value)
+    return selected
 
 
 def filter_tracking_table(
@@ -1884,9 +1924,9 @@ def render_workbench(current_user: str) -> None:
         for error in errors:
             st.error(error)
 
-    render_metrics(table)
+    signal = render_metrics(table, interactive=True, disabled=pending_before_grid)
     st.caption(
-        "Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · "
+        "Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · "
         "Morado: pausa opcional · Gris: falta iniciar o reparar la medición. "
         "Los tiempos cuentan de lunes a viernes."
     )
@@ -1904,23 +1944,17 @@ def render_workbench(current_user: str) -> None:
         unsafe_allow_html=True,
     )
 
-    filters = st.columns([2.2, 1.1, 1.3, 1.4, 1.3])
+    filters = st.columns([2.2, 1.5, 1.5, 1.3])
     search = filters[0].text_input(
         "Buscar pedido",
         placeholder="Orden, doctor, paciente o producto",
         disabled=pending_before_grid,
         key="aligners_search",
     )
-    signal = filters[1].selectbox(
-        "Semáforo",
-        ["Todos", *ALERT_COLORS],
-        disabled=pending_before_grid,
-        key="aligners_signal",
-    )
     product_options = sorted(
         {clean_cell(value).strip() for value in table.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
     )
-    products = filters[2].multiselect(
+    products = filters[1].multiselect(
         "Producto",
         product_options,
         disabled=pending_before_grid,
@@ -1929,14 +1963,14 @@ def render_workbench(current_user: str) -> None:
     status_options = sorted(
         {clean_cell(value).strip() for value in table.get(STATUS_COLUMN, []) if clean_cell(value).strip()}
     )
-    statuses = filters[3].multiselect(
+    statuses = filters[2].multiselect(
         "Status",
         status_options,
         disabled=pending_before_grid,
         format_func=lambda value: status_display_value(value, definitions),
         key="aligners_statuses",
     )
-    order_mode = filters[4].selectbox(
+    order_mode = filters[3].selectbox(
         "Orden",
         ["Orden de la hoja", "Atender urgentes primero"],
         disabled=pending_before_grid,
@@ -1958,7 +1992,7 @@ def render_workbench(current_user: str) -> None:
         key="aligners_hide_automatic",
     )
     visibility[1].markdown(
-        '<div class="align-column-legend"><span class="readonly">🔒 Fijas: No. Orden y Semáforo</span>'
+        '<div class="align-column-legend"><span class="readonly">🔒 Fijas: No. Orden, Semáforo y columnas principales</span>'
         '<span class="editable">✎ Editable manual</span>'
         '<span class="auto-editable">✎⚙ Editable automática</span>'
         '<span class="automatic">⚙ Cálculo automático</span></div>',
@@ -2183,6 +2217,55 @@ def apply_custom_css() -> None:
         .st-key-align_pause [data-testid="stMetric"], .st-key-align_pause_alerts [data-testid="stMetric"] {background:#F0E7FF;border-color:#8D62CC;color:#553C9A;}
         .st-key-align_green [data-testid="stMetric"], .st-key-align_green_alerts [data-testid="stMetric"] {background:#E0F7EE;border-color:#37A989;color:#13654E;}
         .st-key-align_gray [data-testid="stMetric"], .st-key-align_gray_alerts [data-testid="stMetric"] {background:#EBEFF8;border-color:#8193B4;color:#4C5E7D;}
+        .st-key-align_filter_total button,
+        .st-key-align_filter_red button,
+        .st-key-align_filter_amber button,
+        .st-key-align_filter_pause button,
+        .st-key-align_filter_green button,
+        .st-key-align_filter_gray button {
+            position:relative;min-height:96px;justify-content:flex-start;padding:14px 15px;
+            border-width:2px;border-radius:14px;text-align:left;
+            transition:transform 150ms ease,box-shadow 150ms ease;
+        }
+        .st-key-align_filter_total button {background:#EEE7FF !important;border-color:#8C62D2 !important;color:#4C2883 !important;}
+        .st-key-align_filter_red button {background:#FFECEF !important;border-color:#DF5875 !important;color:#A72B48 !important;}
+        .st-key-align_filter_amber button {background:#FFF3D7 !important;border-color:#DBA131 !important;color:#885A08 !important;}
+        .st-key-align_filter_pause button {background:#F0E7FF !important;border-color:#8D62CC !important;color:#553C9A !important;}
+        .st-key-align_filter_green button {background:#E0F7EE !important;border-color:#37A989 !important;color:#13654E !important;}
+        .st-key-align_filter_gray button {background:#EBEFF8 !important;border-color:#8193B4 !important;color:#4C5E7D !important;}
+        .st-key-align_filter_total button p,
+        .st-key-align_filter_red button p,
+        .st-key-align_filter_amber button p,
+        .st-key-align_filter_pause button p,
+        .st-key-align_filter_green button p,
+        .st-key-align_filter_gray button p {
+            color:inherit !important;white-space:pre-line;line-height:1.15;text-align:left;
+        }
+        .st-key-align_filter_total button strong,
+        .st-key-align_filter_red button strong,
+        .st-key-align_filter_amber button strong,
+        .st-key-align_filter_pause button strong,
+        .st-key-align_filter_green button strong,
+        .st-key-align_filter_gray button strong {display:block;margin-top:7px;font-size:1.7rem;line-height:1;font-weight:850;}
+        .st-key-align_filter_total button[kind="primary"],
+        .st-key-align_filter_red button[kind="primary"],
+        .st-key-align_filter_amber button[kind="primary"],
+        .st-key-align_filter_pause button[kind="primary"],
+        .st-key-align_filter_green button[kind="primary"],
+        .st-key-align_filter_gray button[kind="primary"] {
+            transform:translateY(-2px);border-width:3px !important;
+            box-shadow:0 0 0 3px #5C38A633,0 10px 22px #3923652B !important;
+        }
+        .st-key-align_filter_total button[kind="primary"]::after,
+        .st-key-align_filter_red button[kind="primary"]::after,
+        .st-key-align_filter_amber button[kind="primary"]::after,
+        .st-key-align_filter_pause button[kind="primary"]::after,
+        .st-key-align_filter_green button[kind="primary"]::after,
+        .st-key-align_filter_gray button[kind="primary"]::after {
+            content:"✓";position:absolute;right:11px;top:9px;width:22px;height:22px;
+            display:grid;place-items:center;border-radius:50%;background:#4F317D;color:#FFF;
+            font-size:.76rem;font-weight:900;
+        }
         .align-edit-bar {
             height: 40px; display:flex; align-items:center; padding:0 14px; border-radius:10px;
             border:1px solid #CDBCEB; font-size:.85rem; font-weight:600; margin: 8px 0;

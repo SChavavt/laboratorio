@@ -16,15 +16,18 @@ def aligners_status_editor() -> JsCode:
     )
 
 
-DEFAULT_ORDER = [
-    "SELECCIONAR",
-    "No. Orden",
-    "SEMÁFORO",
-    "PRODUCTO",
+BUSINESS_ORDER = [
     "STATUS",
+    "TIPO",
+    "PRODUCTO",
+    "ETAPA SOLICITUD",
     "NOMBRE DOCTOR",
     "NOMBRE PACIENTE",
     "DETALLE COMENTARIOS",
+]
+
+DEFAULT_ORDER = [
+    *BUSINESS_ORDER,
     "HORAS EN ETAPA",
     "PLAZO HORAS",
     "LÍMITE ETAPA",
@@ -37,8 +40,10 @@ LABELS = {
     "SELECCIONAR": "Abrir",
     "No. Orden": "No. Orden",
     "SEMÁFORO": "Semáforo",
-    "PRODUCTO": "Producto",
     "STATUS": "🎨 Etapa / status",
+    "TIPO": "Tipo",
+    "PRODUCTO": "Producto",
+    "ETAPA SOLICITUD": "Etapa solicitud",
     "NOMBRE DOCTOR": "Doctor",
     "NOMBRE PACIENTE": "Paciente",
     "DETALLE COMENTARIOS": "Comentarios",
@@ -52,17 +57,46 @@ LABELS = {
 
 WIDTHS = {
     "SELECCIONAR": 65,
-    "No. Orden": 115,
-    "SEMÁFORO": 170,
-    "PRODUCTO": 145,
-    "STATUS": 285,
-    "NOMBRE DOCTOR": 205,
-    "NOMBRE PACIENTE": 205,
-    "DETALLE COMENTARIOS": 260,
-    "HORAS EN ETAPA": 145,
-    "PLAZO HORAS": 125,
-    "LÍMITE ETAPA": 175,
-    "SIGUIENTE ETAPA": 260,
+    "No. Orden": 100,
+    "SEMÁFORO": 145,
+    "STATUS": 220,
+    "TIPO": 110,
+    "PRODUCTO": 130,
+    "ETAPA SOLICITUD": 145,
+    "NOMBRE DOCTOR": 160,
+    "NOMBRE PACIENTE": 160,
+    "DETALLE COMENTARIOS": 220,
+    "HORAS EN ETAPA": 135,
+    "PLAZO HORAS": 115,
+    "LÍMITE ETAPA": 165,
+    "SIGUIENTE ETAPA": 230,
+    "DETALLE SEMÁFORO": 300,
+}
+
+MIN_WIDTHS = {
+    "SELECCIONAR": 60,
+    "No. Orden": 85,
+    "SEMÁFORO": 125,
+    "STATUS": 160,
+    "TIPO": 85,
+    "PRODUCTO": 105,
+    "ETAPA SOLICITUD": 125,
+    "NOMBRE DOCTOR": 125,
+    "NOMBRE PACIENTE": 125,
+    "DETALLE COMENTARIOS": 170,
+}
+
+MAX_WIDTHS = {
+    "SELECCIONAR": 72,
+    "No. Orden": 125,
+    "SEMÁFORO": 165,
+    "STATUS": 290,
+    "TIPO": 150,
+    "PRODUCTO": 190,
+    "ETAPA SOLICITUD": 210,
+    "NOMBRE DOCTOR": 225,
+    "NOMBRE PACIENTE": 225,
+    "DETALLE COMENTARIOS": 340,
     "DETALLE SEMÁFORO": 390,
 }
 
@@ -82,14 +116,16 @@ def build_aligners_grid_options(
     """Crea el editor manteniendo las transiciones ligadas a cada número de orden."""
 
     hidden = set(hidden_columns or [])
-    fixed = [
+    system_fixed = [
         column
         for column in ["SELECCIONAR", "No. Orden", "SEMÁFORO"]
         if column in grid
     ]
-    available = [column for column in grid if column not in fixed]
+    business_fixed = [column for column in BUSINESS_ORDER if column in grid]
+    pinned = system_fixed + business_fixed
+    available = [column for column in grid if column not in pinned]
     preferred = [column for column in DEFAULT_ORDER if column in available]
-    order = fixed + preferred + [
+    order = pinned + preferred + [
         column for column in available if column not in preferred
     ]
 
@@ -99,18 +135,23 @@ def build_aligners_grid_options(
         config = {
             "field": column,
             "headerName": LABELS.get(column, column.title()),
-            "width": WIDTHS.get(column, 190),
+            "width": WIDTHS.get(column, 150),
+            "minWidth": MIN_WIDTHS.get(column, 90),
+            "maxWidth": MAX_WIDTHS.get(column, 320),
             "editable": can_edit,
             "hide": column in hidden,
         }
-        if column in fixed:
+        if column != "SELECCIONAR":
+            config["tooltipField"] = column
+        if column in pinned:
             config.update(
                 pinned="left",
                 lockPinned=True,
                 lockPosition=True,
                 suppressMovable=True,
-                headerClass="lab-header-fixed",
             )
+        if column in system_fixed:
+            config["headerClass"] = "lab-header-fixed"
         elif column in automatic and can_edit:
             config["headerClass"] = "lab-header-auto-editable"
         elif column in automatic:
@@ -173,7 +214,7 @@ def build_aligners_grid_options(
             )
         elif column in automatic:
             config["cellClass"] = "lab-cell-automatic"
-        elif column not in fixed:
+        elif column not in system_fixed:
             config["cellClass"] = "lab-cell-readonly"
 
         if column in palettes:
@@ -211,6 +252,13 @@ def build_aligners_grid_options(
         "rowHeight": 36,
         "headerHeight": 42,
         "animateRows": False,
+        "autoSizeStrategy": {
+            "type": "fitCellContents",
+            "skipHeader": False,
+            "defaultMinWidth": 90,
+        },
+        "suppressColumnVirtualisation": True,
+        "enableBrowserTooltips": True,
         "singleClickEdit": True,
         "stopEditingWhenCellsLoseFocus": True,
         "suppressScrollOnNewData": True,

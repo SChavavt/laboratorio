@@ -25,7 +25,7 @@ COLLECT_ROWS = JsCode("""function(params) {
 }""")
 
 GRID_CSS = {
-    ".ag-root-wrapper": {"border": "2px solid #B199D4", "border-radius": "12px"},
+    ".ag-root-wrapper": {"border": "2px solid #B199D4", "border-radius": "12px", "width": "100%"},
     ".ag-header": {"background": "#594080", "color": "#FFFFFF"},
     ".ag-header-cell": {"border-right": "1px solid #FFFFFF26"},
     ".lab-header-fixed": {"background": "#493064 !important"},
@@ -79,28 +79,48 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     """Mantiene opciones ligadas a la fotografía guardada, incluso tras editar STATUS."""
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
-              "NOMBRE PACIENTE": "Paciente", "DETALLE SEMÁFORO": "Motivo del semáforo",
+              "NOMBRE PACIENTE": "Paciente", "DETALLE COMENTARIOS": "Comentarios",
+              "DETALLE SEMÁFORO": "Motivo del semáforo",
               "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
               "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano"}
-    widths = {"SELECCIONAR": 65, "Columna 1": 90, "SEMÁFORO": 160, "APARATO": 140,
-              "STATUS": 300, "NOMBRE DOCTOR": 200, "NOMBRE PACIENTE": 200, "DETALLE SEMÁFORO": 380}
-    default_order = ["SELECCIONAR", "Columna 1", "SEMÁFORO", "APARATO", "STATUS", "NOMBRE DOCTOR",
-             "NOMBRE PACIENTE", "DETALLE COMENTARIOS", "RESPONSABLE", "HORAS EN ETAPA",
-             "PLAZO HORAS", "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
-    fixed = [column for column in ["SELECCIONAR", "Columna 1", "SEMÁFORO"] if column in grid]
-    available = [column for column in grid if column not in fixed]
+    widths = {"SELECCIONAR": 65, "Columna 1": 90, "SEMÁFORO": 145, "APARATO": 130,
+              "STATUS": 230, "NOMBRE DOCTOR": 165, "NOMBRE PACIENTE": 165,
+              "DETALLE COMENTARIOS": 220, "DETALLE SEMÁFORO": 300}
+    minimum_widths = {"SELECCIONAR": 60, "Columna 1": 82, "SEMÁFORO": 125, "APARATO": 105,
+                      "STATUS": 165, "NOMBRE DOCTOR": 125, "NOMBRE PACIENTE": 125,
+                      "DETALLE COMENTARIOS": 170}
+    maximum_widths = {"SELECCIONAR": 72, "Columna 1": 115, "SEMÁFORO": 165, "APARATO": 210,
+                      "STATUS": 300, "NOMBRE DOCTOR": 230, "NOMBRE PACIENTE": 230,
+                      "DETALLE COMENTARIOS": 340, "DETALLE SEMÁFORO": 390}
+    business_order = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
+    default_order = [*business_order, "RESPONSABLE", "HORAS EN ETAPA",
+                     "PLAZO HORAS", "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
+    system_fixed = [column for column in ["SELECCIONAR", "Columna 1", "SEMÁFORO"] if column in grid]
+    business_fixed = [column for column in business_order if column in grid]
+    pinned = system_fixed + business_fixed
+    available = [column for column in grid if column not in pinned]
     preferred = [column for column in (preferred_order or []) if column in available]
     fallback = [column for column in default_order if column in available and column not in preferred]
-    order = fixed + preferred + fallback + [column for column in available if column not in {*preferred, *fallback}]
+    order = pinned + preferred + fallback + [column for column in available if column not in {*preferred, *fallback}]
     hidden_columns = set(hidden_columns or [])
     columns = []
     for column in order:
         can_edit = column in editable
-        config = {"field": column, "headerName": labels.get(column, column.title()),
-                  "width": widths.get(column, 200), "editable": can_edit, "hide": column in hidden_columns}
-        if column in {"SELECCIONAR", "Columna 1", "SEMÁFORO"}:
-            config.update(pinned="left", lockPinned=True, lockPosition=True, suppressMovable=True,
-                          headerClass="lab-header-fixed")
+        config = {
+            "field": column,
+            "headerName": labels.get(column, column.title()),
+            "width": widths.get(column, 150),
+            "minWidth": minimum_widths.get(column, 90),
+            "maxWidth": maximum_widths.get(column, 320),
+            "editable": can_edit,
+            "hide": column in hidden_columns,
+        }
+        if column != "SELECCIONAR":
+            config["tooltipField"] = column
+        if column in pinned:
+            config.update(pinned="left", lockPinned=True, lockPosition=True, suppressMovable=True)
+        if column in system_fixed:
+            config["headerClass"] = "lab-header-fixed"
         elif column in automatic and can_edit:
             config["headerClass"] = "lab-header-auto-editable"
         elif column in automatic:
@@ -134,7 +154,7 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
             config["cellClass"] = "lab-cell-editable lab-cell-automatic" if column in automatic else "lab-cell-editable"
         elif column in automatic:
             config["cellClass"] = "lab-cell-automatic"
-        elif column not in fixed:
+        elif column not in system_fixed:
             config["cellClass"] = "lab-cell-readonly"
         if column in palettes:
             config["cellStyle"] = JsCode("""function(p) {
@@ -151,6 +171,8 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         "columnDefs": columns, "context": {"stageOptions": stage_options, "palettes": palettes},
         "defaultColDef": {"resizable": True, "sortable": True, "filter": False, "cellDataType": False},
         "rowHeight": 36, "headerHeight": 42, "animateRows": False,
+        "autoSizeStrategy": {"type": "fitCellContents", "skipHeader": False, "defaultMinWidth": 90},
+        "suppressColumnVirtualisation": True, "enableBrowserTooltips": True,
         "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True,
         "suppressScrollOnNewData": True, "suppressFieldDotNotation": True,
         "localeText": {"noRowsToShow": "No hay pedidos", "loadingOoo": "Cargando…",

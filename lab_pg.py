@@ -1388,6 +1388,8 @@ def logout_user() -> None:
         "aligners_editor_key",
         "aligners_editor_baseline",
         "aligners_feedback",
+        WORKBENCH_SIGNAL_FILTER_KEY,
+        "aligners_signal_filter",
     ]:
         st.session_state.pop(key, None)
     clear_persisted_login_url()
@@ -4842,6 +4844,7 @@ WORKBENCH_SIGNAL_COLORS = {
     "⚪ Sin medición": ("#F1F5F9", "#475569"),
 }
 WORKBENCH_FIXED_COLUMNS = {"SELECCIONAR", ID_COLUMN, "SEMÁFORO"}
+WORKBENCH_SIGNAL_FILTER_KEY = "workbench_signal_filter"
 USER_PREFERENCE_HEADERS = ["USUARIO", "ORDEN_COLUMNAS", "ACTUALIZADO"]
 
 
@@ -5213,6 +5216,48 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
                 st.dataframe(history[fields], hide_index=True, use_container_width=True)
 
 
+def set_workbench_signal_filter(signal: str) -> None:
+    """Actualiza el semáforo desde las tarjetas superiores."""
+
+    st.session_state[WORKBENCH_SIGNAL_FILTER_KEY] = (
+        signal if signal in {"Todos", *WORKBENCH_SIGNAL_COLORS} else "Todos"
+    )
+
+
+def current_workbench_signal_filter() -> str:
+    signal = st.session_state.get(WORKBENCH_SIGNAL_FILTER_KEY, "Todos")
+    if signal not in {"Todos", *WORKBENCH_SIGNAL_COLORS}:
+        signal = "Todos"
+        st.session_state[WORKBENCH_SIGNAL_FILTER_KEY] = signal
+    return signal
+
+
+def render_workbench_signal_cards(table: pd.DataFrame, pending: bool) -> str:
+    """Convierte los contadores en filtros de semáforo de un solo clic."""
+
+    selected = current_workbench_signal_filter()
+    cards = [
+        ("total", "🦷 Pedidos activos", "Todos", len(table)),
+        ("red", "🔴 Atrasado", "🔴 Atrasado", int(table["SEMÁFORO"].eq("🔴 Atrasado").sum())),
+        ("amber", "🟡 Por vencer", "🟡 Por vencer", int(table["SEMÁFORO"].eq("🟡 Por vencer").sum())),
+        ("green", "🟢 En tiempo", "🟢 En tiempo", int(table["SEMÁFORO"].eq("🟢 En tiempo").sum())),
+        ("gray", "⚪ Sin medición", "⚪ Sin medición", int(table["SEMÁFORO"].eq("⚪ Sin medición").sum())),
+    ]
+    for column, (tone, label, signal, value) in zip(st.columns(len(cards)), cards):
+        with column.container(key=f"lab_signal_{tone}"):
+            st.button(
+                f"{label}\n\n**{value}**",
+                key=f"workbench_signal_card_{tone}",
+                type="primary" if selected == signal else "secondary",
+                disabled=pending,
+                use_container_width=True,
+                on_click=set_workbench_signal_filter,
+                args=(signal,),
+                help="Mostrar todos los pedidos" if signal == "Todos" else f"Filtrar por {label}",
+            )
+    return selected
+
+
 def render_workbench(current_user: str) -> None:
     """Renderiza Seguimiento dentro del fragmento de la pestaña activa."""
     snapshot = st.session_state.get("workbench_snapshot")
@@ -5237,14 +5282,8 @@ def render_workbench(current_user: str) -> None:
             st.toast("Guardado: " + ", ".join(saved), icon="✅")
         if errors:
             st.session_state["workbench_save_errors"] = errors
-    metrics = st.columns(5)
-    with metrics[0].container(key="lab_total"):
-        st.metric("🦷 Pedidos activos", len(table))
-    for container, signal, color in zip(metrics[1:], ["🔴 Atrasado", "🟡 Por vencer", "🟢 En tiempo", "⚪ Sin medición"],
-                                        ["red", "amber", "green", "gray"]):
-        with container.container(key=f"lab_{color}"):
-            st.metric(signal, int(table["SEMÁFORO"].eq(signal).sum()))
-    st.caption("Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes. "
+    signal = render_workbench_signal_cards(table, pending)
+    st.caption("Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes. "
                "Se conservan los plazos hábiles de lunes a viernes y las alertas especiales de pagos.")
     if table.empty:
         st.info("No hay pedidos activos para mostrar.")
@@ -5253,9 +5292,16 @@ def render_workbench(current_user: str) -> None:
                 if pending else "✨ Listo para trabajar · Edita las celdas habilitadas y guarda tus cambios.")
     bar_class = "is-pending" if pending else "is-ready"
     st.markdown(f'<div class="lab-edit-bar {bar_class}" role="status">{bar_text}</div>', unsafe_allow_html=True)
-    filters = st.columns([2, 1, 1, 1])
+    filters = st.columns([2.2, 1.6, 1.2, 1.2])
     search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
-    signal = filters[1].selectbox("Semáforo", ["Todos", *WORKBENCH_SIGNAL_COLORS], disabled=pending, key="workbench_signal")
+    apparatus_options = sorted(set(table[APARATO_COLUMN].str.strip()) - {""}) if APARATO_COLUMN in table else []
+    apparatuses = filters[1].multiselect(
+        "Aparato",
+        apparatus_options,
+        disabled=pending,
+        key=f"workbench_filter_{APARATO_COLUMN}",
+        help="Puedes elegir uno o varios, por ejemplo TIGER + DISTALIZADOR.",
+    )
     owner_values = sorted({clean_cell(value).strip() for value in table["RESPONSABLE"] if clean_cell(value).strip()})
     owner_options = ["Todos", *owner_values]
     owner_default = workbench_default_owner(current_user, owner_values)
@@ -5265,9 +5311,9 @@ def render_workbench(current_user: str) -> None:
         st.session_state["workbench_owner_active_user"] = current_user
     owner = filters[2].selectbox("Responsable", owner_options, disabled=pending, key="workbench_owner")
     priority = filters[3].selectbox("Orden", ["Orden de la hoja", "Atender urgentes primero"], disabled=pending, key="workbench_order")
-    more_filters = st.columns(4)
-    chosen = {}
-    for container, column in zip(more_filters, [APARATO_COLUMN, STATUS_COLUMN, "VENDEDOR", "PAGO"]):
+    more_filters = st.columns(3)
+    chosen = {APARATO_COLUMN: apparatuses}
+    for container, column in zip(more_filters, [STATUS_COLUMN, "VENDEDOR", "PAGO"]):
         options = sorted(set(table[column].str.strip()) - {""}) if column in table else []
         chosen[column] = container.multiselect(column.title(), options, disabled=pending,
                                               format_func=lambda value, name=column: display_selectbox_value(name, value),
@@ -5292,7 +5338,7 @@ def render_workbench(current_user: str) -> None:
         help="Oculta las columnas que la app llena o calcula; Folio permanece visible.",
     )
     visibility[1].markdown(
-        '<div class="lab-column-legend"><span class="readonly">🔒 Fijas: Folio y Semáforo</span>'
+        '<div class="lab-column-legend"><span class="readonly">🔒 Fijas: Folio, Semáforo y columnas principales</span>'
         '<span class="editable">✎ Editable manual</span>'
         '<span class="auto-editable">✎⚙ Editable automática</span>'
         '<span class="automatic">⚙ Cálculo automático</span></div>',
@@ -5365,23 +5411,33 @@ def render_workbench(current_user: str) -> None:
 
 
 def workbench_tab_options(current_user: str) -> list[str]:
-    options = ["📋 Seguimiento"]
-    if current_user in {"Admin", "Jime"}:
-        options.extend(["➕ Nuevo pedido", "📨 Respuestas de Forms"])
-    if current_user == "Admin":
-        options.append("⚙️ Procesos y plazos")
-    return options
+    """Restaura las pestañas operativas que corresponden a cada usuario."""
+
+    legacy_tabs = USER_VISIBLE_TABS.get(current_user, [])
+    return ["📋 Seguimiento", *(APP_TAB_OPTIONS[key] for key in legacy_tabs)]
 
 
 def render_workbench_auxiliary(label: str, current_user: str) -> None:
-    if label == "➕ Nuevo pedido":
+    if label == APP_TAB_OPTIONS["nuevo"]:
         if workbench_has_pending_edits():
             st.info("Guarda o descarta los cambios de Seguimiento antes de crear un pedido.")
             return
         render_nuevo_pedido_tab()
-    elif label == "📨 Respuestas de Forms":
-        render_estefano_forms_review(user_can_edit_tab(current_user, "Jime"))
-    elif label == "⚙️ Procesos y plazos":
+    elif label == APP_TAB_OPTIONS["estefano"]:
+        render_estefano_tab(current_user)
+    elif label == APP_TAB_OPTIONS["jime"]:
+        render_jime_tab(current_user)
+    elif label == APP_TAB_OPTIONS["pagos"]:
+        render_pagos_tab(current_user)
+    elif label == APP_TAB_OPTIONS["lesly"]:
+        render_lesly_tab(current_user)
+    elif label == APP_TAB_OPTIONS["vero"]:
+        render_vero_tab(current_user)
+    elif label == APP_TAB_OPTIONS["alertas"]:
+        render_alertas_tab(current_user)
+    elif label == APP_TAB_OPTIONS["todos"]:
+        render_todos_tab(current_user)
+    elif label == APP_TAB_OPTIONS["procesos"]:
         render_procesos_tab()
 
 
@@ -5537,6 +5593,49 @@ def apply_app_shell_css() -> None:
         .st-key-lab_amber [data-testid="stMetric"] {background: linear-gradient(120deg,#FFE7AB,#FFF3D7); border-color: #DBA131; color: #885A08;}
         .st-key-lab_green [data-testid="stMetric"] {background: linear-gradient(120deg,#BFEBDC,#E0F7EE); border-color: #37A989; color: #13654E;}
         .st-key-lab_gray [data-testid="stMetric"] {background: linear-gradient(120deg,#DCE3F2,#EBEFF8); border-color: #8193B4; color: #4C5E7D;}
+        .st-key-lab_signal_total button,
+        .st-key-lab_signal_red button,
+        .st-key-lab_signal_amber button,
+        .st-key-lab_signal_green button,
+        .st-key-lab_signal_gray button {
+            position: relative; min-height: 96px; justify-content: flex-start;
+            padding: 14px 16px; border-width: 2px; border-radius: 14px;
+            text-align: left; transition: transform 150ms ease, box-shadow 150ms ease;
+        }
+        .st-key-lab_signal_total button {background:linear-gradient(120deg,#E4D6FF,#EEE7FF) !important;border-color:#8C62D2 !important;color:#4C2883 !important;}
+        .st-key-lab_signal_red button {background:linear-gradient(120deg,#FFD8DF,#FFECEF) !important;border-color:#DF5875 !important;color:#A72B48 !important;}
+        .st-key-lab_signal_amber button {background:linear-gradient(120deg,#FFE7AB,#FFF3D7) !important;border-color:#DBA131 !important;color:#885A08 !important;}
+        .st-key-lab_signal_green button {background:linear-gradient(120deg,#BFEBDC,#E0F7EE) !important;border-color:#37A989 !important;color:#13654E !important;}
+        .st-key-lab_signal_gray button {background:linear-gradient(120deg,#DCE3F2,#EBEFF8) !important;border-color:#8193B4 !important;color:#4C5E7D !important;}
+        .st-key-lab_signal_total button p,
+        .st-key-lab_signal_red button p,
+        .st-key-lab_signal_amber button p,
+        .st-key-lab_signal_green button p,
+        .st-key-lab_signal_gray button p {
+            color: inherit !important; white-space: pre-line; line-height: 1.15; text-align: left;
+        }
+        .st-key-lab_signal_total button strong,
+        .st-key-lab_signal_red button strong,
+        .st-key-lab_signal_amber button strong,
+        .st-key-lab_signal_green button strong,
+        .st-key-lab_signal_gray button strong {display:block;margin-top:7px;font-size:1.75rem;line-height:1;font-weight:850;}
+        .st-key-lab_signal_total button[kind="primary"],
+        .st-key-lab_signal_red button[kind="primary"],
+        .st-key-lab_signal_amber button[kind="primary"],
+        .st-key-lab_signal_green button[kind="primary"],
+        .st-key-lab_signal_gray button[kind="primary"] {
+            transform: translateY(-2px); border-width: 3px !important;
+            box-shadow: 0 0 0 3px #5C38A633, 0 10px 22px #3923652B !important;
+        }
+        .st-key-lab_signal_total button[kind="primary"]::after,
+        .st-key-lab_signal_red button[kind="primary"]::after,
+        .st-key-lab_signal_amber button[kind="primary"]::after,
+        .st-key-lab_signal_green button[kind="primary"]::after,
+        .st-key-lab_signal_gray button[kind="primary"]::after {
+            content: "✓"; position:absolute; right:12px; top:10px; width:23px; height:23px;
+            display:grid; place-items:center; border-radius:50%; background:#4F317D; color:#FFF;
+            font-size:.78rem; font-weight:900;
+        }
         .lab-edit-bar {
             height: 40px; min-height: 40px; box-sizing: border-box; display: flex; align-items: center;
             padding: 0 14px; border-radius: 10px; border: 1px solid #CDBCEB;
@@ -5615,18 +5714,31 @@ def apply_app_shell_css() -> None:
             background: #FFFFFF16; border: 1px solid #FFFFFF38;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button {
-            flex: 1; min-height: 42px; border-radius: 9px; border: 1px solid transparent;
-            color: #F8F4FF; font-weight: 750;
+            flex: 1; min-height: 42px; border-radius: 9px; font-weight: 780;
+            transition: transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"] {
-            background: #FFF; border-color: #FFF; color: #4B2A78;
-            box-shadow: 0 4px 12px #1D123E3D;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"] {
+            background: #25184480 !important; border: 1px solid #FFFFFF42 !important;
+            color: #F4EEFF !important; opacity: .82;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"] p {
-            color: #4B2A78;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"]:not(:disabled):hover {
+            background: #FFFFFF24 !important; border-color: #FFFFFF73 !important; opacity: 1;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="false"] p {
-            color: #F8F4FF;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"] {
+            position: relative; transform: translateY(-1px);
+            background: linear-gradient(115deg,#E9DFFF,#CFF5EC) !important;
+            border: 2px solid #FFFFFF !important; color: #3D2468 !important;
+            box-shadow: 0 0 0 3px #FFFFFF24, 0 8px 18px #1D123E52 !important;
+            opacity: 1;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"]::before {
+            content: "✓"; margin-right: 7px; width: 18px; height: 18px; display: grid;
+            place-items: center; border-radius: 50%; background: #56328C; color: #FFF;
+            font-size: .68rem; font-weight: 900;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"] p,
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"] p {
+            color: inherit !important;
         }
         @media (max-width: 700px) {
             .st-key-lab_workspace_header {padding: 20px;}

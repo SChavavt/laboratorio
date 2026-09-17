@@ -303,6 +303,39 @@ def test_grid_marks_automatic_sheet_date_as_editable(definitions):
     assert columns["FECHA OBJETIVO ENVÍO"]["cellEditorParams"]["withTime"] is False
 
 
+def test_primary_aligner_columns_are_ordered_pinned_and_content_sized(definitions):
+    source = pd.DataFrame([order(**{
+        "TIPO": "Inicial",
+        "ETAPA SOLICITUD": "Primera fase",
+        "DETALLE COMENTARIOS": "Revisar el setup",
+    })])
+    source["SEMÁFORO"] = "⚪ Sin medición"
+    grid = app.display_workbench_df(source, definitions)
+    grid.insert(0, "SELECCIONAR", False)
+    options = app.build_grid_configuration(grid, source, definitions)
+    fields = [item["field"] for item in options["columnDefs"]]
+
+    expected = [
+        "SELECCIONAR",
+        app.ID_COLUMN,
+        "SEMÁFORO",
+        app.STATUS_COLUMN,
+        "TIPO",
+        app.PRODUCT_COLUMN,
+        "ETAPA SOLICITUD",
+        "NOMBRE DOCTOR",
+        "NOMBRE PACIENTE",
+        "DETALLE COMENTARIOS",
+    ]
+    assert fields[:len(expected)] == expected
+    columns = {item["field"]: item for item in options["columnDefs"]}
+    for column in expected:
+        assert columns[column]["pinned"] == "left"
+        assert columns[column]["suppressMovable"] is True
+    assert options["autoSizeStrategy"]["type"] == "fitCellContents"
+    assert options["suppressColumnVirtualisation"] is True
+
+
 def test_aligner_sheet_id_never_reuses_apparatus_sheet_id():
     source = {
         "gsheets": {
@@ -354,6 +387,9 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
+    assert at.button(key="aligners_signal_card_total").type == "primary"
+    assert at.button(key="aligners_signal_card_total").label.startswith("🦷 Pedidos activos")
+    assert all(item.key != "aligners_signal" for item in at.selectbox)
 
 
 def test_only_selected_aligners_tab_executes():
