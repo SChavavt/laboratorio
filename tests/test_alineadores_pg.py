@@ -387,3 +387,13 @@ with (
     assert not at.tabs[0].markdown
     assert [item.value for item in at.tabs[1].markdown] == ["alertas ejecutadas"]
     assert not at.tabs[2].markdown
+
+
+def test_embedded_workspace_reuses_parent_session(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, "ensure_times_headers", lambda: calls.append("headers"))
+    monkeypatch.setattr(app, "render_app_tabs", lambda user: calls.append(user))
+
+    app.render_embedded_workspace("Jime")
+
+    assert calls == ["headers", "Jime"]

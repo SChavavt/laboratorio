@@ -19,6 +19,8 @@ from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
 from streamlit.errors import StreamlitAPIException
+
+import alineadores_pg
 from workbench_grid import build_grid_options, render_grid
 
 # ==============================
@@ -87,6 +89,22 @@ TIEMPOS_HEADERS = [
 ]
 
 ACTIVE_USER_LABEL = "Usuario Streamlit"
+LAB_VIEW_APPARATUS = "⚙️ Aparatos"
+LAB_VIEW_ALIGNERS = "🦷 Alineadores"
+LAB_WORKSPACE_VIEWS = (LAB_VIEW_APPARATUS, LAB_VIEW_ALIGNERS)
+LAB_WORKSPACE_STATE_KEY = "lab_workspace_view"
+LAB_WORKSPACE_DETAILS = {
+    LAB_VIEW_APPARATUS: {
+        "title": "Control de aparatos",
+        "subtitle": "Cada pedido, cada etapa. Todo a la vista.",
+        "badge": "⚙️ FLUJO DE APARATOS",
+    },
+    LAB_VIEW_ALIGNERS: {
+        "title": "Control de alineadores",
+        "subtitle": "Flujos por producto, pausas visibles y tiempos bajo control.",
+        "badge": "🦷 FLUJO DE ALINEADORES",
+    },
+}
 APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
@@ -1285,24 +1303,55 @@ def get_query_param_value(key: str) -> str:
     return clean_cell(value).strip()
 
 
-def persist_login_in_url(username: str) -> None:
-    """Guarda el usuario autenticado en el URL para abrir la app ya loggeado."""
+def login_url_signature(
+    username: str, passwords: dict[str, str] | None = None
+) -> str:
+    """Firma el usuario recordado para impedir elevar permisos editando el URL."""
 
+    configured = get_user_passwords() if passwords is None else passwords
+    signing_value = clean_cell(configured.get(username, "")).strip()
+    if username not in APP_USERS or not signing_value:
+        return ""
+    return hmac.new(
+        signing_value.encode(),
+        f"control-laboratorio:{username}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def valid_url_login(
+    username: str,
+    signature: str,
+    passwords: dict[str, str] | None = None,
+) -> bool:
+    expected = login_url_signature(username, passwords)
+    return bool(expected and signature and hmac.compare_digest(signature, expected))
+
+
+def persist_login_in_url(username: str) -> None:
+    """Recuerda la sesión en el enlace mediante un usuario firmado."""
+
+    signature = login_url_signature(username)
+    if not signature:
+        return
     st.query_params["usuario"] = username
+    st.query_params["firma"] = signature
 
 
 def clear_persisted_login_url() -> None:
-    """Limpia del URL el usuario recordado."""
+    """Limpia la sesión recordada sin perder la vista de trabajo elegida."""
 
-    if "usuario" in st.query_params:
-        del st.query_params["usuario"]
+    for key in ("usuario", "firma"):
+        if key in st.query_params:
+            del st.query_params[key]
 
 
 def restore_user_from_url() -> str:
-    """Restaura sesión desde ?usuario=Nombre cuando el usuario existe."""
+    """Restaura únicamente una sesión cuya firma coincide con el usuario."""
 
-    url_user = get_query_param_value("usuario")
-    return url_user if url_user in USER_VISIBLE_TABS else ""
+    username = get_query_param_value("usuario")
+    signature = get_query_param_value("firma")
+    return username if valid_url_login(username, signature) else ""
 
 
 def set_authenticated_user(username: str, *, remember_in_url: bool = True) -> None:
@@ -1328,8 +1377,18 @@ def login_user(username: str, password: str) -> bool:
 def logout_user() -> None:
     """Cierra sesión y limpia selección de usuario/pestaña."""
 
-    for key in ["authenticated_user", "current_user", "active_app_tab", "workbench_snapshot",
-                "workbench_editor_key", "workbench_editor_baseline"]:
+    for key in [
+        "authenticated_user",
+        "current_user",
+        "active_app_tab",
+        "workbench_snapshot",
+        "workbench_editor_key",
+        "workbench_editor_baseline",
+        "aligners_snapshot",
+        "aligners_editor_key",
+        "aligners_editor_baseline",
+        "aligners_feedback",
+    ]:
         st.session_state.pop(key, None)
     clear_persisted_login_url()
 
@@ -5346,8 +5405,101 @@ def render_workbench_tabs(current_user: str) -> None:
         break
 
 
-def main() -> None:
-    st.set_page_config(page_title="Control de Aparatos – ARTTDLAB", layout="wide")
+def normalize_workspace_view(value: Any) -> str:
+    """Normaliza etiquetas y parámetros del URL a una de las dos áreas."""
+
+    return (
+        LAB_VIEW_ALIGNERS
+        if "ALINEADOR" in normalize_text(value)
+        else LAB_VIEW_APPARATUS
+    )
+
+
+def current_workspace_view() -> str:
+    """Inicializa la vista desde el URL y luego la conserva en la sesión."""
+
+    if LAB_WORKSPACE_STATE_KEY not in st.session_state:
+        st.session_state[LAB_WORKSPACE_STATE_KEY] = normalize_workspace_view(
+            get_query_param_value("vista")
+        )
+    else:
+        st.session_state[LAB_WORKSPACE_STATE_KEY] = normalize_workspace_view(
+            st.session_state[LAB_WORKSPACE_STATE_KEY]
+        )
+    return st.session_state[LAB_WORKSPACE_STATE_KEY]
+
+
+def persist_workspace_view() -> None:
+    """Conserva la sección elegida al recargar o compartir el enlace."""
+
+    selected_view = normalize_workspace_view(
+        st.session_state.get(LAB_WORKSPACE_STATE_KEY, LAB_VIEW_APPARATUS)
+    )
+    st.query_params["vista"] = (
+        "alineadores" if selected_view == LAB_VIEW_ALIGNERS else "aparatos"
+    )
+
+
+def workspace_has_pending_edits(selected_view: str) -> bool:
+    """Evita perder cambios de una tabla al cambiar de área."""
+
+    if selected_view == LAB_VIEW_APPARATUS:
+        return workbench_has_pending_edits()
+
+    snapshot = st.session_state.get("aligners_snapshot") or {}
+    definitions = snapshot.get("definitions") or {}
+    return alineadores_pg.pending_change_count(definitions) > 0
+
+
+def render_workspace_header() -> str:
+    """Muestra identidad y selector de área dentro del recuadro principal."""
+
+    selected_view = current_workspace_view()
+    details = LAB_WORKSPACE_DETAILS[selected_view]
+    has_pending_edits = workspace_has_pending_edits(selected_view)
+    with st.container(key="lab_workspace_header"):
+        copy_column, switch_column = st.columns(
+            [1.65, 1], gap="large", vertical_alignment="center"
+        )
+        with copy_column:
+            st.markdown(
+                f"""<div class="lab-workspace-brand">ARTTDLAB / LABORATORIO</div>
+                <h1 class="lab-workspace-title">{details['title']}</h1>
+                <p class="lab-workspace-subtitle">{details['subtitle']}</p>""",
+                unsafe_allow_html=True,
+            )
+        with switch_column:
+            st.markdown(
+                '<div class="lab-workspace-switch-label">CAMBIAR VISTA</div>',
+                unsafe_allow_html=True,
+            )
+            selected_view = st.segmented_control(
+                "Vista de trabajo",
+                LAB_WORKSPACE_VIEWS,
+                key=LAB_WORKSPACE_STATE_KEY,
+                selection_mode="single",
+                required=True,
+                on_change=persist_workspace_view,
+                disabled=has_pending_edits,
+                label_visibility="collapsed",
+                width="stretch",
+            ) or LAB_VIEW_APPARATUS
+            selected_view = normalize_workspace_view(selected_view)
+            st.markdown(
+                f'<div class="lab-workspace-current">Vista actual: '
+                f'<strong>{details["badge"]}</strong></div>',
+                unsafe_allow_html=True,
+            )
+            if has_pending_edits:
+                st.markdown(
+                    '<div class="lab-workspace-pending">Guarda o descarta los '
+                    'cambios de la tabla para cambiar de vista.</div>',
+                    unsafe_allow_html=True,
+                )
+    return selected_view
+
+
+def apply_app_shell_css() -> None:
     st.markdown("""<style>
         .stApp {
             background: radial-gradient(ellipse at 0 0, #DED1FF 0, transparent 48%),
@@ -5357,24 +5509,6 @@ def main() -> None:
         [data-testid="stHeader"] {background: transparent;}
         [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
         h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
-        .lab-hero {
-            position: relative; overflow: hidden; padding: 24px 30px; margin: 0 0 20px;
-            display: flex; justify-content: space-between; align-items: center; gap: 20px;
-            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
-            border: 1px solid #9A80CD; border-radius: 20px;
-            box-shadow: 0 12px 30px #39236522;
-        }
-        .lab-hero::after {
-            content: ''; width: 230px; height: 230px; border: 38px solid #FFFFFF0D;
-            border-radius: 50%; position: absolute; right: 100px; top: -130px; pointer-events: none;
-        }
-        .lab-hero h1 {color: #FFF; font-size: 2rem; margin: 6px 0; padding: 0;}
-        .lab-hero p {color: #E9E1FF; margin: 0; font-size: .93rem;}
-        .lab-brand {font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;}
-        .lab-hero-badge {
-            background: #FFFFFF18; border: 1px solid #FFFFFF42; border-radius: 14px;
-            padding: 12px 18px; font-size: .84rem; color: #FFF; white-space: nowrap;
-        }
         [data-baseweb="tab-list"] {
             gap: 8px; padding: 7px; border-radius: 15px; background: #E2D8F3;
             border: 1px solid #CBBDE3; margin-bottom: 12px;
@@ -5443,31 +5577,110 @@ def main() -> None:
             color: #58436F !important; -webkit-text-fill-color: #58436F; opacity: 1;
         }
         .lab-stage-chip {display: inline-block; border-radius: 9px; padding: 8px 13px; font-size: .85rem; font-weight: 750; margin-bottom: 10px;}
+        .st-key-lab_workspace_header {
+            position: relative; overflow: hidden; padding: 22px 28px; margin: 0 0 20px;
+            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
+            border: 1px solid #9A80CD; border-radius: 20px;
+            box-shadow: 0 12px 30px #39236522;
+        }
+        .st-key-lab_workspace_header::after {
+            content: ''; width: 250px; height: 250px; border: 38px solid #FFFFFF0D;
+            border-radius: 50%; position: absolute; right: 90px; top: -145px; pointer-events: none;
+        }
+        .st-key-lab_workspace_header [data-testid="stHorizontalBlock"] {
+            position: relative; z-index: 1;
+        }
+        .lab-workspace-brand {
+            font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;
+        }
+        .lab-workspace-title {
+            color: #FFF; font-size: 2rem; line-height: 1.12; margin: 6px 0; padding: 0;
+        }
+        .lab-workspace-subtitle {color: #E9E1FF; margin: 0; font-size: .93rem;}
+        .lab-workspace-switch-label {
+            color: #E5DAFF; font-size: .69rem; font-weight: 850; letter-spacing: .13em;
+            margin: 0 0 7px;
+        }
+        .lab-workspace-current {
+            margin-top: 8px; color: #F2ECFF; font-size: .78rem; text-align: center;
+        }
+        .lab-workspace-pending {
+            margin-top: 6px; padding: 6px 9px; border-radius: 8px; text-align: center;
+            background: #FFF0C8; color: #6E4800; font-size: .72rem; font-weight: 700;
+        }
+        .st-key-lab_workspace_header [data-testid="stSegmentedControl"],
+        .st-key-lab_workspace_header .st-key-lab_workspace_view {width: 100%;}
+        .st-key-lab_workspace_header .st-key-lab_workspace_view > div {
+            width: 100%; padding: 5px; gap: 5px; border-radius: 13px;
+            background: #FFFFFF16; border: 1px solid #FFFFFF38;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button {
+            flex: 1; min-height: 42px; border-radius: 9px; border: 1px solid transparent;
+            color: #F8F4FF; font-weight: 750;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"] {
+            background: #FFF; border-color: #FFF; color: #4B2A78;
+            box-shadow: 0 4px 12px #1D123E3D;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"] p {
+            color: #4B2A78;
+        }
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="false"] p {
+            color: #F8F4FF;
+        }
         @media (max-width: 700px) {
-            .lab-hero {padding: 20px;}
-            .lab-hero h1 {font-size: 1.55rem;}
-            .lab-hero-badge {display: none;}
+            .st-key-lab_workspace_header {padding: 20px;}
+            .lab-workspace-title {font-size: 1.55rem;}
             [data-baseweb="tab"] {padding: 0 12px;}
         }
         @media (prefers-reduced-motion: reduce) {
             [data-baseweb="tab"], [data-testid="stMetric"] {transition: none;}
         }
         </style>""", unsafe_allow_html=True)
-    st.markdown("""<section class="lab-hero">
-        <div><div class="lab-brand">ARTTDLAB / LABORATORIO</div>
-        <h1>Control de aparatos</h1><p>Cada pedido, cada etapa. Todo a la vista.</p></div>
-        <div class="lab-hero-badge">🦷 Seguimiento de laboratorio</div>
-        </section>""", unsafe_allow_html=True)
+
+
+def render_selected_workspace(selected_view: str, current_user: str) -> None:
+    """Carga solamente los datos y componentes del área visible."""
+
+    if selected_view == LAB_VIEW_ALIGNERS:
+        alineadores_pg.apply_custom_css()
+        alineadores_pg.render_embedded_workspace(current_user)
+        return
+
+    ensure_tiempos_headers()
+    render_workbench_tabs(current_user)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Control de Laboratorio – ARTTDLAB", layout="wide")
+    apply_app_shell_css()
+    selected_view = render_workspace_header()
     try:
         current_user = require_authenticated_user()
-        if current_user is not None:
-            ensure_tiempos_headers()
-            render_workbench_tabs(current_user)
+        if current_user is None:
+            return
+        render_selected_workspace(selected_view, current_user)
     except Exception as exc:
         if is_google_sheets_rate_limit_error(exc):
-            st.error("Google Sheets alcanzó el límite temporal de lecturas. Espera 1 minuto y actualiza los datos.")
+            st.error(
+                "Google Sheets alcanzó el límite temporal de lecturas. "
+                "Espera 1 minuto y actualiza los datos."
+            )
+        elif isinstance(exc, gspread.exceptions.SpreadsheetNotFound):
+            source_name = (
+                "Control ALINEADORES"
+                if selected_view == LAB_VIEW_ALIGNERS
+                else "CONTROL APARATOS"
+            )
+            st.error(
+                f"La cuenta de servicio no tiene acceso a {source_name}. "
+                "Comparte ese archivo con el client_email de google_credentials."
+            )
         else:
-            st.error("Ocurrió un problema al cargar la app.")
+            area_name = (
+                "alineadores" if selected_view == LAB_VIEW_ALIGNERS else "aparatos"
+            )
+            st.error(f"Ocurrió un problema al cargar la vista de {area_name}.")
             st.exception(exc)
 
 

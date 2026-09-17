@@ -588,3 +588,39 @@ app.main()
     assert at.tabs[0].label == "📋 Seguimiento"
     assert at.text_input(key="workbench_search").disabled is False
     assert any("Pedido 001" in item.value for item in at.markdown)
+
+
+def test_remembered_lab_user_is_signed_and_cannot_be_renamed():
+    passwords = {"Admin": "admin-secret", "Jime": "jime-secret"}
+    signature = app.login_url_signature("Admin", passwords)
+    assert app.valid_url_login("Admin", signature, passwords)
+    assert not app.valid_url_login("Jime", signature, passwords)
+    assert not app.valid_url_login("Admin", "altered", passwords)
+
+
+def test_unified_app_switches_to_aligners_without_loading_apparatus():
+    from streamlit.testing.v1 import AppTest
+
+    script = f"""
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import streamlit as st
+import lab_pg as app
+
+st.session_state[app.LAB_WORKSPACE_STATE_KEY] = app.LAB_VIEW_ALIGNERS
+st.session_state["apparatus_loaded"] = False
+st.session_state["aligners_loaded"] = ""
+
+app.require_authenticated_user = lambda: "Admin"
+app.ensure_tiempos_headers = lambda: st.session_state.__setitem__("apparatus_loaded", True)
+app.alineadores_pg.apply_custom_css = lambda: None
+app.alineadores_pg.render_embedded_workspace = (
+    lambda user: st.session_state.__setitem__("aligners_loaded", user)
+)
+app.main()
+"""
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert at.session_state["aligners_loaded"] == "Admin"
+    assert at.session_state["apparatus_loaded"] is False
+    assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
