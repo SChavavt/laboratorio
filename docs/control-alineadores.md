@@ -16,8 +16,8 @@ La app unificada utiliza una sola cuenta de servicio y dos IDs independientes:
 ```toml
 [gsheets]
 google_credentials = """{ ... JSON de la cuenta de servicio ... }"""
-sheet_id = "1CI4MxQmOqiSFZiO3h4YR5mvAQWFJrI1emAiBCTU5Xeg"
-alineadores_sheet_id = "1wNKD4bl__w1qMG182xFfu-1NlbcWTZdFEpa-h8ZLtik"
+sheet_id = "<ID_CONTROL_APARATOS>"
+alineadores_sheet_id = "<ID_CONTROL_ALINEADORES>"
 
 [auth.passwords]
 Admin = "..."
