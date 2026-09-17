@@ -5435,7 +5435,6 @@ def persist_workspace_view() -> None:
     selected_view = normalize_workspace_view(
         st.session_state.get(LAB_WORKSPACE_STATE_KEY, LAB_VIEW_APPARATUS)
     )
-    st.session_state[LAB_WORKSPACE_STATE_KEY] = selected_view
     st.query_params["vista"] = (
         "alineadores" if selected_view == LAB_VIEW_ALIGNERS else "aparatos"
     )
@@ -5510,24 +5509,6 @@ def apply_app_shell_css() -> None:
         [data-testid="stHeader"] {background: transparent;}
         [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
         h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
-        .lab-hero {
-            position: relative; overflow: hidden; padding: 24px 30px; margin: 0 0 20px;
-            display: flex; justify-content: space-between; align-items: center; gap: 20px;
-            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
-            border: 1px solid #9A80CD; border-radius: 20px;
-            box-shadow: 0 12px 30px #39236522;
-        }
-        .lab-hero::after {
-            content: ''; width: 230px; height: 230px; border: 38px solid #FFFFFF0D;
-            border-radius: 50%; position: absolute; right: 100px; top: -130px; pointer-events: none;
-        }
-        .lab-hero h1 {color: #FFF; font-size: 2rem; margin: 6px 0; padding: 0;}
-        .lab-hero p {color: #E9E1FF; margin: 0; font-size: .93rem;}
-        .lab-brand {font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;}
-        .lab-hero-badge {
-            background: #FFFFFF18; border: 1px solid #FFFFFF42; border-radius: 14px;
-            padding: 12px 18px; font-size: .84rem; color: #FFF; white-space: nowrap;
-        }
         [data-baseweb="tab-list"] {
             gap: 8px; padding: 7px; border-radius: 15px; background: #E2D8F3;
             border: 1px solid #CBBDE3; margin-bottom: 12px;
@@ -5650,9 +5631,6 @@ def apply_app_shell_css() -> None:
         @media (max-width: 700px) {
             .st-key-lab_workspace_header {padding: 20px;}
             .lab-workspace-title {font-size: 1.55rem;}
-            .lab-hero {padding: 20px;}
-            .lab-hero h1 {font-size: 1.55rem;}
-            .lab-hero-badge {display: none;}
             [data-baseweb="tab"] {padding: 0 12px;}
         }
         @media (prefers-reduced-motion: reduce) {
