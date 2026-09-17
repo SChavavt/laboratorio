@@ -2222,6 +2222,13 @@ def apply_custom_css() -> None:
     )
 
 
+def render_embedded_workspace(current_user: str) -> None:
+    """Renderiza alineadores dentro de lab_pg usando la sesión compartida."""
+
+    ensure_times_headers()
+    render_app_tabs(current_user)
+
+
 def main() -> None:
     st.set_page_config(page_title="Control de Alineadores – ARTTDLAB", layout="wide")
     apply_custom_css()
@@ -2238,8 +2245,7 @@ def main() -> None:
         current_user = require_authenticated_user()
         if current_user is None:
             return
-        ensure_times_headers()
-        render_app_tabs(current_user)
+        render_embedded_workspace(current_user)
     except Exception as exc:
         if is_google_sheets_rate_limit_error(exc):
             st.error("Google Sheets alcanzó el límite temporal de lecturas. Espera un minuto y actualiza.")

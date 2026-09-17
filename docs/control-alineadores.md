@@ -1,51 +1,60 @@
-# Control de alineadores
+# Control de laboratorio unificado
 
-La app `alineadores_pg.py` administra la pestaña `ALINEADORES (nuevo)` del archivo
-Google Sheets **Control ALINEADORES**. Es independiente de `lab_pg.py`, por lo que
-la app actual de Control de aparatos conserva su configuración y comportamiento.
+La única app que debe desplegarse en Streamlit es `lab_pg.py`. Desde su recuadro
+principal se cambia entre **Aparatos** y **Alineadores** sin abrir otro enlace ni
+volver a iniciar sesión.
 
-## Despliegue en Streamlit
+`alineadores_pg.py` se conserva como módulo interno porque contiene la lógica,
+la tabla y los flujos de alineadores; `lab_pg.py` lo carga sólo cuando esa vista
+está activa. Así no se hacen lecturas innecesarias de ambos archivos de Google
+Sheets en cada interacción.
 
-1. Crear una app nueva desde este mismo repositorio y seleccionar
-   `alineadores_pg.py` como archivo principal.
-2. Copiar los mismos secretos de autenticación y la misma cuenta de servicio que
-   utiliza `lab_pg.py`.
-3. Compartir **Control ALINEADORES** con el `client_email` incluido en
-   `google_credentials`, con permiso de editor.
-4. Si se quiere reemplazar el archivo predeterminado, agregar una clave separada:
+## Configuración de Streamlit Secrets
 
-   ```toml
-   [gsheets]
-   alineadores_sheet_id = "1wNKD4bl__w1qMG182xFfu-1NlbcWTZdFEpa-h8ZLtik"
-   ```
+La app unificada utiliza una sola cuenta de servicio y dos IDs independientes:
 
-La clave existente `gsheets.sheet_id` sigue reservada para Control de aparatos y
-la app de alineadores no la reutiliza.
+```toml
+[gsheets]
+google_credentials = """{ ... JSON de la cuenta de servicio ... }"""
+sheet_id = "1CI4MxQmOqiSFZiO3h4YR5mvAQWFJrI1emAiBCTU5Xeg"
+alineadores_sheet_id = "1wNKD4bl__w1qMG182xFfu-1NlbcWTZdFEpa-h8ZLtik"
 
-## Funcionamiento
+[auth.passwords]
+Admin = "..."
+Jime = "..."
+Lesly = "..."
+Vero = "..."
+```
 
-- `PROCESOS POR PRODUCTO` es la fuente de verdad para las etapas y plazos.
-- `BORRADOR TITAN`, `SOLICITUD DE CAMBIOS` e `IMPRESIÓN EN PAUSA` son pausas
-  opcionales; nunca forman parte obligatoria del flujo.
-- Al salir de una pausa se puede elegir la etapa normal correcta para reanudar.
-- `CANCELADO` está disponible en cualquier etapa activa. Los pedidos cancelados y
-  enviados permanecen en la hoja, pero se ocultan de la mesa de trabajo.
-- La app crea `TIEMPOS_ALINEADORES` en el primer arranque si todavía no existe y
-  registra usuario, etapa, inicio, límite, fin, duración y comentario de cada cambio.
-- Los pedidos existentes sin bitácora se muestran en gris. Su medición se inicia
-  explícitamente desde la ficha del pedido para evitar inventar tiempos históricos.
-- Los semáforos usan horas hábiles de lunes a viernes: verde debajo de 80 %, amarillo
-  entre 80 % y 100 %, rojo al vencer y morado durante una pausa.
-- No se asignan responsables por etapa; todos los usuarios pueden trabajar cualquier
-  producto.
-- En Seguimiento, sólo **No. Orden** y **Semáforo** quedan fijos y bloqueados. La
-  casilla **Abrir** sigue siendo únicamente un control de selección. Las demás
-  columnas provenientes de `ALINEADORES (nuevo)` son editables, incluidas las que
-  se llenan automáticamente; los cálculos exclusivos de la vista permanecen
-  automáticos.
+La clave `gsheets.sheet_id` corresponde a **CONTROL APARATOS** y
+`gsheets.alineadores_sheet_id` a **Control ALINEADORES**. Ambos archivos deben
+estar compartidos como editores con el `client_email` incluido en
+`google_credentials`.
+
+## Navegación y sesión
+
+- El selector **Aparatos / Alineadores** vive dentro del encabezado principal.
+- La vista actual aparece escrita en el mismo encabezado.
+- La elección se conserva en el URL como `vista=aparatos` o
+  `vista=alineadores`.
+- El inicio de sesión es único para ambas vistas.
+- El usuario recordado en el enlace lleva una firma; cambiar manualmente
+  `usuario=...` no concede permisos de otro usuario.
+- Al cerrar sesión se conserva la vista elegida.
+
+## Datos de alineadores
+
+- `ALINEADORES (nuevo)` contiene los pedidos.
+- `PROCESOS POR PRODUCTO` es la fuente de verdad para etapas y plazos.
+- `TIEMPOS_ALINEADORES` registra cada cambio y se crea al primer arranque si
+  todavía no existe.
+- Las pausas opcionales siguen siendo `BORRADOR TITAN`,
+  `SOLICITUD DE CAMBIOS` e `IMPRESIÓN EN PAUSA`.
+- Los pedidos enviados o cancelados permanecen en Sheets y se ocultan de la mesa
+  activa.
 
 ## Pruebas
 
 ```bash
-python -m pytest -q tests/test_alineadores_pg.py
+python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py
 ```
