@@ -210,8 +210,19 @@ def test_status_menu_and_columns_expose_visual_categories():
     )
     columns = {column["field"]: column for column in options["columnDefs"]}
     order = [column["field"] for column in options["columnDefs"]]
-    assert order[:5] == ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "NOMBRE PACIENTE", app.APARATO_COLUMN]
+    assert order[:7] == [
+        "SELECCIONAR",
+        app.ID_COLUMN,
+        "SEMÁFORO",
+        app.APARATO_COLUMN,
+        app.STATUS_COLUMN,
+        "NOMBRE DOCTOR",
+        "NOMBRE PACIENTE",
+    ]
     assert columns[app.ID_COLUMN]["suppressMovable"] is True
+    assert columns[app.APARATO_COLUMN]["pinned"] == "left"
+    assert columns[app.STATUS_COLUMN]["pinned"] == "left"
+    assert options["autoSizeStrategy"]["type"] == "fitCellContents"
     assert columns["NOMBRE PACIENTE"]["headerClass"] == "lab-header-editable"
     assert columns["PAGO"]["headerClass"] == "lab-header-editable"
     assert columns["RESPONSABLE"]["headerClass"] == "lab-header-automatic"
@@ -421,18 +432,31 @@ app.main()
     assert not at.exception
     assert len(at.tabs[0].get("component_instance")) == 1
     expected_tabs = {
-        "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms", "⚙️ Procesos y plazos"],
-        "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📨 Respuestas de Forms"],
-        "Lesly": ["📋 Seguimiento"], "Vero": ["📋 Seguimiento"],
+        "Admin": [
+            "📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño",
+            "📋 Recepción y Seguimiento", "💳 Control de Pagos",
+            "🖨️ Impresión y Sinterizado", "🛠️ Confección y Calidad",
+            "⏱️ Alertas", "📋 Todos los Procesos", "⚙️ Procesos por Aparato",
+        ],
+        "Jime": [
+            "📋 Seguimiento", "➕ Nuevo pedido", "📋 Recepción y Seguimiento",
+            "📐 Planeación y Diseño", "💳 Control de Pagos",
+        ],
+        "Lesly": ["📋 Seguimiento", "🖨️ Impresión y Sinterizado"],
+        "Vero": ["📋 Seguimiento", "🛠️ Confección y Calidad"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     assert not at.toggle
     assert not at.get("segmented_control")
     assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
     assert at.selectbox(key="workbench_owner").value == ("JIME" if user == "Jime" else "Todos")
-    assert any("Fijas: Folio y Semáforo" in item.value for item in at.tabs[0].markdown)
+    assert any("Fijas: Folio, Semáforo y columnas principales" in item.value for item in at.tabs[0].markdown)
     assert any("Editable automática" in item.value for item in at.tabs[0].markdown)
-    assert at.metric[0].value == "1"
+    assert all(item.key != "workbench_signal" for item in at.selectbox)
+    assert at.button(key="workbench_signal_card_total").label.startswith("🦷 Pedidos activos")
+    assert at.multiselect(key=f"workbench_filter_{app.APARATO_COLUMN}").label == "Aparato"
+    at.button(key="workbench_signal_card_gray").click().run()
+    assert at.session_state[app.WORKBENCH_SIGNAL_FILTER_KEY] == "⚪ Sin medición"
     at.text_input(key="workbench_search").set_value("no existe").run()
     assert not at.exception
     assert len(at.tabs[0].get("component_instance")) == 0
@@ -452,7 +476,7 @@ app.main()
 '''
     at = AppTest.from_string(script).run()
     assert not at.exception
-    assert at.metric[0].value == "0"
+    assert at.button(key="workbench_signal_card_total").label.endswith("**0**")
 
 
 def test_only_selected_lab_tab_executes():
@@ -477,12 +501,12 @@ with (
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert all(not tab.markdown for tab in at.tabs[1:])
 
-    at.session_state["lab_primary_tabs_Admin"] = "⚙️ Procesos y plazos"
+    at.session_state["lab_primary_tabs_Admin"] = "⚙️ Procesos por Aparato"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[3].markdown] == [
-        "auxiliar ejecutado: ⚙️ Procesos y plazos"
+    assert [item.value for item in at.tabs[9].markdown] == [
+        "auxiliar ejecutado: ⚙️ Procesos por Aparato"
     ]
 
 
@@ -606,18 +630,23 @@ import sys
 sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 import streamlit as st
 import lab_pg as app
+from unittest.mock import patch
 
 st.session_state[app.LAB_WORKSPACE_STATE_KEY] = app.LAB_VIEW_ALIGNERS
 st.session_state["apparatus_loaded"] = False
 st.session_state["aligners_loaded"] = ""
 
-app.require_authenticated_user = lambda: "Admin"
-app.ensure_tiempos_headers = lambda: st.session_state.__setitem__("apparatus_loaded", True)
-app.alineadores_pg.apply_custom_css = lambda: None
-app.alineadores_pg.render_embedded_workspace = (
-    lambda user: st.session_state.__setitem__("aligners_loaded", user)
-)
-app.main()
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_tiempos_headers", lambda: st.session_state.__setitem__("apparatus_loaded", True)),
+    patch.object(app.alineadores_pg, "apply_custom_css", lambda: None),
+    patch.object(
+        app.alineadores_pg,
+        "render_embedded_workspace",
+        lambda user: st.session_state.__setitem__("aligners_loaded", user),
+    ),
+):
+    app.main()
 """
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
