@@ -1,8 +1,10 @@
 import html
 import hashlib
 import hmac
+import itertools
 import json
 import math
+import re
 import time
 import unicodedata
 from pathlib import PurePosixPath
@@ -804,11 +806,76 @@ def clean_display_value(value: Any) -> str:
     return text.split(" ", 1)[1] if text in display_values and " " in text else text
 
 
+def apparatus_components(value: Any) -> list[str]:
+    """Separa y normaliza una combinación como ``TIGER + DISTALIZADOR``."""
+
+    text = clean_cell(value).strip()
+    if not text:
+        return []
+    known_values = [*APARATO_OPTIONS, *PROCESS_CONFIG, *PROCESS_ALIASES]
+    known_by_normalized = {
+        normalize_text(option): option for option in known_values
+    }
+    components: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"\s*(?:\+|,|;|\n)\s*", text):
+        cleaned = clean_display_value(token).strip()
+        if not cleaned:
+            continue
+        normalized = normalize_text(cleaned)
+        canonical = known_by_normalized.get(normalized, cleaned)
+        canonical_key = normalize_text(canonical)
+        if canonical_key not in seen:
+            components.append(canonical)
+            seen.add(canonical_key)
+    return components
+
+
+def canonical_apparatus_value(value: Any) -> str:
+    """Devuelve una combinación estable, sin emojis y separada por `` + ``."""
+
+    components = apparatus_components(value)
+    catalog_order = {
+        normalize_text(option): index for index, option in enumerate(APARATO_OPTIONS)
+    }
+    components.sort(
+        key=lambda option: (
+            catalog_order.get(normalize_text(option), len(catalog_order)),
+            normalize_text(option),
+        )
+    )
+    return " + ".join(components)
+
+
+def is_valid_apparatus_combination(value: Any) -> bool:
+    """Acepta una o varias opciones del catálogo, sin texto libre."""
+
+    components = apparatus_components(value)
+    valid = {normalize_text(option) for option in APARATO_OPTIONS}
+    return bool(components) and all(normalize_text(option) in valid for option in components)
+
+
+def apparatus_combination_values() -> list[str]:
+    """Catálogo de combinaciones que puede producir el editor múltiple."""
+
+    return [
+        " + ".join(selected)
+        for size in range(1, len(APARATO_OPTIONS) + 1)
+        for selected in itertools.combinations(APARATO_OPTIONS, size)
+    ]
+
+
 def display_selectbox_value(column: str, value: str) -> str:
     """Devuelve el texto visual con emoji para una columna selectbox."""
 
     canonical_column = canonical_column_name(column)
     cleaned_value = clean_display_value(clean_cell(value).strip())
+    if canonical_column == APARATO_COLUMN:
+        components = apparatus_components(value)
+        display_options = DISPLAY_OPTIONS_BY_COLUMN.get(canonical_column, {})
+        return " + ".join(
+            display_options.get(component, component) for component in components
+        )
     if canonical_column == STATUS_COLUMN:
         cleaned_value = normalize_status_alias(cleaned_value)
     if not cleaned_value:
@@ -963,6 +1030,9 @@ def values_equivalent_for_column(column: str, old_value: Any, new_value: Any) ->
 
     if canonical_column == STATUS_COLUMN:
         return normalize_text(normalize_status_alias(old_text)) == normalize_text(normalize_status_alias(new_text))
+
+    if canonical_column == APARATO_COLUMN:
+        return canonical_apparatus_value(old_value) == canonical_apparatus_value(new_value)
 
     if canonical_column in DATE_COLUMNS:
         old_date = parse_simple_date(old_text)
@@ -1160,14 +1230,108 @@ def normalize_status_alias(status: Any) -> str:
     return cleaned_status
 
 
-def get_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
-    """Regresa el flujo programado para el aparato."""
+def get_single_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
+    """Regresa el flujo individual configurado para un aparato."""
 
-    apparatus_key = PROCESS_ALIASES.get(normalize_text(apparatus), normalize_text(apparatus))
+    apparatus_key = PROCESS_ALIASES.get(
+        normalize_text(apparatus), normalize_text(apparatus)
+    )
     for configured_apparatus, flow in PROCESS_CONFIG.items():
         if normalize_text(configured_apparatus) == apparatus_key:
-            return flow
+            return list(flow)
     return []
+
+
+def merge_process_flows(
+    flows: list[list[tuple[str, str | None]]],
+) -> list[tuple[str, str | None]]:
+    """Une etapas sin perder las exclusivas de ninguno de los aparatos.
+
+    El flujo más completo funciona como columna vertebral y cada etapa exclusiva
+    se inserta después de su último antecedente común. Para una etapa compartida
+    se conserva el plazo mayor, de modo que el pedido combinado no se marque
+    atrasado antes de completar el proceso de ambos aparatos.
+    """
+
+    usable_flows = [flow for flow in flows if flow]
+    if not usable_flows:
+        return []
+    primary_index = max(
+        range(len(usable_flows)), key=lambda index: len(usable_flows[index])
+    )
+    merged = list(usable_flows[primary_index])
+
+    for flow in usable_flows:
+        for flow_index, (status, time_limit) in enumerate(flow):
+            status_key = normalize_text(status)
+            if any(normalize_text(existing) == status_key for existing, _ in merged):
+                continue
+            previous_key = next(
+                (
+                    normalize_text(previous_status)
+                    for previous_status, _ in reversed(flow[:flow_index])
+                    if any(
+                        normalize_text(existing) == normalize_text(previous_status)
+                        for existing, _ in merged
+                    )
+                ),
+                None,
+            )
+            next_key = next(
+                (
+                    normalize_text(next_status)
+                    for next_status, _ in flow[flow_index + 1 :]
+                    if any(
+                        normalize_text(existing) == normalize_text(next_status)
+                        for existing, _ in merged
+                    )
+                ),
+                None,
+            )
+            if previous_key is not None:
+                previous_index = next(
+                    index
+                    for index, (existing, _) in enumerate(merged)
+                    if normalize_text(existing) == previous_key
+                )
+                insert_at = previous_index + 1
+            elif next_key is not None:
+                insert_at = next(
+                    index
+                    for index, (existing, _) in enumerate(merged)
+                    if normalize_text(existing) == next_key
+                )
+            else:
+                insert_at = len(merged)
+            merged.insert(insert_at, (status, time_limit))
+
+    limits_by_status: dict[str, list[str]] = {}
+    for flow in usable_flows:
+        for status, time_limit in flow:
+            if time_limit:
+                limits_by_status.setdefault(normalize_text(status), []).append(time_limit)
+
+    combined: list[tuple[str, str | None]] = []
+    for status, time_limit in merged:
+        limits = limits_by_status.get(normalize_text(status), [])
+        if limits:
+            time_limit = max(
+                limits,
+                key=lambda limit: parse_time_limit_to_business_hours(limit) or 0,
+            )
+        combined.append((status, time_limit))
+    return combined
+
+
+def get_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
+    """Regresa la unión ordenada de los flujos de todos los aparatos elegidos."""
+
+    return merge_process_flows(
+        [
+            get_single_process_flow(component)
+            for component in apparatus_components(apparatus)
+        ]
+    )
 
 
 def get_time_limit(apparatus: str, status: str) -> str | None:
@@ -1619,6 +1783,38 @@ def update_active_tiempo_row(identifier: str, changes: dict[str, Any]) -> bool:
     return True
 
 
+def sync_active_time_for_apparatus(
+    identifier: str, apparatus: str, status: str
+) -> bool:
+    """Alinea el registro activo y su plazo al cambiar la combinación de aparatos."""
+
+    _, active_row = get_active_tiempo_row(identifier)
+    if not active_row:
+        return False
+    canonical_apparatus = canonical_apparatus_value(apparatus)
+    time_limit = get_time_limit(canonical_apparatus, status)
+    maximum_hours = parse_time_limit_to_business_hours(time_limit)
+    start = parse_start_datetime(
+        active_row.get("FECHA_INICIO", ""), active_row.get("HORA_INICIO", "")
+    )
+    deadline_date, deadline_time = add_business_time(start or app_now(), time_limit)
+    return update_active_tiempo_row(
+        identifier,
+        {
+            APARATO_COLUMN: canonical_apparatus,
+            "TIEMPO_CONFIGURADO": time_limit or "",
+            "TIEMPO_MAXIMO_HORAS": ""
+            if maximum_hours is None
+            else f"{maximum_hours:g}",
+            "FECHA_LIMITE": deadline_date,
+            "HORA_LIMITE": deadline_time,
+            "ESTADO_ALERTA": "Sin tiempo configurado"
+            if maximum_hours is None
+            else "En tiempo",
+        },
+    )
+
+
 def is_case_marked_for_printing(row: pd.Series) -> bool:
     """Indica si el pedido ya tiene fecha de impresión en ESTATUS APARATOS."""
 
@@ -1814,9 +2010,13 @@ def get_special_payment_sla_alert_state(
     apparatus = clean_display_value(
         clean_cell(row.get("APARATO", estatus_row.get(APARATO_COLUMN, "")))
     )
-    if normalize_text(apparatus) not in {
+    special_apparatuses = {
         normalize_text(item) for item in SPECIAL_PAYMENT_SLA_APPARATUSES
-    }:
+    }
+    if not any(
+        normalize_text(component) in special_apparatuses
+        for component in apparatus_components(apparatus)
+    ):
         return ""
 
     current_status = normalize_status_alias(
@@ -3428,7 +3628,10 @@ def get_alert_context_fields(
         suggestions.extend(["FECHA ENVÍO", "FECHA/HORA ENVÍO STEFANO"])
     if any(keyword in status_norm for keyword in ["SINTERIZADO", "PLATINA"]):
         suggestions.append("FECHA IMPRESIÓN")
-    if normalize_text(apparatus) in {"DISTALIZADOR", "TIGER", "LEONE"}:
+    if any(
+        normalize_text(component) in {"DISTALIZADOR", "TIGER", "LEONE"}
+        for component in apparatus_components(apparatus)
+    ):
         suggestions.append("DETALLES & COMENTARIOS FINALES")
 
     fields: list[str] = []
@@ -3967,7 +4170,15 @@ def advance_case_status(
 ) -> bool:
     """Actualiza STATUS en ESTATUS y registra cierre/apertura en TIEMPOS."""
 
-    apparatus = clean_display_value(clean_cell(get_row_value_by_column(row, APARATO_COLUMN, "")))
+    extra_changes = dict(extra_changes or {})
+    current_apparatus = canonical_apparatus_value(
+        get_row_value_by_column(row, APARATO_COLUMN, "")
+    )
+    apparatus = canonical_apparatus_value(
+        extra_changes.get(APARATO_COLUMN, current_apparatus)
+    )
+    if APARATO_COLUMN in extra_changes:
+        extra_changes[APARATO_COLUMN] = apparatus
     previous_status = normalize_status_alias(clean_cell(get_row_value_by_column(row, STATUS_COLUMN, "")))
     new_status = normalize_status_alias(new_status)
     is_valid, validation_message = validate_status_change(
@@ -3986,7 +4197,7 @@ def advance_case_status(
             f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
         )
         return False
-    estatus_changes = {**(extra_changes or {}), STATUS_COLUMN: new_status}
+    estatus_changes = {**extra_changes, STATUS_COLUMN: new_status}
     estatus_changes.update(
         get_status_datetime_autofill_changes(
             row=row,
@@ -4857,6 +5068,10 @@ def canonical_workbench_df(df: pd.DataFrame) -> pd.DataFrame:
         result[column] = result[column].map(clean_cell)
     if ID_COLUMN in result:
         result[ID_COLUMN] = result[ID_COLUMN].str.strip()
+    if APARATO_COLUMN in result:
+        result[APARATO_COLUMN] = result[APARATO_COLUMN].map(
+            canonical_apparatus_value
+        )
     if STATUS_COLUMN in result:
         result[STATUS_COLUMN] = result[STATUS_COLUMN].map(normalize_status_alias)
     return result
@@ -4971,6 +5186,19 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
     stages = {row[ID_COLUMN]: workbench_stage_options(row, current_user)
               if row[ID_COLUMN] not in duplicates else [display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])]
               for _, row in source.iterrows()}
+    apparatus_stage_options: dict[str, dict[str, list[str]]] = {}
+    combinations = apparatus_combination_values()
+    for _, row in source.iterrows():
+        identifier = row[ID_COLUMN]
+        if identifier in duplicates:
+            continue
+        apparatus_stage_options[identifier] = {}
+        for combination in combinations:
+            candidate = row.copy()
+            candidate[APARATO_COLUMN] = combination
+            apparatus_stage_options[identifier][combination] = workbench_stage_options(
+                candidate, current_user
+            )
     selections = {column: list(dict.fromkeys([
         *(display_selectbox_value(column, value) for value in SELECTBOX_OPTIONS_BY_COLUMN[column]),
         *grid[column],
@@ -4979,14 +5207,21 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
     for column in editable & (DATE_COLUMNS | DATETIME_TEXT_COLUMNS) & set(grid):
         parser = parse_simple_date if column in DATE_COLUMNS else parse_spanish_datetime
         dates[column] = {value: parsed.isoformat() for value in set(grid[column]) if (parsed := parser(value))}
-    palettes = {column: {display_selectbox_value(column, value): colors for value, colors in palette.items()}
-                for column, palette in SHEET_STYLE_COLORS.items()}
+    palettes = {
+        column: {
+            (value if column == APARATO_COLUMN else display_selectbox_value(column, value)): colors
+            for value, colors in palette.items()
+        }
+        for column, palette in SHEET_STYLE_COLORS.items()
+    }
     palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
     return build_grid_options(grid, editable=editable, automatic=WORKBENCH_AUTOMATIC_COLUMNS,
                               stage_options=stages, select_options=selections,
                               date_values=dates, datetime_columns=DATETIME_TEXT_COLUMNS,
                               palettes=palettes, time_zone=APP_TIMEZONE_NAME,
-                              preferred_order=preferred_order, hidden_columns=hidden_columns)
+                              preferred_order=preferred_order, hidden_columns=hidden_columns,
+                              apparatus_options=APARATO_OPTIONS,
+                              apparatus_stage_options=apparatus_stage_options)
 
 
 def workbench_saved_column_order(current_user: str, available_columns: Any) -> list[str]:
@@ -5002,9 +5237,12 @@ def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
     displayed = df.copy()
     for column in DISPLAY_OPTIONS_BY_COLUMN:
         if column in displayed:
-            displayed[column] = displayed[column].map(
-                lambda value, name=column: display_selectbox_value(name, value)
-            )
+            if column == APARATO_COLUMN:
+                displayed[column] = displayed[column].map(canonical_apparatus_value)
+            else:
+                displayed[column] = displayed[column].map(
+                    lambda value, name=column: display_selectbox_value(name, value)
+                )
     return displayed
 
 
@@ -5013,6 +5251,8 @@ def workbench_cell_value(column: str, value: Any) -> str:
     text = clean_cell(value).strip()
     if column == STATUS_COLUMN:
         return normalize_status_alias(text)
+    if column == APARATO_COLUMN:
+        return canonical_apparatus_value(text)
     return clean_display_value(text) if column in DISPLAY_OPTIONS_BY_COLUMN else text
 
 
@@ -5061,17 +5301,33 @@ def validate_workbench_changes(
             errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
             continue
         for column, value in delta.items():
-            if column in SELECTBOX_OPTIONS_BY_COLUMN and column != STATUS_COLUMN:
+            if column == APARATO_COLUMN:
+                if not is_valid_apparatus_combination(value):
+                    errors.append(
+                        f"{identifier}: selecciona al menos un aparato válido del catálogo."
+                    )
+            elif column in SELECTBOX_OPTIONS_BY_COLUMN and column != STATUS_COLUMN:
                 if value not in SELECTBOX_OPTIONS_BY_COLUMN[column]:
                     errors.append(f"{identifier}: valor no permitido para {column}.")
             if column in DATE_COLUMNS and value and parse_simple_date(value) is None:
                 errors.append(f"{identifier}: fecha no reconocida en {column}.")
             if column in DATETIME_TEXT_COLUMNS and value and parse_spanish_datetime(value) is None:
                 errors.append(f"{identifier}: fecha/hora no reconocida en {column}.")
+        apparatus = canonical_apparatus_value(
+            delta.get(APARATO_COLUMN, row.get(APARATO_COLUMN, ""))
+        )
+        previous_status = normalize_status_alias(row.get(STATUS_COLUMN, ""))
+        flow_statuses = {
+            normalize_text(flow_status)
+            for flow_status, _ in get_process_flow(apparatus)
+        }
+        if APARATO_COLUMN in delta and normalize_text(previous_status) not in flow_statuses:
+            errors.append(
+                f"{identifier}: la etapa actual {previous_status} no existe en la combinación {apparatus}."
+            )
         if STATUS_COLUMN not in delta:
             continue
-        previous_status, new_status = row[STATUS_COLUMN], normalize_status_alias(delta[STATUS_COLUMN])
-        apparatus = row.get(APARATO_COLUMN, "")
+        new_status = normalize_status_alias(delta[STATUS_COLUMN])
         if new_status not in get_allowed_next_statuses(apparatus, previous_status):
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
@@ -5113,6 +5369,12 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
             else:
                 result = update_row_by_columna_1(identifier, delta, expected_values=expected)
                 success = result["success"] and not result["skipped_columns"]
+                if success and APARATO_COLUMN in delta:
+                    sync_active_time_for_apparatus(
+                        identifier,
+                        delta[APARATO_COLUMN],
+                        row.get(STATUS_COLUMN, ""),
+                    )
                 if not success:
                     errors.append(f"{identifier}: {result['error'] or 'faltan columnas en la hoja'}.")
             if success:
@@ -5294,7 +5556,20 @@ def render_workbench(current_user: str) -> None:
     st.markdown(f'<div class="lab-edit-bar {bar_class}" role="status">{bar_text}</div>', unsafe_allow_html=True)
     filters = st.columns([2.2, 1.6, 1.2, 1.2])
     search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
-    apparatus_options = sorted(set(table[APARATO_COLUMN].str.strip()) - {""}) if APARATO_COLUMN in table else []
+    apparatus_options = (
+        sorted(
+            {
+                component
+                for value in table[APARATO_COLUMN]
+                for component in apparatus_components(value)
+            },
+            key=lambda option: APARATO_OPTIONS.index(option)
+            if option in APARATO_OPTIONS
+            else len(APARATO_OPTIONS),
+        )
+        if APARATO_COLUMN in table
+        else []
+    )
     apparatuses = filters[1].multiselect(
         "Aparato",
         apparatus_options,
@@ -5328,7 +5603,21 @@ def render_workbench(current_user: str) -> None:
         filtered = filtered[filtered["RESPONSABLE"] == owner]
     for column, values in chosen.items():
         if values:
-            filtered = filtered[filtered[column].str.strip().isin(values)]
+            if column == APARATO_COLUMN:
+                selected_apparatuses = {normalize_text(value) for value in values}
+                filtered = filtered[
+                    filtered[column].map(
+                        lambda value: bool(
+                            selected_apparatuses
+                            & {
+                                normalize_text(component)
+                                for component in apparatus_components(value)
+                            }
+                        )
+                    )
+                ]
+            else:
+                filtered = filtered[filtered[column].str.strip().isin(values)]
     if priority != "Orden de la hoja":
         filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
     filtered = filtered.reset_index(drop=True)
@@ -5715,30 +6004,34 @@ def apply_app_shell_css() -> None:
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button {
             flex: 1; min-height: 42px; border-radius: 9px; font-weight: 780;
+            background: #302354CC !important; border: 1px solid #CFC1ED99 !important;
+            color: #FFFFFF !important; opacity: 1 !important;
             transition: transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"] {
-            background: #25184480 !important; border: 1px solid #FFFFFF42 !important;
-            color: #F4EEFF !important; opacity: .82;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button:not(:disabled):hover {
+            background: #4A3678 !important; border-color: #FFFFFFCC !important;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"]:not(:disabled):hover {
-            background: #FFFFFF24 !important; border-color: #FFFFFF73 !important; opacity: 1;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"],
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[data-variant="segmented_control"][data-selected],
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"],
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-selected="true"] {
+            position: relative; transform: translateY(1px);
+            background: #20183FCC !important;
+            border: 2px solid #5EE3AF !important; color: #FFFFFF !important;
+            box-shadow: inset 0 3px 8px #120C2B88, 0 0 0 3px #5EE3AF33 !important;
         }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"] {
-            position: relative; transform: translateY(-1px);
-            background: linear-gradient(115deg,#E9DFFF,#CFF5EC) !important;
-            border: 2px solid #FFFFFF !important; color: #3D2468 !important;
-            box-shadow: 0 0 0 3px #FFFFFF24, 0 8px 18px #1D123E52 !important;
-            opacity: 1;
-        }
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"]::before {
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"]::before,
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[data-variant="segmented_control"][data-selected]::before,
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"]::before,
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-selected="true"]::before {
             content: "✓"; margin-right: 7px; width: 18px; height: 18px; display: grid;
-            place-items: center; border-radius: 50%; background: #56328C; color: #FFF;
+            place-items: center; border-radius: 50%; background: #37B889; color: #FFF;
             font-size: .68rem; font-weight: 900;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"] p,
-        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"] p {
-            color: inherit !important;
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"] p,
+        .st-key-lab_workspace_header .st-key-lab_workspace_view button[data-variant="segmented_control"] p {
+            color: #FFFFFF !important; -webkit-text-fill-color: #FFFFFF !important; opacity: 1 !important;
         }
         @media (max-width: 700px) {
             .st-key-lab_workspace_header {padding: 20px;}
