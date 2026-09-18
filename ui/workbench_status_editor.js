@@ -5,7 +5,13 @@ class WorkbenchStatusEditor {
         const identifier = params.data["Columna 1"];
         const apparatus = params.data["APARATO"] || "";
         const byApparatus = (params.context.apparatusStageOptions || {})[identifier] || {};
-        const options = byApparatus[apparatus]
+        const flowKeys = [];
+        String(apparatus).split(/\s*\+\s*/).forEach(option => {
+            const key = (params.context.apparatusFlowKeys || {})[option.trim()];
+            if (key && !flowKeys.includes(key)) flowKeys.push(key);
+        });
+        flowKeys.sort();
+        const options = byApparatus[flowKeys.join("|")]
             || params.context.stageOptions[identifier]
             || [this.value];
         const palette = params.context.palettes.STATUS || {};
