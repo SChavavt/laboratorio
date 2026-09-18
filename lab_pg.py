@@ -340,16 +340,17 @@ PROCESS_STATUS_VALUES = [
 ]
 
 VENDEDOR_OPTIONS = [
-    "JIMENA",
-    "JUAN",
-    "MICHELLE",
-    "IGNACIO",
-    "LESLY",
-    "KAREN",
-    "ALEJANDRA",
-    "CARO",
-    "HECTOR",
+    "ALEJANDRO",
+    "ANA KAREN",
+    "BLANCA",
+    "CASSANDRA",
     "DANIELA",
+    "SOFI",
+    "MICHELLE",
+    "KAREN JACQUIE",
+    "NORMA",
+    "PAULINA",
+    "SANTIAGO",
 ]
 
 SERVICIO_OPTIONS = [
@@ -424,16 +425,17 @@ STATUS_DISPLAY = {
 
 
 VENDEDOR_DISPLAY = {
-    "JIMENA": "👩 JIMENA",
-    "JUAN": "👨 JUAN",
-    "MICHELLE": "👩 MICHELLE",
-    "IGNACIO": "👨 IGNACIO",
-    "LESLY": "👩 LESLY",
-    "KAREN": "👩 KAREN",
-    "ALEJANDRA": "👩 ALEJANDRA",
-    "CARO": "👩 CARO",
-    "HECTOR": "👨 HECTOR",
+    "ALEJANDRO": "👨 ALEJANDRO",
+    "ANA KAREN": "👩 ANA KAREN",
+    "BLANCA": "👩 BLANCA",
+    "CASSANDRA": "👩 CASSANDRA",
     "DANIELA": "👩 DANIELA",
+    "SOFI": "👩 SOFI",
+    "MICHELLE": "👩 MICHELLE",
+    "KAREN JACQUIE": "👩 KAREN JACQUIE",
+    "NORMA": "👩 NORMA",
+    "PAULINA": "👩 PAULINA",
+    "SANTIAGO": "👨 SANTIAGO",
 }
 
 SERVICIO_DISPLAY = {

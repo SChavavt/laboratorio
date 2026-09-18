@@ -113,13 +113,30 @@ def test_visual_stage_labels_roundtrip_without_false_changes():
 
 
 def test_labeled_metadata_is_saved_without_emojis():
-    original = pd.DataFrame([case(**{"SERVICIO":"CONFECCIÓN","VENDEDOR":"JIMENA","ARCHIVOS RECIBIDOS":"STL"})])
+    original = pd.DataFrame([case(**{"SERVICIO":"CONFECCIÓN","VENDEDOR":"ALEJANDRO","ARCHIVOS RECIBIDOS":"STL"})])
     displayed = app.workbench_display_df(original)
     displayed.loc[0,"SERVICIO"] = "🔵 PLANEACIÓN & CONFECCIÓN"
-    displayed.loc[0,"VENDEDOR"] = "👨 JUAN"
+    displayed.loc[0,"VENDEDOR"] = "👨 SANTIAGO"
     displayed.loc[0,"ARCHIVOS RECIBIDOS"] = "📁🩻 STL+TOMO"
     assert app.workbench_changes(original,displayed) == [("001",{
-        "SERVICIO":"PLANEACIÓN & CONFECCIÓN","VENDEDOR":"JUAN","ARCHIVOS RECIBIDOS":"STL+TOMO"})]
+        "SERVICIO":"PLANEACIÓN & CONFECCIÓN","VENDEDOR":"SANTIAGO","ARCHIVOS RECIBIDOS":"STL+TOMO"})]
+
+
+def test_vendor_catalog_contains_only_active_sellers():
+    assert app.VENDEDOR_OPTIONS == [
+        "ALEJANDRO",
+        "ANA KAREN",
+        "BLANCA",
+        "CASSANDRA",
+        "DANIELA",
+        "SOFI",
+        "MICHELLE",
+        "KAREN JACQUIE",
+        "NORMA",
+        "PAULINA",
+        "SANTIAGO",
+    ]
+    assert list(app.VENDEDOR_DISPLAY) == app.VENDEDOR_OPTIONS
 
 
 def test_outsourced_work_datetime_labels_reference_stefano():
