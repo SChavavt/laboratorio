@@ -2534,6 +2534,21 @@ def get_forms_file_column(review_df: pd.DataFrame) -> str:
     )
 
 
+def get_forms_file_links(value: Any) -> list[str]:
+    """Separa y valida los enlaces de archivos enviados por Google Forms."""
+
+    raw_value = clean_cell(value).strip()
+    if not raw_value:
+        return []
+
+    links = []
+    for candidate in re.split(r"(?:\r?\n|\\n|[,;])\s*", raw_value):
+        link = candidate.strip()
+        if link.startswith(("https://", "http://")) and link not in links:
+            links.append(link)
+    return links
+
+
 def update_row_by_columna_1(
     identifier: str, changes: dict[str, Any], *, expected_values: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -4500,6 +4515,7 @@ def render_estefano_forms_review(can_edit: bool) -> None:
 
     selected_row = selected_rows.iloc[0]
     selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
+    selected_links = get_forms_file_links(selected_link)
     visible_details = []
     for column in display_df.columns:
         if column in {"Respuesta #", file_column}:
@@ -4525,8 +4541,13 @@ def render_estefano_forms_review(can_edit: bool) -> None:
         """,
         unsafe_allow_html=True,
     )
-    link_pill_class = "forms-pill-link" if selected_link else "forms-pill-missing"
-    link_pill_text = "✅ Link listo" if selected_link else "⚠️ Sin link detectado"
+    link_pill_class = "forms-pill-link" if selected_links else "forms-pill-missing"
+    link_pill_text = (
+        f"✅ {len(selected_links)} archivo{'s' if len(selected_links) != 1 else ''} listo"
+        f"{'s' if len(selected_links) != 1 else ''}"
+        if selected_links
+        else "⚠️ Sin link detectado"
+    )
     st.markdown(
         f"<div class='forms-hero'>"
         f"<div class='forms-hero-title'>📌 Resumen rápido de la respuesta seleccionada</div>"
@@ -4551,8 +4572,25 @@ def render_estefano_forms_review(can_edit: bool) -> None:
     else:
         st.info("La respuesta seleccionada no tiene detalles adicionales visibles.")
 
-    if selected_link:
-        st.markdown(f"**🔗 Link Drive detectado en Forms:** {selected_link}")
+    if selected_links:
+        st.markdown("**🔗 Archivos de Drive detectados en Forms:**")
+        links_html = "".join(
+            f"<li><a href='{html.escape(link, quote=True)}' target='_blank' "
+            f"rel='noopener noreferrer'>Archivo {index}</a>"
+            f"<div class='forms-link-url'>{html.escape(link)}</div></li>"
+            for index, link in enumerate(selected_links, start=1)
+        )
+        st.markdown(
+            "<ol class='forms-links-list'>" + links_html + "</ol>"
+            "<style>"
+            ".forms-links-list{margin-top:.45rem;padding-left:1.75rem;}"
+            ".forms-links-list li{padding:.45rem .2rem;border-bottom:1px solid #e6edf5;}"
+            ".forms-links-list a{font-weight:750;}"
+            ".forms-link-url{margin-top:.15rem;color:#64748b;font-size:.84rem;"
+            "overflow-wrap:anywhere;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
     else:
         st.warning(
             "Esta respuesta no trae link en la columna configurada de archivos STL/DICOM."
