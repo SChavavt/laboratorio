@@ -3,7 +3,11 @@ class WorkbenchStatusEditor {
         this.params = params;
         this.value = params.value || "";
         const identifier = params.data["Columna 1"];
-        const options = params.context.stageOptions[identifier] || [this.value];
+        const apparatus = params.data["APARATO"] || "";
+        const byApparatus = (params.context.apparatusStageOptions || {})[identifier] || {};
+        const options = byApparatus[apparatus]
+            || params.context.stageOptions[identifier]
+            || [this.value];
         const palette = params.context.palettes.STATUS || {};
         this.gui = document.createElement("div");
         this.gui.className = "lab-status-editor ag-custom-component-popup";

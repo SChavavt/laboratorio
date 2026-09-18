@@ -16,6 +16,13 @@ def status_editor():
     return JsCode((Path(__file__).parent / "ui" / "workbench_status_editor.js").read_text())
 
 
+@lru_cache(maxsize=1)
+def apparatus_editor():
+    return JsCode(
+        (Path(__file__).parent / "ui" / "workbench_apparatus_editor.js").read_text()
+    )
+
+
 COLLECT_ROWS = JsCode("""function(params) {
     const rows = [];
     params.eventData.api.forEachNode(node => rows.push(node.data));
@@ -25,7 +32,9 @@ COLLECT_ROWS = JsCode("""function(params) {
 }""")
 
 GRID_CSS = {
-    ".ag-root-wrapper": {"border": "2px solid #B199D4", "border-radius": "12px", "width": "100%"},
+    ".ag-root-wrapper": {"border": "2px solid #B199D4", "border-radius": "12px", "width": "100%", "max-width": "100%"},
+    ".ag-root-wrapper-body": {"width": "100%"},
+    ".ag-root": {"width": "100%"},
     ".ag-header": {"background": "#594080", "color": "#FFFFFF"},
     ".ag-header-cell": {"border-right": "1px solid #FFFFFF26"},
     ".lab-header-fixed": {"background": "#493064 !important"},
@@ -52,6 +61,36 @@ GRID_CSS = {
         "text-align": "left", "font": "inherit", "font-weight": "650", "cursor": "pointer",
     },
     ".lab-status-editor button:focus": {"outline": "3px solid #4C288355", "outline-offset": "1px"},
+    ".lab-apparatus-editor": {
+        "background": "#F7F1FF", "padding": "12px", "border": "1px solid #9E7CC7",
+        "border-radius": "12px", "box-shadow": "0 8px 24px #39236530", "width": "300px",
+        "max-height": "430px", "overflow-y": "auto", "display": "grid", "gap": "8px",
+        "font": "14px sans-serif", "box-sizing": "border-box",
+    },
+    ".lab-apparatus-editor strong": {"color": "#392365", "padding": "3px 4px"},
+    ".lab-apparatus-summary": {
+        "min-height": "34px", "padding": "8px 10px", "border-radius": "8px",
+        "background": "#E9DDF7", "color": "#3D2468", "font-weight": "700",
+        "overflow-wrap": "anywhere",
+    },
+    ".lab-apparatus-option": {
+        "display": "flex", "align-items": "center", "gap": "9px", "width": "100%",
+        "border": "1px solid #CBBDE3", "border-radius": "8px", "padding": "9px 10px",
+        "background": "#FFFFFF", "color": "#35234E", "text-align": "left",
+        "font": "inherit", "cursor": "pointer",
+    },
+    ".lab-apparatus-option[aria-pressed='true']": {
+        "background": "#E8F8F1", "border-color": "#2FA77E", "box-shadow": "inset 0 0 0 1px #2FA77E",
+    },
+    ".lab-apparatus-dot": {"width": "11px", "height": "11px", "border-radius": "50%", "flex": "0 0 11px"},
+    ".lab-apparatus-check": {"margin-left": "auto", "font-weight": "900", "color": "#13735A"},
+    ".lab-apparatus-actions": {"display": "flex", "gap": "8px", "padding-top": "4px"},
+    ".lab-apparatus-actions button": {
+        "flex": "1", "border": "1px solid #9E7CC7", "border-radius": "7px", "padding": "9px",
+        "font": "inherit", "font-weight": "700", "cursor": "pointer",
+    },
+    ".lab-apparatus-apply": {"background": "#68419D", "color": "#FFFFFF"},
+    ".lab-apparatus-cancel": {"background": "#FFFFFF", "color": "#4C3270"},
     ".lab-date-editor": {
         "background": "#F7F1FF", "color": "#332444", "padding": "16px",
         "border": "1px solid #9E7CC7", "border-radius": "12px", "width": "320px",
@@ -75,7 +114,8 @@ GRID_CSS = {
 
 
 def build_grid_options(grid, *, editable, automatic, stage_options, select_options, date_values,
-                       datetime_columns, palettes, time_zone, preferred_order=None, hidden_columns=None):
+                       datetime_columns, palettes, time_zone, preferred_order=None, hidden_columns=None,
+                       apparatus_options=None, apparatus_stage_options=None):
     """Mantiene opciones ligadas a la fotografía guardada, incluso tras editar STATUS."""
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
@@ -83,15 +123,15 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
               "DETALLE SEMÁFORO": "Motivo del semáforo",
               "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
               "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano"}
-    widths = {"SELECCIONAR": 65, "Columna 1": 90, "SEMÁFORO": 145, "APARATO": 130,
-              "STATUS": 230, "NOMBRE DOCTOR": 165, "NOMBRE PACIENTE": 165,
-              "DETALLE COMENTARIOS": 220, "DETALLE SEMÁFORO": 300}
-    minimum_widths = {"SELECCIONAR": 60, "Columna 1": 82, "SEMÁFORO": 125, "APARATO": 105,
-                      "STATUS": 165, "NOMBRE DOCTOR": 125, "NOMBRE PACIENTE": 125,
-                      "DETALLE COMENTARIOS": 170}
-    maximum_widths = {"SELECCIONAR": 72, "Columna 1": 115, "SEMÁFORO": 165, "APARATO": 210,
-                      "STATUS": 300, "NOMBRE DOCTOR": 230, "NOMBRE PACIENTE": 230,
-                      "DETALLE COMENTARIOS": 340, "DETALLE SEMÁFORO": 390}
+    widths = {"SELECCIONAR": 58, "Columna 1": 74, "SEMÁFORO": 112, "APARATO": 126,
+              "STATUS": 150, "NOMBRE DOCTOR": 118, "NOMBRE PACIENTE": 118,
+              "DETALLE COMENTARIOS": 130, "DETALLE SEMÁFORO": 260}
+    minimum_widths = {"SELECCIONAR": 54, "Columna 1": 68, "SEMÁFORO": 104, "APARATO": 112,
+                      "STATUS": 136, "NOMBRE DOCTOR": 102, "NOMBRE PACIENTE": 102,
+                      "DETALLE COMENTARIOS": 112}
+    maximum_widths = {"SELECCIONAR": 62, "Columna 1": 90, "SEMÁFORO": 126, "APARATO": 156,
+                      "STATUS": 180, "NOMBRE DOCTOR": 150, "NOMBRE PACIENTE": 150,
+                      "DETALLE COMENTARIOS": 175, "DETALLE SEMÁFORO": 330}
     business_order = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
     default_order = [*business_order, "RESPONSABLE", "HORAS EN ETAPA",
                      "PLAZO HORAS", "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
@@ -118,7 +158,8 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         if column != "SELECCIONAR":
             config["tooltipField"] = column
         if column in pinned:
-            config.update(pinned="left", lockPinned=True, lockPosition=True, suppressMovable=True)
+            config.update(pinned="left", lockPinned=True, lockPosition=True,
+                          suppressMovable=True, suppressAutoSize=True)
         if column in system_fixed:
             config["headerClass"] = "lab-header-fixed"
         elif column in automatic and can_edit:
@@ -136,8 +177,17 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
             config.update(
                 cellEditor=status_editor(), cellEditorPopup=True,
                 editable=JsCode("""function(p) {
-                    return (p.context.stageOptions[p.data['Columna 1']] || []).length > 1;
+                    const identifier = p.data['Columna 1'];
+                    const apparatus = p.data['APARATO'] || '';
+                    const byApparatus = (p.context.apparatusStageOptions[identifier] || {});
+                    const options = byApparatus[apparatus] || p.context.stageOptions[identifier] || [];
+                    return options.length > 1;
                 }""") if can_edit else False,
+            )
+        elif column == "APARATO" and can_edit:
+            config.update(
+                cellEditor=apparatus_editor(),
+                cellEditorPopup=True,
             )
         elif can_edit and column in select_options:
             config.update(cellEditor="agSelectCellEditor", cellEditorParams={"values": select_options[column]})
@@ -147,7 +197,11 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
                                             "initialValues": date_values[column], "timeZone": time_zone})
         if can_edit and column == "STATUS":
             config["cellClass"] = JsCode("""function(p) {
-                return (p.context.stageOptions[p.data['Columna 1']] || []).length > 1 ?
+                const identifier = p.data['Columna 1'];
+                const apparatus = p.data['APARATO'] || '';
+                const byApparatus = (p.context.apparatusStageOptions[identifier] || {});
+                const options = byApparatus[apparatus] || p.context.stageOptions[identifier] || [];
+                return options.length > 1 ?
                     'lab-cell-editable' : 'lab-cell-readonly';
             }""")
         elif can_edit:
@@ -167,11 +221,18 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
                 return p.value == null ? '—' : Number(p.value).toFixed(2) + ' h';
             }"""))
         columns.append(config)
+    apparatus_palette = {
+        option: list((palettes.get("APARATO") or {}).get(option, ("#E9DDF7", "#392365")))
+        for option in (apparatus_options or [])
+    }
     return {
-        "columnDefs": columns, "context": {"stageOptions": stage_options, "palettes": palettes},
+        "columnDefs": columns, "context": {"stageOptions": stage_options,
+        "apparatusStageOptions": apparatus_stage_options or {},
+        "apparatusOptions": apparatus_options or [], "apparatusColors": apparatus_palette,
+        "palettes": palettes},
         "defaultColDef": {"resizable": True, "sortable": True, "filter": False, "cellDataType": False},
         "rowHeight": 36, "headerHeight": 42, "animateRows": False,
-        "autoSizeStrategy": {"type": "fitCellContents", "skipHeader": False, "defaultMinWidth": 90},
+        "autoSizeStrategy": {"type": "fitCellContents", "skipHeader": False, "defaultMinWidth": 76},
         "suppressColumnVirtualisation": True, "enableBrowserTooltips": True,
         "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True,
         "suppressScrollOnNewData": True, "suppressFieldDotNotation": True,
