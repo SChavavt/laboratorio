@@ -416,7 +416,7 @@ def test_new_log_respects_actual_header_order(monkeypatch):
 
 
 @pytest.mark.parametrize("user",["Admin","Jime","Lesly","Vero"])
-def test_followup_tabs_keep_one_operational_table(user):
+def test_apparatus_tabs_match_each_user(user):
     from streamlit.testing.v1 import AppTest
     script = f'''
 import sys
@@ -430,26 +430,22 @@ app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert len(at.tabs[0].get("component_instance")) == 1
     expected_tabs = {
-        "Admin": [
-            "📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño",
-            "📋 Recepción y Seguimiento", "💳 Control de Pagos",
-            "🖨️ Impresión y Sinterizado", "🛠️ Confección y Calidad",
-            "⏱️ Alertas", "📋 Todos los Procesos", "⚙️ Procesos por Aparato",
-        ],
-        "Jime": [
-            "📋 Seguimiento", "➕ Nuevo pedido", "📋 Recepción y Seguimiento",
-            "📐 Planeación y Diseño", "💳 Control de Pagos",
-        ],
-        "Lesly": ["📋 Seguimiento", "🖨️ Impresión y Sinterizado"],
+        "Admin": ["➕ Nuevo pedido", "📐 Planeación y Diseño"],
+        "Jime": ["➕ Nuevo pedido", "📐 Planeación y Diseño"],
+        "Lesly": ["➕ Nuevo pedido", "📐 Planeación y Diseño"],
         "Vero": ["📋 Seguimiento", "🛠️ Confección y Calidad"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     assert not at.toggle
     assert not at.get("segmented_control")
+    if user != "Vero":
+        assert at.tabs[0].subheader[0].value == "➕ Nuevo pedido"
+        return
+
+    assert len(at.tabs[0].get("component_instance")) == 1
     assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
-    assert at.selectbox(key="workbench_owner").value == ("JIME" if user == "Jime" else "Todos")
+    assert at.selectbox(key="workbench_owner").value == "Todos"
     assert any("Fijas: Folio, Semáforo y columnas principales" in item.value for item in at.tabs[0].markdown)
     assert any("Editable automática" in item.value for item in at.tabs[0].markdown)
     assert all(item.key != "workbench_signal" for item in at.selectbox)
@@ -470,6 +466,7 @@ sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 import lab_pg as app
 import pandas as pd
 app.require_authenticated_user = lambda: "Admin"
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
 app.ensure_tiempos_headers = lambda: None
 app.read_sheet_df = lambda name: pd.DataFrame()
 app.main()
@@ -491,6 +488,7 @@ from unittest.mock import patch
 with (
     patch.object(app, "require_authenticated_user", lambda: "Admin"),
     patch.object(app, "ensure_tiempos_headers", lambda: None),
+    patch.object(app, "workbench_tab_options", lambda _: ["➕ Nuevo pedido", "📐 Planeación y Diseño"]),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
     patch.object(app, "render_workbench_auxiliary", lambda label, _: st.write(f"auxiliar ejecutado: {{label}}")),
 ):
@@ -498,15 +496,16 @@ with (
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
+    assert [tab.label for tab in at.tabs] == ["➕ Nuevo pedido", "📐 Planeación y Diseño"]
+    assert [item.value for item in at.tabs[0].markdown] == ["auxiliar ejecutado: ➕ Nuevo pedido"]
     assert all(not tab.markdown for tab in at.tabs[1:])
 
-    at.session_state["lab_primary_tabs_Admin"] = "⚙️ Procesos por Aparato"
+    at.session_state["lab_primary_tabs_Admin"] = "📐 Planeación y Diseño"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[9].markdown] == [
-        "auxiliar ejecutado: ⚙️ Procesos por Aparato"
+    assert [item.value for item in at.tabs[1].markdown] == [
+        "auxiliar ejecutado: 📐 Planeación y Diseño"
     ]
 
 
@@ -521,6 +520,7 @@ import streamlit as st
 if "demo_rows" not in st.session_state:
     st.session_state.demo_rows = [{case()!r}]
 app.require_authenticated_user = lambda: "Admin"
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
 app.ensure_tiempos_headers = lambda: None
 app.clear_sheet_data_cache = lambda: None
 app.read_sheet_df = lambda name: pd.DataFrame(st.session_state.demo_rows) if name == app.SHEET_ESTATUS else pd.DataFrame()
@@ -559,6 +559,7 @@ sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 import lab_pg as app
 import pandas as pd
 app.require_authenticated_user = lambda: "Admin"
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
 app.ensure_tiempos_headers = lambda: None
 app.read_sheet_df = lambda name: pd.DataFrame([{case()!r}]) if name == app.SHEET_ESTATUS else pd.DataFrame()
 app.main()
@@ -580,10 +581,6 @@ app.main()
         bars = [item.value for item in at.tabs[0].markdown if 'class="lab-edit-bar' in item.value]
         assert len(bars) == 1
         assert not any("Tienes celdas editadas" in item.value for item in at.info)
-        if pending:
-            assert not at.tabs[1].get("form")
-
-
 @pytest.mark.parametrize("user,status",[("Admin","EN PLANEACIÓN"),("Jime","PAGO PLANEACIÓN"),
                                        ("Lesly","ELABORACIÓN PLATINA"),("Vero","LISTO P/CONFECCIÓN")])
 def test_selected_case_actions_stay_on_same_page(user,status):
@@ -597,6 +594,7 @@ import lab_pg as app
 import pandas as pd
 import streamlit as st
 app.require_authenticated_user = lambda: {user!r}
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
 app.ensure_tiempos_headers = lambda: None
 app.read_sheet_df = lambda name: pd.DataFrame([{sample!r}]) if name == app.SHEET_ESTATUS else pd.DataFrame([{timing!r}])
 app.get_latest_estefano_files = lambda _: ""
