@@ -110,9 +110,9 @@ LAB_WORKSPACE_DETAILS = {
 }
 APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
 USER_VISIBLE_TABS = {
-    "Admin": ["nuevo", "estefano", "jime", "pagos", "lesly", "vero", "alertas", "todos", "procesos"],
-    "Jime": ["nuevo", "jime", "estefano", "pagos"],
-    "Lesly": ["lesly"],
+    "Admin": ["nuevo", "estefano"],
+    "Jime": ["nuevo", "estefano"],
+    "Lesly": ["nuevo", "estefano"],
     "Vero": ["vero"],
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
@@ -5820,10 +5820,11 @@ def render_workbench(current_user: str) -> None:
 
 
 def workbench_tab_options(current_user: str) -> list[str]:
-    """Restaura las pestañas operativas que corresponden a cada usuario."""
+    """Devuelve únicamente las pestañas de Aparatos habilitadas para el usuario."""
 
     legacy_tabs = USER_VISIBLE_TABS.get(current_user, [])
-    return ["📋 Seguimiento", *(APP_TAB_OPTIONS[key] for key in legacy_tabs)]
+    labels = [APP_TAB_OPTIONS[key] for key in legacy_tabs]
+    return ["📋 Seguimiento", *labels]
 
 
 def render_workbench_auxiliary(label: str, current_user: str) -> None:
