@@ -198,10 +198,29 @@ def test_status_options_also_apply_user_and_printing_permissions():
     assert app.display_selectbox_value(app.STATUS_COLUMN, "CANCELO") not in app.workbench_stage_options(jime_row, "Jime")
     lesly_row = pd.Series(case(status="LISTO P/SINTERIZADO"))
     assert app.workbench_stage_options(lesly_row, "Lesly") == [
-        app.display_selectbox_value(app.STATUS_COLUMN, "LISTO P/SINTERIZADO")
+        app.display_selectbox_value(app.STATUS_COLUMN, "LISTO P/SINTERIZADO"),
+        app.display_selectbox_value(app.STATUS_COLUMN, app.PAUSED_STATUS),
     ]
     lesly_row[app.ESTATUS_PRINT_DATE_COLUMN] = "2026/09/03"
     assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") in app.workbench_stage_options(lesly_row, "Lesly")
+
+
+def test_paused_cases_are_archived_and_can_return_to_any_stage_in_their_flow():
+    source = pd.DataFrame([
+        case("active", status="ORDEN RECIBIDA", apparatus="MSE"),
+        case("paused", status=app.PAUSED_STATUS, apparatus="HYRAX"),
+    ])
+
+    assert list(app.active_workbench_cases(source)[app.ID_COLUMN]) == ["active"]
+    assert list(app.paused_workbench_cases(source)[app.ID_COLUMN]) == ["paused"]
+    options = app.get_allowed_next_statuses("HYRAX", app.PAUSED_STATUS)
+    assert options[0] == app.PAUSED_STATUS
+    assert "ORDEN RECIBIDA" in options
+    assert "LISTO P/CONFECCIÓN" in options
+    assert all(
+        app.is_transition_allowed_for_user(user, app.PAUSED_STATUS, "ORDEN RECIBIDA", "HYRAX")
+        for user in app.APP_USERS
+    )
 
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])

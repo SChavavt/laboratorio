@@ -334,6 +334,7 @@ STATUS_ALIASES = {
     "ESPERANDO STL PSM": "ESPERANDO STL PSM DOCTOR",
 }
 TERMINAL_STATUSES = {"ENVÍO DE ENCUESTA", "CANCELO"}
+PAUSED_STATUS = "CONFECCION EN PAUSA"
 PROCESS_STATUS_VALUES = [
     *list(dict.fromkeys(status for flow in PROCESS_CONFIG.values() for status, _ in flow)),
     "CANCELO",
@@ -1452,6 +1453,10 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
     normalized_current_status = normalize_status_alias(current_status)
     flow = get_process_flow(apparatus)
     statuses = [status for status, _ in flow]
+    if normalize_text(normalized_current_status) == normalize_text(PAUSED_STATUS):
+        # Una pausa no forma parte del flujo: al reactivar el caso se puede
+        # elegir la etapa real en la que debe continuar este aparato.
+        return [PAUSED_STATUS, *statuses, "CANCELO"]
     if not statuses:
         return [normalized_current_status] if normalized_current_status else []
 
@@ -1475,6 +1480,8 @@ def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
         normalize_text(status) for status in TERMINAL_STATUSES
     } and "CANCELO" not in allowed:
         allowed.append("CANCELO")
+    if PAUSED_STATUS not in allowed:
+        allowed.append(PAUSED_STATUS)
     return allowed
 
 
@@ -1740,7 +1747,10 @@ def is_transition_allowed_for_user(
 
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
-    if current_user == "Admin" or previous_status == new_status:
+    if (current_user == "Admin" or previous_status == new_status
+            or (current_user in APP_USERS and (
+                previous_status == PAUSED_STATUS or new_status == PAUSED_STATUS
+            ))):
         return True
 
     user_rules = USER_ALLOWED_TRANSITIONS.get(current_user, {})
@@ -2011,6 +2021,8 @@ def validate_status_change(
         )
     if not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
         return False, "El usuario actual no tiene permiso para realizar este cambio de STATUS."
+    if new_status == PAUSED_STATUS or previous_status == PAUSED_STATUS:
+        return True, ""
     can_advance, reason = can_advance_from_payment(identifier, previous_status)
     if not can_advance:
         return False, reason
@@ -5192,6 +5204,7 @@ WORKBENCH_SIGNAL_COLORS = {
     "🟡 Por vencer": ("#FEF3C7", "#92400E"),
     "🟢 En tiempo": ("#DCFCE7", "#166534"),
     "⚪ Sin medición": ("#F1F5F9", "#475569"),
+    "🚫 Confección en pausa": ("#FEE2E2", "#991B1B"),
 }
 WORKBENCH_FIXED_COLUMNS = {"SELECCIONAR", ID_COLUMN, "SEMÁFORO"}
 WORKBENCH_SIGNAL_FILTER_KEY = "workbench_signal_filter"
@@ -5224,9 +5237,21 @@ def active_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
     closed = {normalize_text(status) for status in WORKBENCH_CLOSED_STATUSES}
     meaningful = [column for column in [APARATO_COLUMN, STATUS_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"]
                   if column in result]
-    mask = (result[ID_COLUMN].ne("") & ~result[STATUS_COLUMN].map(normalize_text).isin(closed)
+    paused = normalize_text(PAUSED_STATUS)
+    mask = (result[ID_COLUMN].ne("") & ~result[STATUS_COLUMN].map(normalize_text).isin({*closed, paused})
             & result[meaningful].apply(lambda row: any(value.strip() for value in row), axis=1))
     return result[mask].reset_index(drop=True)
+
+
+def paused_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve sólo los pedidos archivados temporalmente por confección."""
+    result = canonical_workbench_df(df)
+    if not {ID_COLUMN, STATUS_COLUMN}.issubset(result.columns):
+        return result.iloc[0:0]
+    return result[
+        result[ID_COLUMN].ne("")
+        & result[STATUS_COLUMN].map(normalize_text).eq(normalize_text(PAUSED_STATUS))
+    ].reset_index(drop=True)
 
 
 def workbench_signal(state: str) -> str:
@@ -5252,9 +5277,14 @@ def workbench_default_owner(current_user: str, owners: Any) -> str:
     )
 
 
-def build_workbench_table(estatus_df: pd.DataFrame, tiempos_df: pd.DataFrame) -> pd.DataFrame:
+def build_workbench_table(
+    estatus_df: pd.DataFrame,
+    tiempos_df: pd.DataFrame,
+    *,
+    paused_only: bool = False,
+) -> pd.DataFrame:
     """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas."""
-    cases = active_workbench_cases(estatus_df)
+    cases = paused_workbench_cases(estatus_df) if paused_only else active_workbench_cases(estatus_df)
     logs = canonical_workbench_df(tiempos_df)
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
@@ -5549,6 +5579,43 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
     return saved, errors
 
 
+def pause_workbench_cases(
+    selected_ids: Any, original: pd.DataFrame, current_user: str
+) -> tuple[list[str], list[str]]:
+    """Archiva en pausa una selección, comprobando antes la versión de la hoja."""
+    identifiers = list(dict.fromkeys(clean_cell(value).strip() for value in selected_ids if clean_cell(value).strip()))
+    if not identifiers:
+        return [], []
+    clear_sheet_data_cache()
+    fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
+    saved, errors = [], []
+    for identifier in identifiers:
+        before = original[original[ID_COLUMN] == identifier]
+        current = fresh[fresh[ID_COLUMN] == identifier] if ID_COLUMN in fresh else pd.DataFrame()
+        if len(before) != 1 or len(current) != 1:
+            errors.append(f"{identifier}: el folio desapareció o está duplicado. Actualiza la tabla.")
+            continue
+        old, row = before.iloc[0], current.iloc[0]
+        if not values_equivalent_for_column(STATUS_COLUMN, old.get(STATUS_COLUMN, ""), row.get(STATUS_COLUMN, "")):
+            errors.append(f"{identifier}: otro usuario cambió la etapa. Actualiza la tabla.")
+            continue
+        success = advance_case_status(
+            identifier=identifier,
+            row=row,
+            new_status=PAUSED_STATUS,
+            current_user=current_user,
+            comment="Confección en pausa desde la tabla de trabajo",
+            expected_values={STATUS_COLUMN: row.get(STATUS_COLUMN, "")},
+        )
+        if success:
+            saved.append(identifier)
+        else:
+            errors.append(f"{identifier}: no se pudo poner en confección en pausa.")
+    clear_sheet_data_cache()
+    reset_workbench()
+    return saved, errors
+
+
 def reset_workbench() -> None:
     """Invalida la fotografía y la clave del editor después de una operación explícita."""
     st.session_state.pop("workbench_snapshot", None)
@@ -5654,7 +5721,7 @@ def current_workbench_signal_filter() -> str:
     return signal
 
 
-def render_workbench_signal_cards(table: pd.DataFrame, pending: bool) -> str:
+def render_workbench_signal_cards(table: pd.DataFrame, paused_count: int, pending: bool) -> str:
     """Convierte los contadores en filtros de semáforo de un solo clic."""
 
     selected = current_workbench_signal_filter()
@@ -5664,6 +5731,7 @@ def render_workbench_signal_cards(table: pd.DataFrame, pending: bool) -> str:
         ("amber", "🟡 Por vencer", "🟡 Por vencer", int(table["SEMÁFORO"].eq("🟡 Por vencer").sum())),
         ("green", "🟢 En tiempo", "🟢 En tiempo", int(table["SEMÁFORO"].eq("🟢 En tiempo").sum())),
         ("gray", "⚪ Sin medición", "⚪ Sin medición", int(table["SEMÁFORO"].eq("⚪ Sin medición").sum())),
+        ("paused", "🚫 Confección en pausa", "🚫 Confección en pausa", paused_count),
     ]
     for column, (tone, label, signal, value) in zip(st.columns(len(cards)), cards):
         with column.container(key=f"lab_signal_{tone}"):
@@ -5680,14 +5748,76 @@ def render_workbench_signal_cards(table: pd.DataFrame, pending: bool) -> str:
     return selected
 
 
+def render_paused_workbench(
+    table: pd.DataFrame, current_user: str, *, scroll_into_view: bool = False
+) -> None:
+    """Muestra el archivo temporal y permite devolver cada caso a su flujo."""
+    expanded = bool(st.session_state.get("workbench_paused_expanded", False))
+    st.markdown('<div id="confeccion-en-pausa"></div>', unsafe_allow_html=True)
+    with st.expander(
+        f"🚫 Confección en pausa · {len(table)} pedido(s)", expanded=expanded
+    ):
+        if scroll_into_view:
+            components.html(
+                """<script>
+                setTimeout(() => {
+                  const summaries = [...window.parent.document.querySelectorAll('details summary')];
+                  const target = summaries.find(node => node.textContent.includes('Confección en pausa'));
+                  if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+                }, 150);
+                </script>""",
+                height=0,
+            )
+        st.caption(
+            "Estos pedidos están archivados hasta nuevo aviso. Cambia la etapa para "
+            "reactivarlos y devolverlos automáticamente a la lista principal."
+        )
+        if table.empty:
+            st.info("No hay pedidos en confección en pausa.")
+            return
+        grid = workbench_display_df(table)
+        grid.insert(0, "SELECCIONAR", False)
+        options = workbench_grid_options(grid, table, current_user)
+        for column in options["columnDefs"]:
+            if column["field"] not in {"SELECCIONAR", STATUS_COLUMN}:
+                column["editable"] = False
+        key = f"workbench_paused_grid_{current_user}_{st.session_state.get('workbench_revision', 0)}"
+        edited, _ = render_grid(grid, options, key)
+        try:
+            changes = workbench_changes(grid, edited)
+        except ValueError as exc:
+            st.error(str(exc))
+            changes = []
+        invalid = [identifier for identifier, delta in changes if set(delta) != {STATUS_COLUMN}]
+        if invalid:
+            st.error("En el archivo de pausados sólo se puede cambiar la etapa.")
+        status_changes = [
+            (identifier, delta) for identifier, delta in changes
+            if set(delta) == {STATUS_COLUMN}
+        ]
+        if st.button(
+            "Guardar y reactivar",
+            key="save_paused_workbench",
+            type="primary",
+            disabled=not status_changes or bool(invalid),
+        ):
+            saved, errors = save_workbench_changes(grid, edited, current_user)
+            st.session_state["workbench_feedback"] = (saved, errors)
+            rerun_active_tab()
+
+
 def render_workbench(current_user: str) -> None:
     """Renderiza Seguimiento dentro del fragmento de la pestaña activa."""
     snapshot = st.session_state.get("workbench_snapshot")
     if snapshot is None or snapshot["user"] != current_user:
-        table = build_workbench_table(read_sheet_df(SHEET_ESTATUS), read_sheet_df(SHEET_TIEMPOS))
-        snapshot = {"user": current_user, "table": table, "at": app_now()}
+        estatus = read_sheet_df(SHEET_ESTATUS)
+        tiempos = read_sheet_df(SHEET_TIEMPOS)
+        table = build_workbench_table(estatus, tiempos)
+        paused_table = build_workbench_table(estatus, tiempos, paused_only=True)
+        snapshot = {"user": current_user, "table": table, "paused_table": paused_table, "at": app_now()}
         st.session_state["workbench_snapshot"] = snapshot
     table = snapshot["table"]
+    paused_table = snapshot.get("paused_table", table.iloc[0:0])
     pending_count = workbench_pending_count()
     pending = pending_count > 0
     heading, refresh = st.columns([5, 1])
@@ -5704,8 +5834,10 @@ def render_workbench(current_user: str) -> None:
             st.toast("Guardado: " + ", ".join(saved), icon="✅")
         if errors:
             st.session_state["workbench_save_errors"] = errors
-    signal = render_workbench_signal_cards(table, pending)
-    st.caption("Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes. "
+    signal = render_workbench_signal_cards(table, len(paused_table), pending)
+    if signal == "🚫 Confección en pausa":
+        st.session_state["workbench_paused_expanded"] = True
+    st.caption("Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes · Pausa: archivo temporal. "
                "Se conservan los plazos hábiles de lunes a viernes y las alertas especiales de pagos.")
     if table.empty:
         st.info("No hay pedidos activos para mostrar.")
@@ -5757,8 +5889,10 @@ def render_workbench(current_user: str) -> None:
     if search:
         search_columns = [column for column in [ID_COLUMN, APARATO_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"] if column in table]
         filtered = filtered[filtered[search_columns].apply(lambda row: normalize_text(search) in normalize_text(" ".join(row)), axis=1)]
-    if signal != "Todos":
+    if signal not in {"Todos", "🚫 Confección en pausa"}:
         filtered = filtered[filtered["SEMÁFORO"] == signal]
+    elif signal == "🚫 Confección en pausa":
+        filtered = filtered.iloc[0:0]
     if owner != "Todos":
         filtered = filtered[filtered["RESPONSABLE"] == owner]
     for column, values in chosen.items():
@@ -5815,12 +5949,14 @@ def render_workbench(current_user: str) -> None:
             [column["field"] for column in grid_options["columnDefs"]], grid.columns
         )
         edited, current_order = render_grid(grid, grid_options, key)
+        selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
+        selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
         try:
             changes = workbench_changes(grid, edited)
         except ValueError as exc:
             st.error(str(exc))
             changes = []
-        save_col, discard_col, count_col, _, order_col = st.columns([1.2, 1.2, 1.5, 2.8, 1.2])
+        save_col, discard_col, count_col, pause_col, order_col = st.columns([1.2, 1.2, 1.5, 1.7, 1.2])
         if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
             st.session_state.pop("workbench_save_errors", None)
             saved, errors = save_workbench_changes(grid, edited, current_user)
@@ -5844,11 +5980,18 @@ def render_workbench(current_user: str) -> None:
                 st.toast(message, icon="✅")
             else:
                 st.error(message)
+        if pause_col.button(
+            "Confección en pausa",
+            disabled=bool(changes) or selected.empty,
+            use_container_width=True,
+            help="Archiva temporalmente todos los pedidos marcados en la columna Abrir.",
+        ):
+            saved, errors = pause_workbench_cases(selected_ids, filtered, current_user)
+            st.session_state["workbench_feedback"] = (saved, errors)
+            rerun_active_tab()
         count_col.caption(f"{len(changes)} pedidos con cambios pendientes")
         for error in st.session_state.get("workbench_save_errors", []):
             st.error(error)
-        selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
-        selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
         if selected.empty:
             render_workbench_case_actions(selected, current_user, bool(changes))
         else:
@@ -5857,6 +6000,12 @@ def render_workbench(current_user: str) -> None:
                 render_workbench_case_actions(selected, current_user, bool(changes))
     else:
         st.info("No hay pedidos que coincidan con los filtros.")
+
+    render_paused_workbench(
+        paused_table,
+        current_user,
+        scroll_into_view=signal == "🚫 Confección en pausa",
+    )
 
 
 def workbench_tab_options(current_user: str) -> list[str]:
