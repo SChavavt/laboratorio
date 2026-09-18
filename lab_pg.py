@@ -7,6 +7,7 @@ import math
 import re
 import time
 import unicodedata
+from functools import lru_cache
 from pathlib import PurePosixPath
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -806,12 +807,12 @@ def clean_display_value(value: Any) -> str:
     return text.split(" ", 1)[1] if text in display_values and " " in text else text
 
 
-def apparatus_components(value: Any) -> list[str]:
-    """Separa y normaliza una combinación como ``TIGER + DISTALIZADOR``."""
+@lru_cache(maxsize=512)
+def _apparatus_components_from_text(text: str) -> tuple[str, ...]:
+    """Versión cacheada para no renormalizar cada celda en cada filtro."""
 
-    text = clean_cell(value).strip()
     if not text:
-        return []
+        return ()
     known_values = [*APARATO_OPTIONS, *PROCESS_CONFIG, *PROCESS_ALIASES]
     known_by_normalized = {
         normalize_text(option): option for option in known_values
@@ -828,13 +829,18 @@ def apparatus_components(value: Any) -> list[str]:
         if canonical_key not in seen:
             components.append(canonical)
             seen.add(canonical_key)
-    return components
+    return tuple(components)
 
 
-def canonical_apparatus_value(value: Any) -> str:
-    """Devuelve una combinación estable, sin emojis y separada por `` + ``."""
+def apparatus_components(value: Any) -> list[str]:
+    """Separa y normaliza una combinación como ``TIGER + DISTALIZADOR``."""
 
-    components = apparatus_components(value)
+    return list(_apparatus_components_from_text(clean_cell(value).strip()))
+
+
+@lru_cache(maxsize=512)
+def _canonical_apparatus_from_text(text: str) -> str:
+    components = list(_apparatus_components_from_text(text))
     catalog_order = {
         normalize_text(option): index for index, option in enumerate(APARATO_OPTIONS)
     }
@@ -845,6 +851,12 @@ def canonical_apparatus_value(value: Any) -> str:
         )
     )
     return " + ".join(components)
+
+
+def canonical_apparatus_value(value: Any) -> str:
+    """Devuelve una combinación estable, sin emojis y separada por `` + ``."""
+
+    return _canonical_apparatus_from_text(clean_cell(value).strip())
 
 
 def is_valid_apparatus_combination(value: Any) -> bool:
@@ -1242,6 +1254,51 @@ def get_single_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
     return []
 
 
+@lru_cache(maxsize=1)
+def apparatus_flow_catalog() -> tuple[dict[str, str], tuple[tuple[str, str], ...]]:
+    """Agrupa el catálogo por flujo real y genera sólo sus variantes distintas.
+
+    MSE y REVERSE comparten flujo, igual que TIGER, LEONE y DISTALIZADOR.
+    Por eso basta calcular siete variantes de flujo en lugar de las 127
+    combinaciones nominales del catálogo.
+    """
+
+    identities: list[tuple[tuple[str, str | None], ...]] = []
+    representatives: list[str] = []
+    flow_keys: dict[str, str] = {}
+    for option in APARATO_OPTIONS:
+        identity = tuple(get_single_process_flow(option))
+        if identity not in identities:
+            identities.append(identity)
+            representatives.append(option)
+        flow_keys[option] = f"flow_{identities.index(identity)}"
+
+    variants: list[tuple[str, str]] = []
+    for size in range(1, len(representatives) + 1):
+        for selected in itertools.combinations(representatives, size):
+            signature = "|".join(flow_keys[option] for option in selected)
+            variants.append((signature, " + ".join(selected)))
+    return flow_keys, tuple(variants)
+
+
+def apparatus_flow_signature(
+    apparatus: Any, flow_keys: dict[str, str] | None = None
+) -> str:
+    """Identificador compacto que el editor usa tras combinar aparatos."""
+
+    mapping = flow_keys or apparatus_flow_catalog()[0]
+    normalized_mapping = {
+        normalize_text(option): flow_key for option, flow_key in mapping.items()
+    }
+    signature: list[str] = []
+    for component in apparatus_components(apparatus):
+        flow_key = normalized_mapping.get(normalize_text(component))
+        if flow_key and flow_key not in signature:
+            signature.append(flow_key)
+    signature.sort()
+    return "|".join(signature)
+
+
 def merge_process_flows(
     flows: list[list[tuple[str, str | None]]],
 ) -> list[tuple[str, str | None]]:
@@ -1323,15 +1380,22 @@ def merge_process_flows(
     return combined
 
 
+@lru_cache(maxsize=512)
+def _cached_process_flow(canonical_apparatus: str) -> tuple[tuple[str, str | None], ...]:
+    return tuple(
+        merge_process_flows(
+            [
+                get_single_process_flow(component)
+                for component in apparatus_components(canonical_apparatus)
+            ]
+        )
+    )
+
+
 def get_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
     """Regresa la unión ordenada de los flujos de todos los aparatos elegidos."""
 
-    return merge_process_flows(
-        [
-            get_single_process_flow(component)
-            for component in apparatus_components(apparatus)
-        ]
-    )
+    return list(_cached_process_flow(canonical_apparatus_value(apparatus)))
 
 
 def get_time_limit(apparatus: str, status: str) -> str | None:
@@ -1819,6 +1883,22 @@ def is_case_marked_for_printing(row: pd.Series) -> bool:
     """Indica si el pedido ya tiene fecha de impresión en ESTATUS APARATOS."""
 
     return bool(clean_cell(get_row_value_by_column(row, ESTATUS_PRINT_DATE_COLUMN, "")).strip())
+
+
+def transition_requires_print_mark(
+    current_user: str,
+    previous_status: str,
+    new_status: str,
+    row: pd.Series,
+) -> bool:
+    """Exige la marca sólo al iniciar impresión, no durante etapas posteriores."""
+
+    return (
+        current_user == "Lesly"
+        and normalize_status_alias(previous_status) == "LISTO P/SINTERIZADO"
+        and normalize_status_alias(new_status) == "ELABORACIÓN PLATINA"
+        and not is_case_marked_for_printing(row)
+    )
 
 
 def mark_case_for_printing(identifier: str, row: pd.Series, current_user: str) -> dict[str, Any]:
@@ -4191,7 +4271,9 @@ def advance_case_status(
     if not is_valid:
         st.error(validation_message)
         return False
-    if current_user == "Lesly" and not is_case_marked_for_printing(row):
+    if transition_requires_print_mark(
+        current_user, previous_status, new_status, row
+    ):
         st.error(
             f"Primero debes marcar el pedido como impresión llenando "
             f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
@@ -4826,8 +4908,9 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
         st.dataframe(display_df, use_container_width=True, hide_index=True,
                      column_config=build_dataframe_column_config(display_df))
     st.info(
-        "Primero marca los pedidos como impresión. Solo los pedidos con "
-        f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)} lleno pueden avanzar de STATUS."
+        "La marca de impresión se exige únicamente para pasar de "
+        "LISTO P/SINTERIZADO a ELABORACIÓN PLATINA. Las etapas posteriores "
+        "pueden avanzar aunque un registro histórico no tenga esa fecha."
     )
 
     row_by_id: dict[str, pd.Series] = {}
@@ -4845,13 +4928,21 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
         current_status = normalize_status_alias(get_row_value_by_column(case_row, STATUS_COLUMN, ""))
         apparatus = clean_cell(get_row_value_by_column(case_row, APARATO_COLUMN, ""))
         print_date = clean_cell(get_row_value_by_column(case_row, ESTATUS_PRINT_DATE_COLUMN, "")).strip()
-        print_badge = f"✅ Impreso: {print_date}" if print_date else "⏳ Falta impresión"
+        print_badge = (
+            f"✅ Impreso: {print_date}"
+            if print_date
+            else (
+                "⏳ Falta impresión"
+                if current_status == "LISTO P/SINTERIZADO"
+                else "➡️ Etapa posterior"
+            )
+        )
         labels[identifier] = (
             f"{build_order_type_label(case_row)} | 🚦 {display_selectbox_value(STATUS_COLUMN, current_status)} | "
             f"{print_badge} | 👩‍⚕️ {clean_cell(case_row.get('NOMBRE DOCTOR', '')).strip()} | "
             f"🙂 {clean_cell(case_row.get('NOMBRE PACIENTE', '')).strip()}"
         )
-        if print_date:
+        if print_date or current_status != "LISTO P/SINTERIZADO":
             print_ready_ids.append(identifier)
         else:
             pending_print_ids.append(identifier)
@@ -4860,8 +4951,11 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
             status
             for status in get_allowed_next_statuses(apparatus, current_status)
             if status != current_status and is_transition_allowed_for_user("Lesly", current_status, status, apparatus)
+            and not transition_requires_print_mark(
+                "Lesly", current_status, status, case_row
+            )
         ]
-        if print_date and allowed_targets:
+        if allowed_targets:
             advanceable_ids.append(identifier)
             next_status_by_id[identifier] = allowed_targets[0]
 
@@ -4903,14 +4997,14 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
             rerun_active_tab()
 
     with st.form("lesly_advance_printed_form"):
-        st.markdown("### ➡️ Cambiar STATUS de pedidos ya marcados")
+        st.markdown("### ➡️ Cambiar STATUS de pedidos habilitados")
         if print_ready_ids and not advanceable_ids:
-            st.info("Hay pedidos marcados como impresión, pero ninguno tiene un siguiente STATUS permitido para Lesly.")
+            st.info("Hay pedidos habilitados, pero ninguno tiene un siguiente STATUS permitido para Lesly.")
         default_advance_selection = [
             st.session_state.get("lesly_alert_selected_case")
         ] if st.session_state.get("lesly_alert_selected_case") in advanceable_ids else []
         selected_to_advance = st.multiselect(
-            "Selecciona uno o varios pedidos ya marcados como impresión",
+            "Selecciona uno o varios pedidos habilitados",
             advanceable_ids,
             default=default_advance_selection,
             format_func=lambda option: f"{labels.get(option, option)} | ➡️ {next_status_by_id.get(option, '')}",
@@ -4923,13 +5017,18 @@ def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = No
 
     if advance_submitted:
         if not selected_to_advance:
-            st.warning("Selecciona al menos un pedido marcado como impresión para cambiar STATUS.")
+            st.warning("Selecciona al menos un pedido habilitado para cambiar STATUS.")
         else:
             successes = []
             failures = []
             for identifier in selected_to_advance:
                 case_row = row_by_id[identifier]
-                if not is_case_marked_for_printing(case_row):
+                current_status = normalize_status_alias(
+                    get_row_value_by_column(case_row, STATUS_COLUMN, "")
+                )
+                if transition_requires_print_mark(
+                    "Lesly", current_status, next_status_by_id.get(identifier, ""), case_row
+                ):
                     failures.append(f"{identifier}: falta {ESTATUS_PRINT_DATE_COLUMN}.")
                     continue
                 next_status = next_status_by_id.get(identifier, "")
@@ -5171,10 +5270,17 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     current = normalize_status_alias(row.get(STATUS_COLUMN, ""))
     apparatus = row.get(APARATO_COLUMN, "")
     options = [current]
-    if (current_user in APP_USERS
-            and not (current_user == "Lesly" and not is_case_marked_for_printing(row))):
-        options.extend(target for target in get_allowed_next_statuses(apparatus, current)
-                       if is_transition_allowed_for_user(current_user, current, target, apparatus))
+    if current_user in APP_USERS:
+        options.extend(
+            target
+            for target in get_allowed_next_statuses(apparatus, current)
+            if is_transition_allowed_for_user(
+                current_user, current, target, apparatus
+            )
+            and not transition_requires_print_mark(
+                current_user, current, target, row
+            )
+        )
     return list(dict.fromkeys(display_selectbox_value(STATUS_COLUMN, value) for value in options))
 
 
@@ -5187,18 +5293,29 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
               if row[ID_COLUMN] not in duplicates else [display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])]
               for _, row in source.iterrows()}
     apparatus_stage_options: dict[str, dict[str, list[str]]] = {}
-    combinations = apparatus_combination_values()
+    apparatus_flow_keys, flow_variants = apparatus_flow_catalog()
+    stage_cache: dict[tuple[str, str, str, bool], list[str]] = {}
     for _, row in source.iterrows():
         identifier = row[ID_COLUMN]
         if identifier in duplicates:
             continue
         apparatus_stage_options[identifier] = {}
-        for combination in combinations:
-            candidate = row.copy()
-            candidate[APARATO_COLUMN] = combination
-            apparatus_stage_options[identifier][combination] = workbench_stage_options(
-                candidate, current_user
+        current_status = normalize_status_alias(row.get(STATUS_COLUMN, ""))
+        has_print_mark = is_case_marked_for_printing(row)
+        for signature, representative_combination in flow_variants:
+            cache_key = (
+                current_user,
+                current_status,
+                signature,
+                has_print_mark,
             )
+            if cache_key not in stage_cache:
+                candidate = row.copy()
+                candidate[APARATO_COLUMN] = representative_combination
+                stage_cache[cache_key] = workbench_stage_options(
+                    candidate, current_user
+                )
+            apparatus_stage_options[identifier][signature] = stage_cache[cache_key]
     selections = {column: list(dict.fromkeys([
         *(display_selectbox_value(column, value) for value in SELECTBOX_OPTIONS_BY_COLUMN[column]),
         *grid[column],
@@ -5221,7 +5338,8 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                               palettes=palettes, time_zone=APP_TIMEZONE_NAME,
                               preferred_order=preferred_order, hidden_columns=hidden_columns,
                               apparatus_options=APARATO_OPTIONS,
-                              apparatus_stage_options=apparatus_stage_options)
+                              apparatus_stage_options=apparatus_stage_options,
+                              apparatus_flow_keys=apparatus_flow_keys)
 
 
 def workbench_saved_column_order(current_user: str, available_columns: Any) -> list[str]:
@@ -5332,7 +5450,9 @@ def validate_workbench_changes(
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
             errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
-        elif current_user == "Lesly" and not is_case_marked_for_printing(row):
+        elif transition_requires_print_mark(
+            current_user, previous_status, new_status, row
+        ):
             errors.append(f"{identifier}: primero marca el pedido como impresión.")
         elif previous_status in PAYMENT_STATUSES:
             _, payment = get_active_tiempo_row(identifier)

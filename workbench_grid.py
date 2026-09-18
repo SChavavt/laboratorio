@@ -115,7 +115,8 @@ GRID_CSS = {
 
 def build_grid_options(grid, *, editable, automatic, stage_options, select_options, date_values,
                        datetime_columns, palettes, time_zone, preferred_order=None, hidden_columns=None,
-                       apparatus_options=None, apparatus_stage_options=None):
+                       apparatus_options=None, apparatus_stage_options=None,
+                       apparatus_flow_keys=None):
     """Mantiene opciones ligadas a la fotografía guardada, incluso tras editar STATUS."""
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
@@ -176,11 +177,17 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         elif column == "STATUS":
             config.update(
                 cellEditor=status_editor(), cellEditorPopup=True,
-                editable=JsCode("""function(p) {
+                editable=JsCode(r"""function(p) {
                     const identifier = p.data['Columna 1'];
                     const apparatus = p.data['APARATO'] || '';
                     const byApparatus = (p.context.apparatusStageOptions[identifier] || {});
-                    const options = byApparatus[apparatus] || p.context.stageOptions[identifier] || [];
+                    const keys = [];
+                    String(apparatus).split(/\s*\+\s*/).forEach(option => {
+                        const key = p.context.apparatusFlowKeys[option.trim()];
+                        if (key && !keys.includes(key)) keys.push(key);
+                    });
+                    keys.sort();
+                    const options = byApparatus[keys.join('|')] || p.context.stageOptions[identifier] || [];
                     return options.length > 1;
                 }""") if can_edit else False,
             )
@@ -196,11 +203,17 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
                           cellEditorParams={"withTime": column in datetime_columns,
                                             "initialValues": date_values[column], "timeZone": time_zone})
         if can_edit and column == "STATUS":
-            config["cellClass"] = JsCode("""function(p) {
+            config["cellClass"] = JsCode(r"""function(p) {
                 const identifier = p.data['Columna 1'];
                 const apparatus = p.data['APARATO'] || '';
                 const byApparatus = (p.context.apparatusStageOptions[identifier] || {});
-                const options = byApparatus[apparatus] || p.context.stageOptions[identifier] || [];
+                const keys = [];
+                String(apparatus).split(/\s*\+\s*/).forEach(option => {
+                    const key = p.context.apparatusFlowKeys[option.trim()];
+                    if (key && !keys.includes(key)) keys.push(key);
+                });
+                keys.sort();
+                const options = byApparatus[keys.join('|')] || p.context.stageOptions[identifier] || [];
                 return options.length > 1 ?
                     'lab-cell-editable' : 'lab-cell-readonly';
             }""")
@@ -228,6 +241,7 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     return {
         "columnDefs": columns, "context": {"stageOptions": stage_options,
         "apparatusStageOptions": apparatus_stage_options or {},
+        "apparatusFlowKeys": apparatus_flow_keys or {},
         "apparatusOptions": apparatus_options or [], "apparatusColors": apparatus_palette,
         "palettes": palettes},
         "defaultColDef": {"resizable": True, "sortable": True, "filter": False, "cellDataType": False},
