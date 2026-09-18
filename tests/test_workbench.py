@@ -162,6 +162,18 @@ def test_outsourced_work_datetime_labels_reference_stefano():
     }
 
 
+def test_forms_file_links_are_split_deduplicated_and_kept_in_order():
+    first = "https://drive.google.com/open?id=primero"
+    second = "https://drive.google.com/open?id=segundo"
+
+    assert app.get_forms_file_links(f"{first}, {second}\\n{first}") == [first, second]
+
+
+def test_forms_file_links_ignore_empty_or_invalid_values():
+    assert app.get_forms_file_links("") == []
+    assert app.get_forms_file_links("archivo sin enlace") == []
+
+
 def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
     source = pd.DataFrame([
         case("001", status="REVISIÓN DE ARCHIVOS", apparatus="MSE"),
