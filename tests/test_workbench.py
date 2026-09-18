@@ -308,6 +308,18 @@ def test_status_menu_and_columns_expose_visual_categories():
     assert "backgroundColor" in columns[app.STATUS_COLUMN]["cellEditor"].js_code
 
 
+def test_grid_recalculates_layout_when_a_closed_expander_becomes_visible():
+    source = pd.DataFrame([case()])
+    grid = app.workbench_display_df(source)
+    grid.insert(0, "SELECCIONAR", False)
+
+    callback = app.workbench_grid_options(grid, source, "Admin")["onGridReady"].js_code
+
+    assert "ResizeObserver" in callback
+    assert "params.api.sizeColumnsToFit()" in callback
+    assert "params.api.redrawRows()" in callback
+
+
 def test_column_order_is_normalized_and_persisted_per_user(monkeypatch):
     columns = ["SELECCIONAR", app.ID_COLUMN, "SEMÁFORO", "APARATO", "STATUS", "NOMBRE DOCTOR"]
     assert app.normalize_column_order(["STATUS", "STATUS", app.ID_COLUMN, "OTRA"], columns) == [

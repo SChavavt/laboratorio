@@ -246,6 +246,21 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         "palettes": palettes},
         "defaultColDef": {"resizable": True, "sortable": True, "filter": False, "cellDataType": False},
         "rowHeight": 36, "headerHeight": 42, "animateRows": False,
+        # Un grid creado dentro de un expander cerrado recibe ancho cero en su
+        # primer render. Al abrirlo, fuerza a AG Grid a recalcular su layout;
+        # de lo contrario sólo queda visible una línea vertical vacía.
+        "onGridReady": JsCode("""function(params) {
+            const relayout = () => {
+                if (document.body.clientWidth > 0) {
+                    params.api.sizeColumnsToFit();
+                    params.api.redrawRows();
+                }
+            };
+            const observer = new ResizeObserver(relayout);
+            observer.observe(document.body);
+            setTimeout(relayout, 0);
+            setTimeout(relayout, 250);
+        }"""),
         "autoSizeStrategy": {"type": "fitCellContents", "skipHeader": False, "defaultMinWidth": 76},
         "suppressColumnVirtualisation": True, "enableBrowserTooltips": True,
         "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True,
