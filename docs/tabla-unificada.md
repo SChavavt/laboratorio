@@ -96,10 +96,17 @@ pagos para Tiger, Leone y Distalizador; se muestra la más urgente entre la aler
 de etapa y la alerta especial. Los plazos cuentan lunes a viernes, 24 horas por
 día hábil, como el modelo existente; no representan un turno laboral de 8 horas.
 
-El flujo y sus plazos siguen definidos en `PROCESS_CONFIG`. La tabla usa la
-duración guardada en el registro activo de `TIEMPOS_APARATOS`. No se inventan
-fechas iniciales para pedidos antiguos ni se escribe una columna de semáforo
-en Google Sheets. Los registros nuevos respetan el orden real de sus encabezados.
+El flujo y sus plazos se leen de `PROCESOS POR APARATO` (misma hoja horizontal
+Fases/Tiempo por aparato que usa `PROCESOS POR PRODUCTO` en alineadores) y se
+combinan sobre `PROCESS_CONFIG`: un aparato o tiempo que ya está programado en
+el código sigue funcionando si Sheets falla o todavía no lo tiene ahí; la hoja
+sólo agrega aparatos nuevos o actualiza sus tiempos, nunca elimina lo
+programado. Se relee cada hora (no en cada actualización de 30 s de los
+pedidos) o al pulsar **Actualizar datos**, para no afectar el rendimiento. La
+tabla usa la duración guardada en el registro activo de `TIEMPOS_APARATOS`. No
+se inventan fechas iniciales para pedidos antiguos ni se escribe una columna de
+semáforo en Google Sheets. Los registros nuevos respetan el orden real de sus
+encabezados.
 
 ## Pedidos visibles y guardado
 

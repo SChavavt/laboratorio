@@ -37,6 +37,7 @@ SCOPE = [
 SHEET_ESTATUS = "ESTATUS APARATOS"
 SHEET_TIEMPOS = "TIEMPOS_APARATOS"
 SHEET_USER_PREFERENCES = "PREFERENCIAS APP"
+SHEET_PROCESOS = "PROCESOS POR APARATO"
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
 FORMS_FILE_COLUMN_HINT = "Favor de adjuntar archivos STL"
@@ -1243,6 +1244,69 @@ def normalize_status_alias(status: Any) -> str:
         if normalize_text(old_status) == status_norm:
             return new_status
     return cleaned_status
+
+
+# PROCESOS POR APARATO son notas manuales, no etapas: si algún día se agregan
+# ahí, deben ignorarse en vez de colarse como un status falso.
+PROCESS_MATRIX_MARKER_KEYS = {normalize_text(value) for value in ("VERO", "JIME", "LESLY", "ADMIN")}
+
+
+def parse_aparato_process_matrix(values: list[list[Any]]) -> dict[str, list[tuple[str, str | None]]]:
+    """Convierte la matriz horizontal de PROCESOS POR APARATO en flujos por aparato.
+
+    Misma forma que ``PROCESOS POR PRODUCTO`` en alineadores: una fila con el
+    nombre del aparato (celda combinada), una fila "Fases"/"Tiempo" y filas de
+    datos. Cada par de columnas (Fases, Tiempo) es un aparato distinto.
+    """
+
+    if len(values) < 3:
+        return {}
+    width = max((len(row) for row in values), default=0)
+    flows: dict[str, list[tuple[str, str | None]]] = {}
+
+    for column in range(0, width, 2):
+        apparatus_name = clean_cell(values[0][column] if column < len(values[0]) else "").strip()
+        if not apparatus_name:
+            continue
+        steps: list[tuple[str, str | None]] = []
+        seen: set[str] = set()
+        for row in values[2:]:
+            raw_status = clean_cell(row[column] if column < len(row) else "").strip()
+            if not raw_status or normalize_text(raw_status) in PROCESS_MATRIX_MARKER_KEYS:
+                continue
+            raw_limit = clean_cell(row[column + 1] if column + 1 < len(row) else "").strip()
+            status = normalize_status_alias(raw_status)
+            key = normalize_text(status)
+            if key in seen:
+                continue
+            seen.add(key)
+            steps.append((status, raw_limit or None))
+        if steps:
+            flows[apparatus_name] = steps
+    return flows
+
+
+def merge_dynamic_process_flows(
+    dynamic_flows: dict[str, list[tuple[str, str | None]]],
+) -> tuple[dict[str, list[tuple[str, str | None]]], list[str], bool]:
+    """Combina lo leído de PROCESOS POR APARATO sobre el catálogo vigente.
+
+    Lo programado a mano en PROCESS_CONFIG/APARATO_OPTIONS sigue funcionando
+    si Sheets falla o todavía no tiene un aparato: la hoja sólo agrega
+    aparatos nuevos o actualiza sus tiempos, nunca elimina lo programado.
+    """
+
+    merged_config = dict(PROCESS_CONFIG)
+    merged_options = list(APARATO_OPTIONS)
+    changed = False
+    for name, flow in dynamic_flows.items():
+        if merged_config.get(name) != flow:
+            merged_config[name] = flow
+            changed = True
+        if name not in merged_options:
+            merged_options.append(name)
+            changed = True
+    return merged_config, merged_options, changed
 
 
 def get_single_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
@@ -2460,6 +2524,56 @@ def clear_sheet_data_cache() -> None:
     read_sheet_df.clear()
     read_sheet_values.clear()
     read_forms_responses_df.clear()
+    read_process_matrix_values.clear()
+
+
+@st.cache_data(ttl=3600)
+def read_process_matrix_values() -> list[list[str]]:
+    """Lee PROCESOS POR APARATO.
+
+    Cambia muy rara vez: no se recarga cada 30s como los pedidos, sólo cada
+    hora o cuando alguien pulsa Actualizar datos.
+    """
+
+    return run_gsheets_request(lambda: get_worksheet(SHEET_PROCESOS).get_all_values())
+
+
+def refresh_dynamic_process_catalog() -> None:
+    """Mantiene PROCESS_CONFIG y APARATO_OPTIONS al día con PROCESOS POR APARATO.
+
+    Si Sheets falla, la hoja está vacía o un aparato todavía no está ahí, se
+    conserva lo programado a mano; nunca se rompe el flujo por esto.
+    """
+
+    try:
+        dynamic_flows = parse_aparato_process_matrix(read_process_matrix_values())
+    except Exception:
+        return
+    if not dynamic_flows:
+        return
+
+    merged_config, merged_options, changed = merge_dynamic_process_flows(dynamic_flows)
+    if not changed:
+        return
+
+    PROCESS_CONFIG.clear()
+    PROCESS_CONFIG.update(merged_config)
+    APARATO_OPTIONS[:] = merged_options
+    for name in merged_options:
+        # No se agrega a APARATO_DISPLAY: un valor sin emoji ahí confunde a
+        # clean_display_value, que asume "emoji + espacio + nombre" y recorta
+        # la primera palabra de cualquier aparato de más de una palabra.
+        # Sin entrada, display_selectbox_value ya cae de vuelta al nombre
+        # limpio (sin emoji), que es exactamente lo que buscamos aquí.
+        SHEET_STYLE_COLORS[APARATO_COLUMN].setdefault(name, ("#E6E6E6", "#333333"))
+    PROCESS_STATUS_VALUES[:] = [
+        *dict.fromkeys(status for flow in PROCESS_CONFIG.values() for status, _ in flow),
+        "CANCELO",
+    ]
+    _apparatus_components_from_text.cache_clear()
+    _canonical_apparatus_from_text.cache_clear()
+    _cached_process_flow.cache_clear()
+    apparatus_flow_catalog.cache_clear()
 
 
 def rerun_active_tab() -> None:
@@ -4021,7 +4135,10 @@ def render_procesos_tab() -> None:
                 }
             )
     procesos_df = pd.DataFrame(rows)
-    st.caption("Consulta de procesos y tiempos programados en el código. No se leen desde Excel.")
+    st.caption(
+        "Se toman de PROCESOS POR APARATO cuando el aparato está ahí (se relee "
+        "cada hora o al Actualizar datos); si no, se usa lo programado en el código."
+    )
     st.dataframe(
         procesos_df,
         use_container_width=True,
@@ -6371,6 +6488,7 @@ def render_selected_workspace(selected_view: str, current_user: str) -> None:
         return
 
     ensure_tiempos_headers()
+    refresh_dynamic_process_catalog()
     render_workbench_tabs(current_user)
 
 
