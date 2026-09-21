@@ -5900,10 +5900,27 @@ def render_paused_workbench(
 ) -> None:
     """Muestra el archivo temporal y permite devolver cada caso a su flujo."""
     expanded = bool(st.session_state.get("workbench_paused_expanded", False))
+    if not expanded and st.session_state.get("workbench_paused_pending"):
+        # Cerrar el expander desmonta la grilla; si hay cambios de etapa sin
+        # guardar se perderían en silencio. Se mantiene abierto hasta que el
+        # usuario guarde o descarte.
+        expanded = True
+        st.session_state["workbench_paused_expanded"] = True
+        st.toast("Guarda o descarta los cambios antes de cerrar el archivo de pausados.", icon="⚠️")
     st.markdown('<div id="confeccion-en-pausa"></div>', unsafe_allow_html=True)
-    with st.expander(
-        f"🚫 Confección en pausa · {len(table)} pedido(s)", expanded=expanded
-    ):
+    # on_change="rerun" hace que abrir/cerrar dispare una corrida real de
+    # Python en vez de un simple toggle de CSS en el navegador. Sin esto, la
+    # grilla se monta con el expander todavía colapsado (ancho cero) y sólo
+    # queda visible una línea vertical vacía al abrirlo manualmente.
+    expander = st.expander(
+        f"🚫 Confección en pausa · {len(table)} pedido(s)",
+        expanded=expanded,
+        key="workbench_paused_expanded",
+        on_change="rerun",
+    )
+    with expander:
+        if not expander.open:
+            return
         if scroll_into_view:
             components.html(
                 """<script>
@@ -5921,6 +5938,7 @@ def render_paused_workbench(
         )
         if table.empty:
             st.info("No hay pedidos en confección en pausa.")
+            st.session_state["workbench_paused_pending"] = False
             return
         grid = workbench_display_df(table)
         grid.insert(0, "SELECCIONAR", False)
@@ -5935,6 +5953,7 @@ def render_paused_workbench(
         except ValueError as exc:
             st.error(str(exc))
             changes = []
+        st.session_state["workbench_paused_pending"] = bool(changes)
         invalid = [identifier for identifier, delta in changes if set(delta) != {STATUS_COLUMN}]
         if invalid:
             st.error("En el archivo de pausados sólo se puede cambiar la etapa.")
@@ -5990,8 +6009,13 @@ def render_workbench(current_user: str) -> None:
         if errors:
             st.session_state["workbench_save_errors"] = errors
     signal = render_workbench_signal_cards(table, len(paused_table), pending)
-    if signal == "🚫 Confección en pausa":
+    previous_signal = st.session_state.get("workbench_signal_filter_previous")
+    if signal == "🚫 Confección en pausa" and previous_signal != "🚫 Confección en pausa":
+        # Sólo se fuerza a abrir al seleccionar la tarjeta (transición), no en
+        # cada rerun; si no, el usuario nunca podría cerrar el expander
+        # manualmente mientras ese filtro siga activo.
         st.session_state["workbench_paused_expanded"] = True
+    st.session_state["workbench_signal_filter_previous"] = signal
     st.caption("Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · Rojo: plazo agotado · Gris: sin datos suficientes · Pausa: archivo temporal. "
                "Se conservan los plazos hábiles de lunes a viernes y las alertas especiales de pagos.")
     if table.empty:
