@@ -643,6 +643,64 @@ app.main()
     assert any("Guardado: 001" in message.value for message in at.get("toast"))
 
 
+def test_save_remembers_edited_row_so_the_grid_can_scroll_back_to_it():
+    """Guardar reconstruye la grilla (nueva clave); debe apuntar al folio editado."""
+    from streamlit.testing.v1 import AppTest
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import pandas as pd
+import streamlit as st
+from workbench_grid import render_grid as real_render_grid
+
+if "demo_rows" not in st.session_state:
+    st.session_state.demo_rows = [{case()!r}]
+if "captured_scroll_targets" not in st.session_state:
+    st.session_state.captured_scroll_targets = []
+
+app.require_authenticated_user = lambda: "Admin"
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
+app.ensure_tiempos_headers = lambda: None
+app.clear_sheet_data_cache = lambda: None
+app.read_sheet_df = lambda name: pd.DataFrame(st.session_state.demo_rows) if name == app.SHEET_ESTATUS else pd.DataFrame()
+def update(identifier, changes, **kwargs):
+    for row in st.session_state.demo_rows:
+        if row[app.ID_COLUMN] == identifier:
+            row.update(changes)
+    return {{"success":True,"updated_columns":list(changes),"skipped_columns":[],"error":""}}
+app.update_row_by_columna_1 = update
+
+def spy_render_grid(grid, options, key):
+    st.session_state.captured_scroll_targets.append(options["context"].get("scrollToId"))
+    return real_render_grid(grid, options, key)
+app.render_grid = spy_render_grid
+
+app.main()
+'''
+    # El script exec'd importa el mismo módulo lab_pg ya cargado (no una copia),
+    # así que este monkeypatch sobrevive fuera de la prueba si no se restaura.
+    original_render_grid = app.render_grid
+    try:
+        at = AppTest.from_string(script, default_timeout=15).run()
+        key = at.session_state["workbench_editor_key"]
+        delta = grid_event(at, {"001": {"PAGO": "🟢 TOTAL"}})
+        at.session_state[key] = delta
+        at.run()
+        assert not at.exception
+        next(button for button in at.button if button.label == "Guardar cambios").click()
+        at.session_state[key] = delta
+        at.run()
+        assert not at.exception
+        targets = at.session_state["captured_scroll_targets"]
+        # Antes de guardar nadie pide scroll; justo después, la grilla reconstruida
+        # apunta al folio que se acaba de editar.
+        assert targets[0] is None
+        assert targets[-1] == "001"
+    finally:
+        app.render_grid = original_render_grid
+
+
 def test_editing_stage_keeps_editor_identity_and_revert_unlocks_filters():
     from streamlit.testing.v1 import AppTest
     script = f'''

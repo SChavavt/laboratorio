@@ -260,6 +260,22 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
             observer.observe(document.body);
             setTimeout(relayout, 0);
             setTimeout(relayout, 250);
+
+            // Guardar cambios reconstruye la grilla entera (nueva clave), así
+            // que sin esto el scroll siempre regresa al principio. Se vuelve
+            // a intentar por si las filas aún no están dibujadas.
+            const scrollToId = params.context.scrollToId;
+            if (scrollToId) {
+                const scrollToRow = () => {
+                    let target = null;
+                    params.api.forEachNode(node => {
+                        if (!target && node.data && node.data['Columna 1'] === scrollToId) target = node;
+                    });
+                    if (target) params.api.ensureIndexVisible(target.rowIndex, 'middle');
+                };
+                setTimeout(scrollToRow, 0);
+                setTimeout(scrollToRow, 250);
+            }
         }"""),
         "autoSizeStrategy": {"type": "fitCellContents", "skipHeader": False, "defaultMinWidth": 76},
         "suppressColumnVirtualisation": True, "enableBrowserTooltips": True,
