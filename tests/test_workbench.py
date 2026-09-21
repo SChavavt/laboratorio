@@ -813,6 +813,75 @@ def test_merge_dynamic_process_flows_reports_no_change_when_sheet_matches_code(m
     assert changed is False
 
 
+def test_merge_dynamic_process_flows_matches_existing_apparatus_regardless_of_case(monkeypatch):
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {"HYRAX": [("ORDEN RECIBIDA", None)]})
+    monkeypatch.setattr(app, "APARATO_OPTIONS", ["HYRAX"])
+
+    # La hoja trae "Hyrax" con otra capitalización: debe actualizar la
+    # entrada existente, no crear un "Hyrax" duplicado junto a "HYRAX".
+    merged_config, merged_options, changed = app.merge_dynamic_process_flows(
+        {"Hyrax": [("ORDEN RECIBIDA", None), ("REVISIÓN DE ARCHIVOS", "<5 hrs")]}
+    )
+
+    assert changed is True
+    assert merged_options == ["HYRAX"]
+    assert merged_config["HYRAX"] == [("ORDEN RECIBIDA", None), ("REVISIÓN DE ARCHIVOS", "<5 hrs")]
+    assert "Hyrax" not in merged_config
+
+
+def test_merge_dynamic_process_flows_uppercases_genuinely_new_apparatus(monkeypatch):
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {})
+    monkeypatch.setattr(app, "APARATO_OPTIONS", [])
+
+    merged_config, merged_options, changed = app.merge_dynamic_process_flows(
+        {"Botón de Nance": [("ORDEN RECIBIDA", None)]}
+    )
+
+    assert changed is True
+    assert merged_options == ["BOTÓN DE NANCE"]
+    assert merged_config == {"BOTÓN DE NANCE": [("ORDEN RECIBIDA", None)]}
+
+
+def test_refresh_dynamic_process_catalog_gives_each_new_apparatus_a_distinct_color(monkeypatch):
+    original_config = dict(app.PROCESS_CONFIG)
+    original_options = list(app.APARATO_OPTIONS)
+    original_palette = dict(app.SHEET_STYLE_COLORS[app.APARATO_COLUMN])
+    try:
+        monkeypatch.setattr(
+            app,
+            "read_process_matrix_values",
+            lambda: [
+                ["BOTÓN DE NANCE", "", "ARCO TRANSPALATINO", ""],
+                ["Fases", "Tiempo", "Fases", "Tiempo"],
+                ["ORDEN RECIBIDA", "", "ORDEN RECIBIDA", ""],
+            ],
+        )
+
+        app.refresh_dynamic_process_catalog()
+
+        palette = app.SHEET_STYLE_COLORS[app.APARATO_COLUMN]
+        botom_color = palette["BOTÓN DE NANCE"]
+        arco_color = palette["ARCO TRANSPALATINO"]
+        assert botom_color != arco_color
+        # Ninguno de los dos se queda en el gris plano que se veía "en blanco".
+        assert botom_color != ("#E6E6E6", "#333333")
+        assert arco_color != ("#E6E6E6", "#333333")
+    finally:
+        app.PROCESS_CONFIG.clear()
+        app.PROCESS_CONFIG.update(original_config)
+        app.APARATO_OPTIONS[:] = original_options
+        app.SHEET_STYLE_COLORS[app.APARATO_COLUMN].clear()
+        app.SHEET_STYLE_COLORS[app.APARATO_COLUMN].update(original_palette)
+        app.PROCESS_STATUS_VALUES[:] = [
+            *dict.fromkeys(status for flow in app.PROCESS_CONFIG.values() for status, _ in flow),
+            "CANCELO",
+        ]
+        app._apparatus_components_from_text.cache_clear()
+        app._canonical_apparatus_from_text.cache_clear()
+        app._cached_process_flow.cache_clear()
+        app.apparatus_flow_catalog.cache_clear()
+
+
 def test_refresh_dynamic_process_catalog_adds_apparatus_and_clears_flow_caches(monkeypatch):
     original_config = dict(app.PROCESS_CONFIG)
     original_options = list(app.APARATO_OPTIONS)

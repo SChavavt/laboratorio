@@ -542,6 +542,20 @@ SHEET_STYLE_COLORS = {
 
 STYLE_COLUMNS = set(SHEET_STYLE_COLORS)
 
+# Colores para aparatos que aparecen en PROCESOS POR APARATO pero todavía no
+# tienen un color curado en SHEET_STYLE_COLORS. Se asignan en orden, uno
+# distinto por aparato nuevo, para que no se vean todos con el mismo gris.
+FALLBACK_APARATO_COLOR_PALETTE = [
+    ("#6A4C93", "#FFFFFF"),
+    ("#1982C4", "#FFFFFF"),
+    ("#B5179E", "#FFFFFF"),
+    ("#43AA8B", "#FFFFFF"),
+    ("#F94144", "#FFFFFF"),
+    ("#F9C74F", "#000000"),
+    ("#277DA1", "#FFFFFF"),
+    ("#9B5DE5", "#FFFFFF"),
+]
+
 FIELD_LABEL_DISPLAY = {
     ID_COLUMN: "🆔 Columna 1",
     APARATO_COLUMN: "🦷 APARATO",
@@ -1293,18 +1307,28 @@ def merge_dynamic_process_flows(
 
     Lo programado a mano en PROCESS_CONFIG/APARATO_OPTIONS sigue funcionando
     si Sheets falla o todavía no tiene un aparato: la hoja sólo agrega
-    aparatos nuevos o actualiza sus tiempos, nunca elimina lo programado.
+    aparatos nuevos o actualiza sus tiempos, nunca elimina lo programado. La
+    comparación ignora mayúsculas/acentos (p. ej. "Hyrax" en Sheets contra
+    "HYRAX" en el código) para no duplicar el mismo aparato con otra letra.
     """
 
     merged_config = dict(PROCESS_CONFIG)
     merged_options = list(APARATO_OPTIONS)
+    canonical_by_key = {normalize_text(option): option for option in merged_options}
+    for key in merged_config:
+        canonical_by_key.setdefault(normalize_text(key), key)
+
     changed = False
     for name, flow in dynamic_flows.items():
-        if merged_config.get(name) != flow:
-            merged_config[name] = flow
+        canonical_name = canonical_by_key.get(normalize_text(name))
+        if canonical_name is None:
+            canonical_name = name.upper()
+            canonical_by_key[normalize_text(canonical_name)] = canonical_name
+        if merged_config.get(canonical_name) != flow:
+            merged_config[canonical_name] = flow
             changed = True
-        if name not in merged_options:
-            merged_options.append(name)
+        if canonical_name not in merged_options:
+            merged_options.append(canonical_name)
             changed = True
     return merged_config, merged_options, changed
 
@@ -2559,13 +2583,21 @@ def refresh_dynamic_process_catalog() -> None:
     PROCESS_CONFIG.clear()
     PROCESS_CONFIG.update(merged_config)
     APARATO_OPTIONS[:] = merged_options
+    apparatus_palette = SHEET_STYLE_COLORS[APARATO_COLUMN]
     for name in merged_options:
         # No se agrega a APARATO_DISPLAY: un valor sin emoji ahí confunde a
         # clean_display_value, que asume "emoji + espacio + nombre" y recorta
         # la primera palabra de cualquier aparato de más de una palabra.
         # Sin entrada, display_selectbox_value ya cae de vuelta al nombre
         # limpio (sin emoji), que es exactamente lo que buscamos aquí.
-        SHEET_STYLE_COLORS[APARATO_COLUMN].setdefault(name, ("#E6E6E6", "#333333"))
+        if name in apparatus_palette:
+            continue
+        # Cada aparato nuevo recibe un color distinto de la paleta (no todos
+        # el mismo gris plano); len(apparatus_palette) avanza con cada uno
+        # que se agrega, así que no se repite mientras haya colores libres.
+        apparatus_palette[name] = FALLBACK_APARATO_COLOR_PALETTE[
+            len(apparatus_palette) % len(FALLBACK_APARATO_COLOR_PALETTE)
+        ]
     PROCESS_STATUS_VALUES[:] = [
         *dict.fromkeys(status for flow in PROCESS_CONFIG.values() for status, _ in flow),
         "CANCELO",
