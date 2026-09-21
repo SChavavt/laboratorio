@@ -2173,48 +2173,51 @@ def apply_custom_css() -> None:
     st.markdown(
         """<style>
         .stApp {
-            background: radial-gradient(ellipse at 0 0, #DED1FF 0, transparent 48%),
-                        radial-gradient(ellipse at 100% 30%, #CDEDEA 0, transparent 45%), #F1EEFA;
+            background: radial-gradient(ellipse at 0 0, #C9F3DA 0, transparent 48%),
+                        radial-gradient(ellipse at 100% 30%, #CDEDEA 0, transparent 45%), #EFFBF3;
         }
         .block-container {padding-top: 3rem; padding-bottom: 2rem; max-width: 100%;}
         [data-testid="stHeader"] {background: transparent;}
-        [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
-        h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
+        [data-testid="stSidebar"] {background: #E4F5EA; border-right: 1px solid #BFE3CC;}
+        h1, h2, h3 {letter-spacing: -.025em; color: #1B4B36;}
         .align-hero {
             position: relative; overflow: hidden; padding: 24px 30px; margin: 0 0 20px;
             display: flex; justify-content: space-between; align-items: center; gap: 20px;
-            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
-            border: 1px solid #9A80CD; border-radius: 20px; box-shadow: 0 12px 30px #39236522;
+            color: #FFF; background: linear-gradient(115deg, #123B2C 0%, #12915F 54%, #7ACB5D 100%);
+            border: 1px solid #7BCDA6; border-radius: 20px; box-shadow: 0 12px 30px #0F3F2A22;
         }
         .align-hero h1 {color: #FFF; font-size: 2rem; margin: 6px 0; padding: 0;}
-        .align-hero p {color: #E9E1FF; margin: 0; font-size: .93rem;}
-        .align-brand {font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;}
+        .align-hero p {color: #E3FBEA; margin: 0; font-size: .93rem;}
+        .align-brand {font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #C7F0D6;}
         .align-hero-badge {
             background: #FFFFFF18; border: 1px solid #FFFFFF42; border-radius: 14px;
             padding: 12px 18px; font-size: .84rem; color: #FFF; white-space: nowrap;
         }
         [data-baseweb="tab-list"] {
-            gap: 8px; padding: 7px; border-radius: 15px; background: #E2D8F3;
-            border: 1px solid #CBBDE3; margin-bottom: 12px;
+            gap: 8px; padding: 7px; border-radius: 15px; background: #DCF2E4;
+            border: 1px solid #B7DFC4; margin-bottom: 12px;
         }
         [data-baseweb="tab"] {
-            height: 45px; padding: 0 20px; border-radius: 10px; background: #F6F2FF;
-            border: 1px solid #D5C7EC; color: #493168; font-weight: 700;
+            height: 45px; padding: 0 20px; border-radius: 10px; background: #F1FCF5;
+            border: 1px solid #C7E8D2; color: #265C42; font-weight: 700;
         }
         [data-baseweb="tab"][aria-selected="true"] {
-            background: linear-gradient(110deg, #7040BD, #4E3992); color: #FFF;
-            border-color: #6337A6; box-shadow: 0 4px 12px #6943A833;
+            background: linear-gradient(110deg, #159A66, #0C6E4A); color: #FFF;
+            border-color: #0E8358; box-shadow: 0 4px 12px #12965F33;
         }
         [data-baseweb="tab"][aria-selected="true"] p {color: #FFF;}
         [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {display: none;}
+        [data-testid="stTab"][aria-selected="true"],
+        [data-testid="stTab"][aria-selected="true"] p {color: #0E8358 !important; font-weight: 800;}
+        .react-aria-SelectionIndicator {background: #0E8358 !important;}
         [data-testid="stMetric"] {
-            border: 1px solid #CDC1E6; border-top-width: 4px; border-radius: 14px;
+            border: 1px solid #B9E4CB; border-top-width: 4px; border-radius: 14px;
             padding: 13px 16px; box-shadow: 0 5px 16px #42266C0D;
         }
-        .st-key-align_total [data-testid="stMetric"], .st-key-align_total_alerts [data-testid="stMetric"] {background:#EEE7FF;border-color:#8C62D2;color:#4C2883;}
+        .st-key-align_total [data-testid="stMetric"], .st-key-align_total_alerts [data-testid="stMetric"] {background:#E7FBF0;border-color:#3FAE7B;color:#0F6B44;}
         .st-key-align_red [data-testid="stMetric"], .st-key-align_red_alerts [data-testid="stMetric"] {background:#FFECEF;border-color:#DF5875;color:#A72B48;}
         .st-key-align_amber [data-testid="stMetric"], .st-key-align_amber_alerts [data-testid="stMetric"] {background:#FFF3D7;border-color:#DBA131;color:#885A08;}
-        .st-key-align_pause [data-testid="stMetric"], .st-key-align_pause_alerts [data-testid="stMetric"] {background:#F0E7FF;border-color:#8D62CC;color:#553C9A;}
+        .st-key-align_pause [data-testid="stMetric"], .st-key-align_pause_alerts [data-testid="stMetric"] {background:#DCF5F1;border-color:#159C8B;color:#0D5C52;}
         .st-key-align_green [data-testid="stMetric"], .st-key-align_green_alerts [data-testid="stMetric"] {background:#E0F7EE;border-color:#37A989;color:#13654E;}
         .st-key-align_gray [data-testid="stMetric"], .st-key-align_gray_alerts [data-testid="stMetric"] {background:#EBEFF8;border-color:#8193B4;color:#4C5E7D;}
         .st-key-align_filter_total button,
@@ -2227,10 +2230,10 @@ def apply_custom_css() -> None:
             border-width:2px;border-radius:14px;text-align:left;
             transition:transform 150ms ease,box-shadow 150ms ease;
         }
-        .st-key-align_filter_total button {background:#EEE7FF !important;border-color:#8C62D2 !important;color:#4C2883 !important;}
+        .st-key-align_filter_total button {background:#E7FBF0 !important;border-color:#3FAE7B !important;color:#0F6B44 !important;}
         .st-key-align_filter_red button {background:#FFECEF !important;border-color:#DF5875 !important;color:#A72B48 !important;}
         .st-key-align_filter_amber button {background:#FFF3D7 !important;border-color:#DBA131 !important;color:#885A08 !important;}
-        .st-key-align_filter_pause button {background:#F0E7FF !important;border-color:#8D62CC !important;color:#553C9A !important;}
+        .st-key-align_filter_pause button {background:#DCF5F1 !important;border-color:#159C8B !important;color:#0D5C52 !important;}
         .st-key-align_filter_green button {background:#E0F7EE !important;border-color:#37A989 !important;color:#13654E !important;}
         .st-key-align_filter_gray button {background:#EBEFF8 !important;border-color:#8193B4 !important;color:#4C5E7D !important;}
         .st-key-align_filter_total button p,
@@ -2254,7 +2257,7 @@ def apply_custom_css() -> None:
         .st-key-align_filter_green button[kind="primary"],
         .st-key-align_filter_gray button[kind="primary"] {
             transform:translateY(-2px);border-width:3px !important;
-            box-shadow:0 0 0 3px #5C38A633,0 10px 22px #3923652B !important;
+            box-shadow:0 0 0 3px #1F8F5C33,0 10px 22px #0E402B2B !important;
         }
         .st-key-align_filter_total button[kind="primary"]::after,
         .st-key-align_filter_red button[kind="primary"]::after,
@@ -2263,39 +2266,39 @@ def apply_custom_css() -> None:
         .st-key-align_filter_green button[kind="primary"]::after,
         .st-key-align_filter_gray button[kind="primary"]::after {
             content:"✓";position:absolute;right:11px;top:9px;width:22px;height:22px;
-            display:grid;place-items:center;border-radius:50%;background:#4F317D;color:#FFF;
+            display:grid;place-items:center;border-radius:50%;background:#0E6B47;color:#FFF;
             font-size:.76rem;font-weight:900;
         }
         .align-edit-bar {
             height: 40px; display:flex; align-items:center; padding:0 14px; border-radius:10px;
-            border:1px solid #CDBCEB; font-size:.85rem; font-weight:600; margin: 8px 0;
+            border:1px solid #BFE3CC; font-size:.85rem; font-weight:600; margin: 8px 0;
         }
-        .align-edit-bar.is-ready {background:#E7DFF7;color:#53357F;}
+        .align-edit-bar.is-ready {background:#DFF5E7;color:#1D6B47;}
         .align-edit-bar.is-pending {background:#FCE9BA;border-color:#DCA544;color:#805410;}
         .align-column-legend {display:flex;justify-content:flex-end;gap:8px;align-items:end;min-height:38px;}
         .align-column-legend span {border-radius:999px;padding:5px 10px;color:#FFF;font-size:.76rem;font-weight:700;}
-        .align-column-legend .editable {background:#7443AA;}
+        .align-column-legend .editable {background:#12875E;}
         .align-column-legend .readonly {background:#52667D;}
         .align-column-legend .automatic {background:#147C84;}
-        .align-column-legend .auto-editable {background:linear-gradient(100deg,#147C84 0 48%,#7443AA 52% 100%);}
+        .align-column-legend .auto-editable {background:linear-gradient(100deg,#147C84 0 48%,#12875E 52% 100%);}
         .align-stage-chip {display:inline-block;border-radius:9px;padding:8px 13px;font-size:.85rem;font-weight:750;margin-bottom:10px;}
-        [data-testid="stWidgetLabel"] p {color:#493064;font-weight:650;}
+        [data-testid="stWidgetLabel"] p {color:#265C42;font-weight:650;}
         button[kind="primary"], [data-testid="stBaseButton-primary"] {
-            background:linear-gradient(110deg,#7A40BE,#5942A1);border-color:#68419D;color:#FFF;
-            box-shadow:0 4px 12px #6637A82B;
+            background:linear-gradient(110deg,#17A06B,#0C6E4A);border-color:#0E8358;color:#FFF;
+            box-shadow:0 4px 12px #17A06B2B;
         }
         button[kind="primary"]:not(:disabled):hover,
         [data-testid="stBaseButton-primary"]:not(:disabled):hover {
-            box-shadow:0 5px 16px #6637A84D;
+            box-shadow:0 5px 16px #17A06B4D;
         }
         button[kind="primary"]:disabled,
         [data-testid="stBaseButton-primary"]:disabled {
-            background:#DDD2EC;border-color:#B6A1CF;color:#58436F;opacity:1;
+            background:#D6F0DF;border-color:#9DCBAE;color:#2C5B41;opacity:1;
             box-shadow:none;cursor:not-allowed;
         }
         button[kind="primary"]:disabled *,
         [data-testid="stBaseButton-primary"]:disabled * {
-            color:#58436F !important;-webkit-text-fill-color:#58436F;opacity:1;
+            color:#2C5B41 !important;-webkit-text-fill-color:#2C5B41;opacity:1;
         }
         @media (max-width: 800px) {
             .align-hero {padding:20px;}.align-hero h1 {font-size:1.55rem;}.align-hero-badge {display:none;}
