@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import io
 import json
 import math
 import re
@@ -26,6 +27,19 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    HRFlowable,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from streamlit.errors import StreamlitAPIException
 
 from aligners_grid import build_aligners_grid_options, render_aligners_grid
@@ -1154,6 +1168,128 @@ def apply_single_row_selection_to_selectbox(
         st.session_state[selectbox_key] = raw_selected_id
 
 
+def build_form_response_pdf(
+    *,
+    form_label: str,
+    response_number: Any,
+    details: list[tuple[str, str]],
+    links: list[str],
+) -> bytes:
+    """Genera un PDF legible con todos los datos de una respuesta de Forms."""
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        topMargin=1.6 * cm,
+        bottomMargin=1.6 * cm,
+        leftMargin=1.8 * cm,
+        rightMargin=1.8 * cm,
+        title=f"{form_label} - Respuesta {response_number}",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "AlignersPdfTitle",
+        parent=styles["Title"],
+        alignment=TA_LEFT,
+        textColor=colors.HexColor("#123B2C"),
+        fontSize=18,
+        spaceAfter=2,
+    )
+    subtitle_style = ParagraphStyle(
+        "AlignersPdfSubtitle",
+        parent=styles["Normal"],
+        textColor=colors.HexColor("#5C7568"),
+        fontSize=10,
+        spaceAfter=14,
+    )
+    section_style = ParagraphStyle(
+        "AlignersPdfSection",
+        parent=styles["Heading2"],
+        textColor=colors.white,
+        backColor=colors.HexColor("#12875E"),
+        fontSize=12,
+        leading=18,
+        spaceBefore=16,
+        spaceAfter=8,
+        leftIndent=6,
+        borderPadding=(4, 6, 4, 6),
+    )
+    label_style = ParagraphStyle(
+        "AlignersPdfLabel",
+        parent=styles["Normal"],
+        fontSize=8.5,
+        textColor=colors.HexColor("#3F6B54"),
+        fontName="Helvetica-Bold",
+    )
+    value_style = ParagraphStyle(
+        "AlignersPdfValue",
+        parent=styles["Normal"],
+        fontSize=10,
+        textColor=colors.HexColor("#1B4B36"),
+        leading=13,
+    )
+    link_style = ParagraphStyle(
+        "AlignersPdfLink",
+        parent=styles["Normal"],
+        fontSize=9.5,
+        textColor=colors.HexColor("#0E8358"),
+        leading=14,
+    )
+
+    story = [
+        Paragraph(html.escape(form_label), title_style),
+        Paragraph(
+            f"Respuesta #{html.escape(str(response_number))} · ARTTDLAB / Control de alineadores",
+            subtitle_style,
+        ),
+        HRFlowable(width="100%", thickness=1, color=colors.HexColor("#BFE3CC"), spaceAfter=6),
+        Paragraph("Datos capturados", section_style),
+    ]
+
+    if details:
+        rows = [
+            [
+                Paragraph(html.escape(str(field_label)), label_style),
+                Paragraph(html.escape(str(field_value)).replace("\n", "<br/>"), value_style),
+            ]
+            for field_label, field_value in details
+        ]
+        table = Table(rows, colWidths=[4.5 * cm, 11.2 * cm], repeatRows=0)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#D7EDDD")),
+                    ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#F7FCF9")]),
+                ]
+            )
+        )
+        story.append(table)
+    else:
+        story.append(Paragraph("Esta respuesta no tiene datos adicionales visibles.", value_style))
+
+    story.append(Paragraph("Archivos adjuntos", section_style))
+    if links:
+        for index, link in enumerate(links, start=1):
+            safe_link = html.escape(link, quote=True)
+            story.append(
+                Paragraph(
+                    f'{index}. <a href="{safe_link}" color="#0E8358">{safe_link}</a>',
+                    link_style,
+                )
+            )
+            story.append(Spacer(1, 3))
+    else:
+        story.append(Paragraph("Esta respuesta no trae archivos adjuntos detectados.", value_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def render_aligners_form_review(form: dict[str, str]) -> None:
     """Muestra respuestas de un Google Form de alineadores con sus archivos de Drive."""
 
@@ -1244,6 +1380,21 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         f"</div></div>",
         unsafe_allow_html=True,
     )
+
+    pdf_bytes = build_form_response_pdf(
+        form_label=form["label"],
+        response_number=selected_response,
+        details=visible_details,
+        links=selected_links,
+    )
+    with st.container(key=f"align_forms_pdf_{form['key']}"):
+        st.download_button(
+            "📄 Descargar PDF de esta respuesta",
+            data=pdf_bytes,
+            file_name=f"{form['key']}_respuesta_{selected_response}.pdf",
+            mime="application/pdf",
+            key=f"aligners_forms_pdf_button_{form['key']}_{selected_response}",
+        )
 
     if visible_details:
         cols = st.columns(2)
@@ -2519,9 +2670,9 @@ def render_processes(current_user: str) -> None:
 
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
+    "📥 Recibidos de Forms",
     "🚨 Alertas y pausas",
     "⚙️ Procesos y plazos",
-    "📥 Recibidos de Forms",
 )
 
 
@@ -2679,19 +2830,24 @@ def apply_custom_css() -> None:
         [data-testid="stBaseButton-primary"]:disabled * {
             color:#2C5B41 !important;-webkit-text-fill-color:#2C5B41;opacity:1;
         }
-        .align-forms-hero {background:linear-gradient(135deg,#F5F0FF 0%,#EFF6FF 55%,#F1FAF7 100%);border:1px solid #D9CDF2;border-radius:20px;padding:18px 20px;margin:12px 0 18px;box-shadow:0 12px 30px rgba(57,35,101,.08);}
-        .align-forms-hero-title {font-size:1.05rem;font-weight:800;color:#392365;margin-bottom:4px;}
+        .align-forms-hero {background:linear-gradient(135deg,#EAFBF1 0%,#EFFBF3 55%,#F1FAF7 100%);border:1px solid #BFE3CC;border-radius:20px;padding:18px 20px;margin:12px 0 18px;box-shadow:0 12px 30px rgba(15,63,42,.08);}
+        .align-forms-hero-title {font-size:1.05rem;font-weight:800;color:#123B2C;margin-bottom:4px;}
         .align-forms-pill {display:inline-block;border-radius:999px;padding:7px 12px;margin:4px 7px 8px 0;font-weight:800;}
-        .align-forms-pill-id {background:#E7DFF7;color:#4C2883;}
+        .align-forms-pill-id {background:#DCF2E4;color:#0F6B44;}
         .align-forms-pill-link {background:#E0F7EE;color:#13654E;}
         .align-forms-pill-missing {background:#FFECEF;color:#A72B48;}
-        .align-forms-detail {background:linear-gradient(180deg,#FFFFFF 0%,#FBF9FF 100%);border:1px solid #E6E0F5;border-left:5px solid #7542B7;border-radius:14px;padding:12px 14px;margin:7px 0;box-shadow:0 4px 12px rgba(57,35,101,.05);}
-        .align-forms-label {color:#5A4A78;font-size:.78rem;font-weight:850;text-transform:uppercase;letter-spacing:.03em;}
-        .align-forms-value {color:#241A38;font-size:1rem;margin-top:5px;word-break:break-word;line-height:1.35;}
+        .align-forms-detail {background:linear-gradient(180deg,#FFFFFF 0%,#F7FCF9 100%);border:1px solid #D7EDDD;border-left:5px solid #12875E;border-radius:14px;padding:12px 14px;margin:7px 0;box-shadow:0 4px 12px rgba(15,63,42,.05);}
+        .align-forms-label {color:#3F6B54;font-size:.78rem;font-weight:850;text-transform:uppercase;letter-spacing:.03em;}
+        .align-forms-value {color:#1B4B36;font-size:1rem;margin-top:5px;word-break:break-word;line-height:1.35;}
         .align-forms-links-list {margin-top:.45rem;padding-left:1.75rem;}
-        .align-forms-links-list li {padding:.45rem .2rem;border-bottom:1px solid #E6E0F5;}
-        .align-forms-links-list a {font-weight:750;color:#5A34A0;}
-        .align-forms-link-url {margin-top:.15rem;color:#6B5C87;font-size:.84rem;overflow-wrap:anywhere;}
+        .align-forms-links-list li {padding:.45rem .2rem;border-bottom:1px solid #D7EDDD;}
+        .align-forms-links-list a {font-weight:750;color:#0E8358;}
+        .align-forms-link-url {margin-top:.15rem;color:#5C7568;font-size:.84rem;overflow-wrap:anywhere;}
+        .st-key-align_forms_pdf_td [data-testid="stBaseButton-secondary"],
+        .st-key-align_forms_pdf_marca_blanca [data-testid="stBaseButton-secondary"],
+        .st-key-align_forms_pdf_otros_productos [data-testid="stBaseButton-secondary"] {
+            border-color:#0E8358;color:#0E8358;
+        }
         @media (max-width: 800px) {
             .align-hero {padding:20px;}.align-hero h1 {font-size:1.55rem;}.align-hero-badge {display:none;}
         }

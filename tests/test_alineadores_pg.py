@@ -417,13 +417,15 @@ with (
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[1].markdown
     assert not at.tabs[2].markdown
+    assert not at.tabs[3].markdown
 
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[1].markdown] == ["alertas ejecutadas"]
-    assert not at.tabs[2].markdown
+    assert not at.tabs[1].markdown
+    assert [item.value for item in at.tabs[2].markdown] == ["alertas ejecutadas"]
+    assert not at.tabs[3].markdown
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):
