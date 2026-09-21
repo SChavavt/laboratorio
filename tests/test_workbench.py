@@ -736,3 +736,128 @@ with (
     assert at.session_state["aligners_loaded"] == "Admin"
     assert at.session_state["apparatus_loaded"] is False
     assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
+
+
+PROCESOS_APARATO_VALUES = [
+    ["MSE", "", "BOTÓN DE NANCE", ""],
+    ["Fases", "Tiempo", "Fases", "Tiempo"],
+    ["ORDEN RECIBIDA", "", "ORDEN RECIBIDA", ""],
+    ["REVISIÓN DE ARCHIVOS", "<5 hrs", "REVISIÓN DE ARCHIVOS", "<5 hrs"],
+    ["PAGO CONFECCIÓN", "", "PAGO CONFECCIÓN", ""],
+    ["LISTO P/SINTERIZADO", "<1 dia", "LISTO P/SINTERIZADO", "<1 dia"],
+    # "VERO" ocupa una celda sobrante de MSE (su flujo ya terminó) para anotar
+    # quién es responsable de la fila; no debe colarse como un status de MSE.
+    ["VERO", "", "PULIDO / EN CONFECCIÓN", "<3 hrs"],
+    ["", "", "ENVIO DE ENCUESTA", "<3 dias"],
+]
+
+
+def test_parse_aparato_process_matrix_reads_pairs_and_skips_responsible_notes():
+    flows = app.parse_aparato_process_matrix(PROCESOS_APARATO_VALUES)
+
+    assert list(flows) == ["MSE", "BOTÓN DE NANCE"]
+    assert flows["MSE"] == [
+        ("ORDEN RECIBIDA", None),
+        ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+        ("PAGO CONFECCIÓN", None),
+        ("LISTO P/SINTERIZADO", "<1 dia"),
+    ]
+    # PULIDO / EN CONFECCIÓN y ENVIO DE ENCUESTA llegan con el alias vigente.
+    assert flows["BOTÓN DE NANCE"][-2:] == [
+        ("PULIDO (EN CONFECCIÓN)", "<3 hrs"),
+        ("ENVÍO DE ENCUESTA", "<3 dias"),
+    ]
+
+
+def test_parse_aparato_process_matrix_ignores_short_or_empty_sheets():
+    assert app.parse_aparato_process_matrix([]) == {}
+    assert app.parse_aparato_process_matrix([["MSE"], ["Fases", "Tiempo"]]) == {}
+
+
+def test_merge_dynamic_process_flows_adds_new_apparatus_without_mutating_globals(monkeypatch):
+    baseline_config = {"MSE": [("ORDEN RECIBIDA", None)]}
+    baseline_options = ["MSE"]
+    monkeypatch.setattr(app, "PROCESS_CONFIG", baseline_config)
+    monkeypatch.setattr(app, "APARATO_OPTIONS", baseline_options)
+
+    merged_config, merged_options, changed = app.merge_dynamic_process_flows(
+        {"BOTÓN DE NANCE": [("ORDEN RECIBIDA", None), ("PAGO CONFECCIÓN", None)]}
+    )
+
+    assert changed is True
+    assert merged_config["BOTÓN DE NANCE"] == [("ORDEN RECIBIDA", None), ("PAGO CONFECCIÓN", None)]
+    assert merged_options == ["MSE", "BOTÓN DE NANCE"]
+    # merge_dynamic_process_flows es puro: no toca los globales que le pasamos.
+    assert baseline_config == {"MSE": [("ORDEN RECIBIDA", None)]}
+    assert baseline_options == ["MSE"]
+
+
+def test_merge_dynamic_process_flows_updates_existing_apparatus_time_limit(monkeypatch):
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {"MSE": [("REVISIÓN DE ARCHIVOS", "<5 hrs")]})
+    monkeypatch.setattr(app, "APARATO_OPTIONS", ["MSE"])
+
+    merged_config, _, changed = app.merge_dynamic_process_flows(
+        {"MSE": [("REVISIÓN DE ARCHIVOS", "<8 hrs")]}
+    )
+
+    assert changed is True
+    assert merged_config["MSE"] == [("REVISIÓN DE ARCHIVOS", "<8 hrs")]
+
+
+def test_merge_dynamic_process_flows_reports_no_change_when_sheet_matches_code(monkeypatch):
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {"MSE": [("ORDEN RECIBIDA", None)]})
+    monkeypatch.setattr(app, "APARATO_OPTIONS", ["MSE"])
+
+    _, _, changed = app.merge_dynamic_process_flows({"MSE": [("ORDEN RECIBIDA", None)]})
+
+    assert changed is False
+
+
+def test_refresh_dynamic_process_catalog_adds_apparatus_and_clears_flow_caches(monkeypatch):
+    original_config = dict(app.PROCESS_CONFIG)
+    original_options = list(app.APARATO_OPTIONS)
+    try:
+        monkeypatch.setattr(
+            app,
+            "read_process_matrix_values",
+            lambda: [
+                ["ARCO TRANSPALATINO", ""],
+                ["Fases", "Tiempo"],
+                ["ORDEN RECIBIDA", ""],
+                ["REVISIÓN DE ARCHIVOS", "<5 hrs"],
+            ],
+        )
+        app.get_process_flow("ARCO TRANSPALATINO")  # llena los lru_cache con el flujo vacío previo
+
+        app.refresh_dynamic_process_catalog()
+
+        assert app.PROCESS_CONFIG["ARCO TRANSPALATINO"] == [
+            ("ORDEN RECIBIDA", None),
+            ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+        ]
+        assert "ARCO TRANSPALATINO" in app.APARATO_OPTIONS
+        assert app.get_process_flow("ARCO TRANSPALATINO") == [
+            ("ORDEN RECIBIDA", None),
+            ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+        ]
+    finally:
+        app.PROCESS_CONFIG.clear()
+        app.PROCESS_CONFIG.update(original_config)
+        app.APARATO_OPTIONS[:] = original_options
+        app.PROCESS_STATUS_VALUES[:] = [
+            *dict.fromkeys(status for flow in app.PROCESS_CONFIG.values() for status, _ in flow),
+            "CANCELO",
+        ]
+        app._apparatus_components_from_text.cache_clear()
+        app._canonical_apparatus_from_text.cache_clear()
+        app._cached_process_flow.cache_clear()
+        app.apparatus_flow_catalog.cache_clear()
+
+
+def test_refresh_dynamic_process_catalog_keeps_static_config_when_sheet_fails(monkeypatch):
+    original_config = dict(app.PROCESS_CONFIG)
+    monkeypatch.setattr(app, "read_process_matrix_values", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    app.refresh_dynamic_process_catalog()
+
+    assert app.PROCESS_CONFIG == original_config
