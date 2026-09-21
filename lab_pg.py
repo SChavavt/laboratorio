@@ -6340,40 +6340,116 @@ def render_workspace_header() -> str:
     return selected_view
 
 
-def apply_app_shell_css() -> None:
-    st.markdown("""<style>
+LAB_SHELL_PALETTES = {
+    LAB_VIEW_APPARATUS: {
+        "WASH1": "#DED1FF", "WASH2": "#CDEDEA", "BASE_BG": "#F1EEFA",
+        "SIDEBAR_BG": "#EBE4FA", "SIDEBAR_BORDER": "#CEC0E8",
+        "HEADING_COLOR": "#392365",
+        "TABLIST_BG": "#E2D8F3", "TABLIST_BORDER": "#CBBDE3",
+        "TAB_BG": "#F6F2FF", "TAB_BORDER": "#D5C7EC", "TAB_COLOR": "#493168",
+        "TAB_HOVER_BG": "#DAD0F7", "TAB_HOVER_SHADOW": "#603BA91C",
+        "TAB_ACTIVE_GRAD": "linear-gradient(110deg, #7040BD, #4E3992)",
+        "TAB_ACTIVE_BORDER": "#6337A6", "TAB_ACTIVE_SHADOW": "#6943A833",
+        "METRIC_BORDER": "#CDC1E6",
+        "TOTAL_GRAD": "linear-gradient(120deg,#E4D6FF,#EEE7FF)",
+        "TOTAL_BORDER": "#8C62D2", "TOTAL_COLOR": "#4C2883",
+        "GLOW_SHADOW1": "#5C38A633", "GLOW_SHADOW2": "#3923652B",
+        "CHECK_BADGE_BG": "#4F317D",
+        "EDITBAR_READY_BG": "#E7DFF7", "EDITBAR_READY_COLOR": "#53357F",
+        "LEGEND_EDITABLE": "#7443AA",
+        "WIDGET_LABEL_COLOR": "#493064",
+        "INPUT_BORDER": "#CCBDE3", "INPUT_FOCUS_RING": "#9B72D529",
+        "DATAFRAME_BORDER": "#B199D4", "DATAFRAME_SHADOW": "#46307814",
+        "FORM_BG": "#FAF7FF", "FORM_BORDER": "#CDBCE5",
+        "EXPANDER_BG": "#F7F1FE",
+        "BTN_GRAD": "linear-gradient(110deg,#7A40BE,#5942A1)", "BTN_BORDER": "#68419D",
+        "BTN_SHADOW1": "#6637A82B", "BTN_SHADOW2": "#6637A84D",
+        "BTN_DISABLED_BG": "#DDD2EC", "BTN_DISABLED_BORDER": "#B6A1CF", "BTN_DISABLED_COLOR": "#58436F",
+        "HEADER_GRAD": "linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%)",
+        "HEADER_BORDER": "#9A80CD", "HEADER_SHADOW": "#39236522",
+        "BRAND_TEXT": "#D5C5FA", "SUBTITLE_TEXT": "#E9E1FF",
+        "SWITCH_LABEL": "#E5DAFF", "CURRENT_TEXT": "#F2ECFF",
+        "TOGGLE_BTN_BG": "#302354CC", "TOGGLE_BTN_BORDER": "#CFC1ED99", "TOGGLE_HOVER_BG": "#4A3678",
+        "TOGGLE_ACTIVE_BG": "#20183FCC", "TOGGLE_ACTIVE_BORDER": "#5EE3AF",
+        "TOGGLE_ACTIVE_SHADOW1": "#120C2B88", "TOGGLE_ACTIVE_SHADOW2": "#5EE3AF33",
+        "TOGGLE_CHECK_BG": "#37B889",
+    },
+    LAB_VIEW_ALIGNERS: {
+        "WASH1": "#C9F3DA", "WASH2": "#CDEDEA", "BASE_BG": "#EFFBF3",
+        "SIDEBAR_BG": "#E4F5EA", "SIDEBAR_BORDER": "#BFE3CC",
+        "HEADING_COLOR": "#1B4B36",
+        "TABLIST_BG": "#DCF2E4", "TABLIST_BORDER": "#B7DFC4",
+        "TAB_BG": "#F1FCF5", "TAB_BORDER": "#C7E8D2", "TAB_COLOR": "#265C42",
+        "TAB_HOVER_BG": "#CDEDD9", "TAB_HOVER_SHADOW": "#1F7A501C",
+        "TAB_ACTIVE_GRAD": "linear-gradient(110deg, #159A66, #0C6E4A)",
+        "TAB_ACTIVE_BORDER": "#0E8358", "TAB_ACTIVE_SHADOW": "#12965F33",
+        "METRIC_BORDER": "#B9E4CB",
+        "TOTAL_GRAD": "linear-gradient(120deg,#CFF3DE,#E7FBF0)",
+        "TOTAL_BORDER": "#3FAE7B", "TOTAL_COLOR": "#0F6B44",
+        "GLOW_SHADOW1": "#1F8F5C33", "GLOW_SHADOW2": "#0E402B2B",
+        "CHECK_BADGE_BG": "#0E6B47",
+        "EDITBAR_READY_BG": "#DFF5E7", "EDITBAR_READY_COLOR": "#1D6B47",
+        "LEGEND_EDITABLE": "#12875E",
+        "WIDGET_LABEL_COLOR": "#265C42",
+        "INPUT_BORDER": "#BEE3CB", "INPUT_FOCUS_RING": "#2FA36A29",
+        "DATAFRAME_BORDER": "#4FB483", "DATAFRAME_SHADOW": "#1D5C3B14",
+        "FORM_BG": "#F5FCF8", "FORM_BORDER": "#BEE3CC",
+        "EXPANDER_BG": "#F0FBF4",
+        "BTN_GRAD": "linear-gradient(110deg,#17A06B,#0C6E4A)", "BTN_BORDER": "#0E8358",
+        "BTN_SHADOW1": "#17A06B2B", "BTN_SHADOW2": "#17A06B4D",
+        "BTN_DISABLED_BG": "#D6F0DF", "BTN_DISABLED_BORDER": "#9DCBAE", "BTN_DISABLED_COLOR": "#2C5B41",
+        "HEADER_GRAD": "linear-gradient(115deg, #123B2C 0%, #12915F 54%, #7ACB5D 100%)",
+        "HEADER_BORDER": "#7BCDA6", "HEADER_SHADOW": "#0F3F2A22",
+        "BRAND_TEXT": "#C7F0D6", "SUBTITLE_TEXT": "#E3FBEA",
+        "SWITCH_LABEL": "#DFFBE7", "CURRENT_TEXT": "#EEFDF3",
+        "TOGGLE_BTN_BG": "#123B2CCC", "TOGGLE_BTN_BORDER": "#BFEAD199", "TOGGLE_HOVER_BG": "#1C5A3F",
+        "TOGGLE_ACTIVE_BG": "#0D2B1FCC", "TOGGLE_ACTIVE_BORDER": "#FFD65A",
+        "TOGGLE_ACTIVE_SHADOW1": "#0A1F1588", "TOGGLE_ACTIVE_SHADOW2": "#FFD65A33",
+        "TOGGLE_CHECK_BG": "#D9A62B",
+    },
+}
+
+
+def apply_app_shell_css(selected_view: str = LAB_VIEW_APPARATUS) -> None:
+    """Pinta el chrome compartido con la paleta morada (aparatos) o verde (alineadores)."""
+
+    palette = LAB_SHELL_PALETTES.get(selected_view, LAB_SHELL_PALETTES[LAB_VIEW_APPARATUS])
+    css = """<style>
         .stApp {
-            background: radial-gradient(ellipse at 0 0, #DED1FF 0, transparent 48%),
-                        radial-gradient(ellipse at 100% 30%, #CDEDEA 0, transparent 45%), #F1EEFA;
+            background: radial-gradient(ellipse at 0 0, @@WASH1@@ 0, transparent 48%),
+                        radial-gradient(ellipse at 100% 30%, @@WASH2@@ 0, transparent 45%), @@BASE_BG@@;
         }
         .block-container {padding-top: 3rem; padding-bottom: 2rem; max-width: 100%;}
         [data-testid="stHeader"] {background: transparent;}
-        [data-testid="stSidebar"] {background: #EBE4FA; border-right: 1px solid #CEC0E8;}
-        h1, h2, h3 {letter-spacing: -.025em; color: #392365;}
+        [data-testid="stSidebar"] {background: @@SIDEBAR_BG@@; border-right: 1px solid @@SIDEBAR_BORDER@@;}
+        h1, h2, h3 {letter-spacing: -.025em; color: @@HEADING_COLOR@@;}
         [data-baseweb="tab-list"] {
-            gap: 8px; padding: 7px; border-radius: 15px; background: #E2D8F3;
-            border: 1px solid #CBBDE3; margin-bottom: 12px;
+            gap: 8px; padding: 7px; border-radius: 15px; background: @@TABLIST_BG@@;
+            border: 1px solid @@TABLIST_BORDER@@; margin-bottom: 12px;
         }
         [data-baseweb="tab"] {
-            height: 45px; padding: 0 20px; border-radius: 10px; background: #F6F2FF;
-            border: 1px solid #D5C7EC; color: #493168; font-weight: 700;
+            height: 45px; padding: 0 20px; border-radius: 10px; background: @@TAB_BG@@;
+            border: 1px solid @@TAB_BORDER@@; color: @@TAB_COLOR@@; font-weight: 700;
             transition: background-color 150ms ease, box-shadow 150ms ease;
         }
-        [data-baseweb="tab"]:hover {background: #DAD0F7; box-shadow: 0 3px 10px #603BA91C;}
+        [data-baseweb="tab"]:hover {background: @@TAB_HOVER_BG@@; box-shadow: 0 3px 10px @@TAB_HOVER_SHADOW@@;}
         [data-baseweb="tab"][aria-selected="true"] {
-            background: linear-gradient(110deg, #7040BD, #4E3992); color: #FFF;
-            border-color: #6337A6; box-shadow: 0 4px 12px #6943A833;
+            background: @@TAB_ACTIVE_GRAD@@; color: #FFF;
+            border-color: @@TAB_ACTIVE_BORDER@@; box-shadow: 0 4px 12px @@TAB_ACTIVE_SHADOW@@;
         }
         [data-baseweb="tab"][aria-selected="true"] p {color: #FFF;}
         [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {display: none;}
+        [data-testid="stTab"][aria-selected="true"],
+        [data-testid="stTab"][aria-selected="true"] p {color: @@TAB_ACTIVE_BORDER@@ !important; font-weight: 800;}
+        .react-aria-SelectionIndicator {background: @@TAB_ACTIVE_BORDER@@ !important;}
         [data-testid="stMetric"] {
-            border: 1px solid #CDC1E6; border-top-width: 4px; border-radius: 14px;
+            border: 1px solid @@METRIC_BORDER@@; border-top-width: 4px; border-radius: 14px;
             padding: 13px 16px; box-shadow: 0 5px 16px #42266C0D;
             transition: box-shadow 160ms ease;
         }
         [data-testid="stMetric"]:hover {box-shadow: 0 8px 20px #42266C22;}
         [data-testid="stMetricValue"] {font-size: 1.85rem; font-weight: 800;}
-        .st-key-lab_total [data-testid="stMetric"] {background: linear-gradient(120deg,#E4D6FF,#EEE7FF); border-color: #8C62D2; color: #4C2883;}
+        .st-key-lab_total [data-testid="stMetric"] {background: @@TOTAL_GRAD@@; border-color: @@TOTAL_BORDER@@; color: @@TOTAL_COLOR@@;}
         .st-key-lab_red [data-testid="stMetric"] {background: linear-gradient(120deg,#FFD8DF,#FFECEF); border-color: #DF5875; color: #A72B48;}
         .st-key-lab_amber [data-testid="stMetric"] {background: linear-gradient(120deg,#FFE7AB,#FFF3D7); border-color: #DBA131; color: #885A08;}
         .st-key-lab_green [data-testid="stMetric"] {background: linear-gradient(120deg,#BFEBDC,#E0F7EE); border-color: #37A989; color: #13654E;}
@@ -6387,7 +6463,7 @@ def apply_app_shell_css() -> None:
             padding: 14px 16px; border-width: 2px; border-radius: 14px;
             text-align: left; transition: transform 150ms ease, box-shadow 150ms ease;
         }
-        .st-key-lab_signal_total button {background:linear-gradient(120deg,#E4D6FF,#EEE7FF) !important;border-color:#8C62D2 !important;color:#4C2883 !important;}
+        .st-key-lab_signal_total button {background:@@TOTAL_GRAD@@ !important;border-color:@@TOTAL_BORDER@@ !important;color:@@TOTAL_COLOR@@ !important;}
         .st-key-lab_signal_red button {background:linear-gradient(120deg,#FFD8DF,#FFECEF) !important;border-color:#DF5875 !important;color:#A72B48 !important;}
         .st-key-lab_signal_amber button {background:linear-gradient(120deg,#FFE7AB,#FFF3D7) !important;border-color:#DBA131 !important;color:#885A08 !important;}
         .st-key-lab_signal_green button {background:linear-gradient(120deg,#BFEBDC,#E0F7EE) !important;border-color:#37A989 !important;color:#13654E !important;}
@@ -6410,7 +6486,7 @@ def apply_app_shell_css() -> None:
         .st-key-lab_signal_green button[kind="primary"],
         .st-key-lab_signal_gray button[kind="primary"] {
             transform: translateY(-2px); border-width: 3px !important;
-            box-shadow: 0 0 0 3px #5C38A633, 0 10px 22px #3923652B !important;
+            box-shadow: 0 0 0 3px @@GLOW_SHADOW1@@, 0 10px 22px @@GLOW_SHADOW2@@ !important;
         }
         .st-key-lab_signal_total button[kind="primary"]::after,
         .st-key-lab_signal_red button[kind="primary"]::after,
@@ -6418,7 +6494,7 @@ def apply_app_shell_css() -> None:
         .st-key-lab_signal_green button[kind="primary"]::after,
         .st-key-lab_signal_gray button[kind="primary"]::after {
             content: "✓"; position:absolute; right:12px; top:10px; width:23px; height:23px;
-            display:grid; place-items:center; border-radius:50%; background:#4F317D; color:#FFF;
+            display:grid; place-items:center; border-radius:50%; background:@@CHECK_BADGE_BG@@; color:#FFF;
             font-size:.78rem; font-weight:900;
         }
         .lab-edit-bar {
@@ -6426,7 +6502,7 @@ def apply_app_shell_css() -> None:
             padding: 0 14px; border-radius: 10px; border: 1px solid #CDBCEB;
             font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-        .lab-edit-bar.is-ready {background: #E7DFF7; color: #53357F;}
+        .lab-edit-bar.is-ready {background: @@EDITBAR_READY_BG@@; color: @@EDITBAR_READY_COLOR@@;}
         .lab-edit-bar.is-pending {background: #FCE9BA; border-color: #DCA544; color: #805410;}
         .lab-column-legend {
             min-height: 38px; display: flex; align-items: end; justify-content: flex-end;
@@ -6435,37 +6511,37 @@ def apply_app_shell_css() -> None:
         .lab-column-legend span {
             border-radius: 999px; padding: 5px 10px; color: #FFF; font-size: .76rem; font-weight: 700;
         }
-        .lab-column-legend .editable {background: #7443AA;}
+        .lab-column-legend .editable {background: @@LEGEND_EDITABLE@@;}
         .lab-column-legend .readonly {background: #52667D;}
         .lab-column-legend .automatic {background: #147C84;}
-        .lab-column-legend .auto-editable {background: linear-gradient(100deg,#147C84 0 48%,#7443AA 52% 100%);}
-        [data-testid="stWidgetLabel"] p {color: #493064; font-weight: 650;}
-        [data-baseweb="input"], [data-baseweb="select"] > div {border-color: #CCBDE3; border-radius: 9px;}
-        [data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within {box-shadow: 0 0 0 2px #9B72D529;}
+        .lab-column-legend .auto-editable {background: linear-gradient(100deg,#147C84 0 48%,@@LEGEND_EDITABLE@@ 52% 100%);}
+        [data-testid="stWidgetLabel"] p {color: @@WIDGET_LABEL_COLOR@@; font-weight: 650;}
+        [data-baseweb="input"], [data-baseweb="select"] > div {border-color: @@INPUT_BORDER@@; border-radius: 9px;}
+        [data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within {box-shadow: 0 0 0 2px @@INPUT_FOCUS_RING@@;}
         [data-testid="stDataFrame"] {
-            border: 2px solid #B199D4; border-radius: 12px; overflow: hidden;
-            box-shadow: 0 7px 24px #46307814;
+            border: 2px solid @@DATAFRAME_BORDER@@; border-radius: 12px; overflow: hidden;
+            box-shadow: 0 7px 24px @@DATAFRAME_SHADOW@@;
         }
-        [data-testid="stForm"] {background: #FAF7FF; border: 1px solid #CDBCE5; padding: 20px; border-radius: 14px;}
-        [data-testid="stExpander"] {background: #F7F1FE; border-radius: 12px;}
+        [data-testid="stForm"] {background: @@FORM_BG@@; border: 1px solid @@FORM_BORDER@@; padding: 20px; border-radius: 14px;}
+        [data-testid="stExpander"] {background: @@EXPANDER_BG@@; border-radius: 12px;}
         button[kind="primary"], [data-testid="stBaseButton-primary"] {
-            background: linear-gradient(110deg,#7A40BE,#5942A1); border-color: #68419D;
-            color: #FFF; box-shadow: 0 4px 12px #6637A82B;
+            background: @@BTN_GRAD@@; border-color: @@BTN_BORDER@@;
+            color: #FFF; box-shadow: 0 4px 12px @@BTN_SHADOW1@@;
         }
-        button[kind="primary"]:not(:disabled):hover, [data-testid="stBaseButton-primary"]:not(:disabled):hover {box-shadow: 0 5px 16px #6637A84D;}
+        button[kind="primary"]:not(:disabled):hover, [data-testid="stBaseButton-primary"]:not(:disabled):hover {box-shadow: 0 5px 16px @@BTN_SHADOW2@@;}
         button[kind="primary"]:disabled, [data-testid="stBaseButton-primary"]:disabled {
-            background: #DDD2EC; border-color: #B6A1CF; color: #58436F; opacity: 1;
+            background: @@BTN_DISABLED_BG@@; border-color: @@BTN_DISABLED_BORDER@@; color: @@BTN_DISABLED_COLOR@@; opacity: 1;
             box-shadow: none; cursor: not-allowed;
         }
         button[kind="primary"]:disabled *, [data-testid="stBaseButton-primary"]:disabled * {
-            color: #58436F !important; -webkit-text-fill-color: #58436F; opacity: 1;
+            color: @@BTN_DISABLED_COLOR@@ !important; -webkit-text-fill-color: @@BTN_DISABLED_COLOR@@; opacity: 1;
         }
         .lab-stage-chip {display: inline-block; border-radius: 9px; padding: 8px 13px; font-size: .85rem; font-weight: 750; margin-bottom: 10px;}
         .st-key-lab_workspace_header {
             position: relative; overflow: hidden; padding: 22px 28px; margin: 0 0 20px;
-            color: #FFF; background: linear-gradient(115deg, #342059 0%, #633CB0 54%, #137C87 100%);
-            border: 1px solid #9A80CD; border-radius: 20px;
-            box-shadow: 0 12px 30px #39236522;
+            color: #FFF; background: @@HEADER_GRAD@@;
+            border: 1px solid @@HEADER_BORDER@@; border-radius: 20px;
+            box-shadow: 0 12px 30px @@HEADER_SHADOW@@;
         }
         .st-key-lab_workspace_header::after {
             content: ''; width: 250px; height: 250px; border: 38px solid #FFFFFF0D;
@@ -6475,18 +6551,18 @@ def apply_app_shell_css() -> None:
             position: relative; z-index: 1;
         }
         .lab-workspace-brand {
-            font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: #D5C5FA;
+            font-size: .72rem; font-weight: 800; letter-spacing: .17em; color: @@BRAND_TEXT@@;
         }
         .lab-workspace-title {
             color: #FFF; font-size: 2rem; line-height: 1.12; margin: 6px 0; padding: 0;
         }
-        .lab-workspace-subtitle {color: #E9E1FF; margin: 0; font-size: .93rem;}
+        .lab-workspace-subtitle {color: @@SUBTITLE_TEXT@@; margin: 0; font-size: .93rem;}
         .lab-workspace-switch-label {
-            color: #E5DAFF; font-size: .69rem; font-weight: 850; letter-spacing: .13em;
+            color: @@SWITCH_LABEL@@; font-size: .69rem; font-weight: 850; letter-spacing: .13em;
             margin: 0 0 7px;
         }
         .lab-workspace-current {
-            margin-top: 8px; color: #F2ECFF; font-size: .78rem; text-align: center;
+            margin-top: 8px; color: @@CURRENT_TEXT@@; font-size: .78rem; text-align: center;
         }
         .lab-workspace-pending {
             margin-top: 6px; padding: 6px 9px; border-radius: 8px; text-align: center;
@@ -6500,28 +6576,28 @@ def apply_app_shell_css() -> None:
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button {
             flex: 1; min-height: 42px; border-radius: 9px; font-weight: 780;
-            background: #302354CC !important; border: 1px solid #CFC1ED99 !important;
+            background: @@TOGGLE_BTN_BG@@ !important; border: 1px solid @@TOGGLE_BTN_BORDER@@ !important;
             color: #FFFFFF !important; opacity: 1 !important;
             transition: transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button:not(:disabled):hover {
-            background: #4A3678 !important; border-color: #FFFFFFCC !important;
+            background: @@TOGGLE_HOVER_BG@@ !important; border-color: #FFFFFFCC !important;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"],
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[data-variant="segmented_control"][data-selected],
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"],
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-selected="true"] {
             position: relative; transform: translateY(1px);
-            background: #20183FCC !important;
-            border: 2px solid #5EE3AF !important; color: #FFFFFF !important;
-            box-shadow: inset 0 3px 8px #120C2B88, 0 0 0 3px #5EE3AF33 !important;
+            background: @@TOGGLE_ACTIVE_BG@@ !important;
+            border: 2px solid @@TOGGLE_ACTIVE_BORDER@@ !important; color: #FFFFFF !important;
+            box-shadow: inset 0 3px 8px @@TOGGLE_ACTIVE_SHADOW1@@, 0 0 0 3px @@TOGGLE_ACTIVE_SHADOW2@@ !important;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_controlActive"]::before,
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[data-variant="segmented_control"][data-selected]::before,
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-pressed="true"]::before,
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[aria-selected="true"]::before {
             content: "✓"; margin-right: 7px; width: 18px; height: 18px; display: grid;
-            place-items: center; border-radius: 50%; background: #37B889; color: #FFF;
+            place-items: center; border-radius: 50%; background: @@TOGGLE_CHECK_BG@@; color: #FFF;
             font-size: .68rem; font-weight: 900;
         }
         .st-key-lab_workspace_header .st-key-lab_workspace_view button[kind="segmented_control"] p,
@@ -6537,7 +6613,10 @@ def apply_app_shell_css() -> None:
         @media (prefers-reduced-motion: reduce) {
             [data-baseweb="tab"], [data-testid="stMetric"] {transition: none;}
         }
-        </style>""", unsafe_allow_html=True)
+        </style>"""
+    for token, value in palette.items():
+        css = css.replace(f"@@{token}@@", value)
+    st.markdown(css, unsafe_allow_html=True)
 
 
 def render_selected_workspace(selected_view: str, current_user: str) -> None:
@@ -6555,7 +6634,7 @@ def render_selected_workspace(selected_view: str, current_user: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Control de Laboratorio – ARTTDLAB", layout="wide")
-    apply_app_shell_css()
+    apply_app_shell_css(current_workspace_view())
     selected_view = render_workspace_header()
     try:
         current_user = require_authenticated_user()
