@@ -84,6 +84,43 @@ TIMES_HEADERS = [
     "FECHA_REGISTRO_LOG",
 ]
 
+# ==============================
+# Google Forms – Recepción de prescripciones
+# ==============================
+DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
+FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
+FORMS_FILE_COLUMN_HINT = "Favor de adjuntar archivos STL"
+FORMS_EXCLUDED_COLUMN_HINTS = [
+    "Acepto que he leído los Términos y Condiciones",
+    "Estoy de acuerdo con el resguardo de mis datos personales",
+    "El llenado de esta prescripción es importante",
+    "El plan de tratamiento esta basado",
+    "El resultado del tratamiento es responsabilidad",
+    "Al aceptar el médico tratante ha comprendido",
+]
+
+# Cada formulario apunta al Google Sheet de respuestas ya compartido con la
+# misma cuenta de servicio de [gsheets].google_credentials. El sheet_id/worksheet
+# se puede sobreescribir en secrets bajo [google_forms_alineadores.<key>], pero
+# no es obligatorio: si no hay override, se usa el valor por defecto de aquí.
+ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
+    {
+        "key": "td",
+        "label": "🦷 Prescripción Alineadores TD",
+        "default_sheet_id": "1FFjO3RTMRZQ4OBfoL4thy_8GpIxgdlASkWggN_RMlRU",
+    },
+    {
+        "key": "marca_blanca",
+        "label": "⚪ Prescripción Marca Blanca",
+        "default_sheet_id": "1OYwJI_IaqGYOXR4aTffYmLK_38hd0p51_3C7vAjFXEU",
+    },
+    {
+        "key": "form_3",
+        "label": "📄 Tercer formulario",
+        "default_sheet_id": "1_wBpRLzN9p87sJq9961J_qtHEdpLvYSDEPqNQrqqlZ0",
+    },
+)
+
 PRIMARY_COLUMNS = [
     ID_COLUMN,
     STATUS_COLUMN,
@@ -835,6 +872,14 @@ def get_spreadsheet():
 
 
 @st.cache_resource
+def get_spreadsheet_by_id(sheet_id: str):
+    """Abre cualquier Google Sheet compartido con el mismo service account."""
+
+    client = _get_gs_client()
+    return run_gsheets_request(lambda: client.open_by_key(sheet_id))
+
+
+@st.cache_resource
 def get_worksheet(sheet_name: str):
     spreadsheet = get_spreadsheet()
     try:
@@ -915,6 +960,329 @@ def clear_sheet_data_cache() -> None:
     read_order_values.clear()
     read_process_values.clear()
     read_times_values.clear()
+    read_forms_responses_df.clear()
+
+
+def get_aligners_forms_secret_value(form_key: str, key: str, default: Any = "") -> Any:
+    """Lee un override opcional de un formulario de alineadores desde st.secrets.
+
+    Soporta [google_forms_alineadores.<form_key>].<key> como tabla anidada.
+    """
+
+    if not hasattr(st, "secrets"):
+        return default
+
+    forms_config = st.secrets.get("google_forms_alineadores", {})
+    if hasattr(forms_config, "get"):
+        form_section = forms_config.get(form_key, {})
+        if hasattr(form_section, "get"):
+            value = form_section.get(key, "")
+            if clean_cell(value).strip():
+                return value
+
+    return default
+
+
+def get_aligners_form_config(form: dict[str, str]) -> dict[str, str]:
+    """Combina el sheet_id/worksheet por defecto con overrides opcionales en secrets."""
+
+    sheet_id = clean_cell(
+        get_aligners_forms_secret_value(form["key"], "sheet_id", form["default_sheet_id"])
+    ).strip() or form["default_sheet_id"]
+    worksheet_name = clean_cell(
+        get_aligners_forms_secret_value(form["key"], "worksheet", DEFAULT_FORMS_WORKSHEET)
+    ).strip() or DEFAULT_FORMS_WORKSHEET
+    return {
+        "key": form["key"],
+        "label": form["label"],
+        "sheet_id": sheet_id,
+        "worksheet": worksheet_name,
+    }
+
+
+@st.cache_data(ttl=30)
+def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    """Lee la hoja de respuestas de un Google Form como DataFrame."""
+
+    if not sheet_id:
+        return pd.DataFrame()
+    spreadsheet = get_spreadsheet_by_id(sheet_id)
+    candidate_names = [worksheet_name, *FORMS_WORKSHEET_FALLBACKS]
+    worksheet = None
+    tried_names: list[str] = []
+    for candidate_name in dict.fromkeys(
+        name for name in candidate_names if clean_cell(name).strip()
+    ):
+        tried_names.append(candidate_name)
+        try:
+            worksheet = run_gsheets_request(lambda: spreadsheet.worksheet(candidate_name))
+            break
+        except gspread.WorksheetNotFound:
+            continue
+    if worksheet is None:
+        worksheets = run_gsheets_request(lambda: spreadsheet.worksheets())
+        if not worksheets:
+            return pd.DataFrame()
+        worksheet = worksheets[0]
+        st.info(
+            "No encontré las pestañas de Forms esperadas "
+            f"({', '.join(tried_names)}). Usaré la primera pestaña: {worksheet.title}."
+        )
+
+    values = run_gsheets_request(lambda: worksheet.get_all_values())
+    if not values:
+        return pd.DataFrame()
+
+    headers = ensure_unique_column_names(values[0])
+    width = len(headers)
+    rows = [row[:width] + [""] * max(width - len(row), 0) for row in values[1:]]
+    df = pd.DataFrame(rows, columns=headers)
+    if df.empty:
+        return df
+
+    non_empty_rows = df.apply(
+        lambda row: any(clean_cell(value).strip() for value in row),
+        axis=1,
+    )
+    return df[non_empty_rows].reset_index(drop=True)
+
+
+def should_hide_forms_column(column: str) -> bool:
+    """Oculta columnas legales/informativas que no aportan a la revisión técnica."""
+
+    normalized_column = normalize_text(column)
+    return any(
+        normalize_text(hint) in normalized_column for hint in FORMS_EXCLUDED_COLUMN_HINTS
+    )
+
+
+def find_column_by_hint(columns: list[str], *hints: str) -> str:
+    """Encuentra una columna comparando texto normalizado por fragmentos."""
+
+    normalized_columns = [(column, normalize_text(column)) for column in columns]
+    for hint in hints:
+        normalized_hint = normalize_text(hint)
+        for column, normalized_column in normalized_columns:
+            if normalized_hint and normalized_hint in normalized_column:
+                return column
+    return ""
+
+
+def build_forms_review_df(forms_df: pd.DataFrame) -> pd.DataFrame:
+    """Muestra todas las respuestas útiles de Forms, excluyendo solo textos legales."""
+
+    if forms_df.empty:
+        return forms_df
+
+    visible_columns = [
+        column for column in forms_df.columns if not should_hide_forms_column(column)
+    ]
+    review_df = forms_df[visible_columns].copy()
+    review_df.insert(0, "Respuesta #", [index + 2 for index in range(len(review_df))])
+    return review_df
+
+
+def get_forms_file_column(review_df: pd.DataFrame) -> str:
+    """Encuentra la columna con el link de Drive del ZIP STL/DICOM."""
+
+    return find_column_by_hint(
+        list(review_df.columns),
+        FORMS_FILE_COLUMN_HINT,
+        "adjuntar archivos STL",
+        "DICOM",
+    )
+
+
+def get_forms_file_links(value: Any) -> list[str]:
+    """Separa y valida los enlaces de archivos enviados por Google Forms."""
+
+    raw_value = clean_cell(value).strip()
+    if not raw_value:
+        return []
+
+    links = []
+    for candidate in re.split(r"(?:\r?\n|\\n|[,;])\s*", raw_value):
+        link = candidate.strip()
+        if link.startswith(("https://", "http://")) and link not in links:
+            links.append(link)
+    return links
+
+
+def get_forms_field_icon(column: str) -> str:
+    """Devuelve un icono específico para que la ficha de Forms no se vea repetitiva."""
+
+    normalized = normalize_text(column)
+    icon_rules = [
+        (("MARCA", "FECHA", "HORA", "TEMPORAL"), "🕒"),
+        (("DOCTOR", "TRATANTE", "MEDICO"), "🩺"),
+        (("WHATSAPP", "TELEFONO", "CONTACTO"), "💬"),
+        (("PACIENTE",), "🙂"),
+        (("APARATO", "PRODUCTO", "SOLICITAR", "OPCIONES"), "🦷"),
+        (("ARCHIVO", "STL", "DICOM", "DRIVE", "ADJUNTAR"), "📎"),
+        (("OBSERV", "COMENT", "DETALLE", "INDICACION"), "📝"),
+        (("DIRECCION", "ENVIO", "DOMICILIO"), "📍"),
+        (("CORREO", "EMAIL", "MAIL"), "✉️"),
+    ]
+    for keywords, icon in icon_rules:
+        if any(keyword in normalized for keyword in keywords):
+            return icon
+    return "🔹"
+
+
+def apply_single_row_selection_to_selectbox(
+    event: Any, df: pd.DataFrame, id_column: str, selectbox_key: str
+) -> None:
+    """Sincroniza una fila seleccionada en una tabla con su selectbox asociado."""
+
+    selected_rows = getattr(getattr(event, "selection", None), "rows", [])
+    if not selected_rows:
+        return
+    selected_position = selected_rows[0]
+    if selected_position >= len(df.index):
+        return
+    raw_selected_id = df.iloc[selected_position].get(id_column, "")
+    selected_id = clean_cell(raw_selected_id).strip()
+    if selected_id:
+        st.session_state[selectbox_key] = raw_selected_id
+
+
+def render_aligners_form_review(form: dict[str, str]) -> None:
+    """Muestra respuestas de un Google Form de alineadores con sus archivos de Drive."""
+
+    st.caption(
+        "Elige una respuesta para ver su ficha con los datos capturados y los "
+        "archivos de Drive adjuntos."
+    )
+
+    if not form["sheet_id"]:
+        st.info(
+            "Configura el `sheet_id` de este formulario en "
+            f"`[google_forms_alineadores.{form['key']}]` en secrets."
+        )
+        return
+
+    try:
+        forms_df = read_forms_responses_df(form["sheet_id"], form["worksheet"])
+    except Exception as exc:
+        st.error(
+            "No pude leer el Google Sheet de respuestas. Verifica que el correo del "
+            "service account tenga acceso al archivo."
+        )
+        st.exception(exc)
+        return
+
+    review_df = build_forms_review_df(forms_df)
+    if review_df.empty:
+        st.info("No hay respuestas de Google Forms para mostrar todavía.")
+        return
+
+    file_column = get_forms_file_column(review_df)
+    display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
+
+    table_key = f"aligners_forms_table_{form['key']}"
+    selector_key = f"aligners_forms_selector_{form['key']}"
+
+    table_event = st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=(
+            {file_column: st.column_config.LinkColumn(file_column)}
+            if file_column
+            else None
+        ),
+        on_select="rerun",
+        selection_mode="single-row",
+        key=table_key,
+    )
+    apply_single_row_selection_to_selectbox(table_event, display_df, "Respuesta #", selector_key)
+
+    response_options = display_df["Respuesta #"].tolist()
+    if st.session_state.get(selector_key) not in response_options:
+        st.session_state[selector_key] = response_options[0]
+    selected_response = st.selectbox(
+        "📌 Selecciona una respuesta",
+        options=response_options,
+        key=selector_key,
+    )
+    selected_rows = display_df[display_df["Respuesta #"] == selected_response]
+    if selected_rows.empty:
+        return
+
+    selected_row = selected_rows.iloc[0]
+    selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
+    selected_links = get_forms_file_links(selected_link)
+    visible_details = []
+    for column in display_df.columns:
+        if column in {"Respuesta #", file_column}:
+            continue
+        value = clean_cell(selected_row.get(column, "")).strip()
+        if value:
+            visible_details.append((column, value))
+
+    link_pill_class = "align-forms-pill-link" if selected_links else "align-forms-pill-missing"
+    link_pill_text = (
+        f"✅ {len(selected_links)} archivo{'s' if len(selected_links) != 1 else ''} listo"
+        f"{'s' if len(selected_links) != 1 else ''}"
+        if selected_links
+        else "⚠️ Sin link detectado"
+    )
+    st.markdown(
+        f"<div class='align-forms-hero'>"
+        f"<div class='align-forms-hero-title'>📌 Resumen rápido de la respuesta seleccionada</div>"
+        f"<div style='margin-top:10px;'>"
+        f"<span class='align-forms-pill align-forms-pill-id'>🧾 Respuesta #{html.escape(str(selected_response))}</span>"
+        f"<span class='align-forms-pill {link_pill_class}'>{link_pill_text}</span>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    if visible_details:
+        cols = st.columns(2)
+        for idx, (column, value) in enumerate(visible_details[:12]):
+            icon = get_forms_field_icon(column)
+            safe_column = html.escape(str(column))
+            safe_value = html.escape(str(value))
+            with cols[idx % 2]:
+                st.markdown(
+                    f"<div class='align-forms-detail'><div class='align-forms-label'>{icon} {safe_column}</div>"
+                    f"<div class='align-forms-value'>{safe_value}</div></div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("La respuesta seleccionada no tiene detalles adicionales visibles.")
+
+    if selected_links:
+        st.markdown("**🔗 Archivos de Drive detectados en Forms:**")
+        links_html = "".join(
+            f"<li><a href='{html.escape(link, quote=True)}' target='_blank' "
+            f"rel='noopener noreferrer'>Archivo {index}</a>"
+            f"<div class='align-forms-link-url'>{html.escape(link)}</div></li>"
+            for index, link in enumerate(selected_links, start=1)
+        )
+        st.markdown(
+            "<ol class='align-forms-links-list'>" + links_html + "</ol>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.warning(
+            "Esta respuesta no trae link en la columna configurada de archivos STL/DICOM."
+        )
+
+
+def render_aligners_forms_tab() -> None:
+    """Agrupa los 3 formularios de prescripción en subpestañas de solo lectura."""
+
+    st.subheader("📥 Recibidos de Forms")
+    st.caption(
+        "Respuestas y archivos de los 3 formularios de prescripción, leídos "
+        "directamente de sus Google Sheets con la cuenta de servicio compartida."
+    )
+    forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
+    sub_tabs = st.tabs([form["label"] for form in forms])
+    for form, tab in zip(forms, sub_tabs):
+        with tab:
+            render_aligners_form_review(form)
 
 
 def rerun_active_tab() -> None:
@@ -2145,6 +2513,7 @@ ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "🚨 Alertas y pausas",
     "⚙️ Procesos y plazos",
+    "📥 Recibidos de Forms",
 )
 
 
@@ -2164,8 +2533,10 @@ def render_app_tabs(current_user: str) -> None:
                 render_workbench(current_user)
             elif label == "🚨 Alertas y pausas":
                 render_alerts(current_user)
-            else:
+            elif label == "⚙️ Procesos y plazos":
                 render_processes(current_user)
+            else:
+                render_aligners_forms_tab()
         break
 
 
@@ -2297,6 +2668,19 @@ def apply_custom_css() -> None:
         [data-testid="stBaseButton-primary"]:disabled * {
             color:#58436F !important;-webkit-text-fill-color:#58436F;opacity:1;
         }
+        .align-forms-hero {background:linear-gradient(135deg,#F5F0FF 0%,#EFF6FF 55%,#F1FAF7 100%);border:1px solid #D9CDF2;border-radius:20px;padding:18px 20px;margin:12px 0 18px;box-shadow:0 12px 30px rgba(57,35,101,.08);}
+        .align-forms-hero-title {font-size:1.05rem;font-weight:800;color:#392365;margin-bottom:4px;}
+        .align-forms-pill {display:inline-block;border-radius:999px;padding:7px 12px;margin:4px 7px 8px 0;font-weight:800;}
+        .align-forms-pill-id {background:#E7DFF7;color:#4C2883;}
+        .align-forms-pill-link {background:#E0F7EE;color:#13654E;}
+        .align-forms-pill-missing {background:#FFECEF;color:#A72B48;}
+        .align-forms-detail {background:linear-gradient(180deg,#FFFFFF 0%,#FBF9FF 100%);border:1px solid #E6E0F5;border-left:5px solid #7542B7;border-radius:14px;padding:12px 14px;margin:7px 0;box-shadow:0 4px 12px rgba(57,35,101,.05);}
+        .align-forms-label {color:#5A4A78;font-size:.78rem;font-weight:850;text-transform:uppercase;letter-spacing:.03em;}
+        .align-forms-value {color:#241A38;font-size:1rem;margin-top:5px;word-break:break-word;line-height:1.35;}
+        .align-forms-links-list {margin-top:.45rem;padding-left:1.75rem;}
+        .align-forms-links-list li {padding:.45rem .2rem;border-bottom:1px solid #E6E0F5;}
+        .align-forms-links-list a {font-weight:750;color:#5A34A0;}
+        .align-forms-link-url {margin-top:.15rem;color:#6B5C87;font-size:.84rem;overflow-wrap:anywhere;}
         @media (max-width: 800px) {
             .align-hero {padding:20px;}.align-hero h1 {font-size:1.55rem;}.align-hero-badge {display:none;}
         }
