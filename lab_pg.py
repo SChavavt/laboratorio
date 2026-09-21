@@ -5901,9 +5901,19 @@ def render_paused_workbench(
     """Muestra el archivo temporal y permite devolver cada caso a su flujo."""
     expanded = bool(st.session_state.get("workbench_paused_expanded", False))
     st.markdown('<div id="confeccion-en-pausa"></div>', unsafe_allow_html=True)
-    with st.expander(
-        f"🚫 Confección en pausa · {len(table)} pedido(s)", expanded=expanded
-    ):
+    # on_change="rerun" hace que abrir/cerrar dispare una corrida real de
+    # Python en vez de un simple toggle de CSS en el navegador. Sin esto, la
+    # grilla se monta con el expander todavía colapsado (ancho cero) y sólo
+    # queda visible una línea vertical vacía al abrirlo manualmente.
+    expander = st.expander(
+        f"🚫 Confección en pausa · {len(table)} pedido(s)",
+        expanded=expanded,
+        key="workbench_paused_expanded",
+        on_change="rerun",
+    )
+    with expander:
+        if not expander.open:
+            return
         if scroll_into_view:
             components.html(
                 """<script>
