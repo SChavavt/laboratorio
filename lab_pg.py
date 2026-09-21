@@ -6100,6 +6100,8 @@ def render_workbench(current_user: str) -> None:
         grid_options = workbench_grid_options(
             grid, filtered, current_user, preferred_order=saved_order, hidden_columns=hidden
         )
+        # Se consume una sola vez: el próximo guardado deja su propio folio.
+        grid_options["context"]["scrollToId"] = st.session_state.pop("workbench_scroll_to_id", None)
         initial_order = normalize_column_order(
             [column["field"] for column in grid_options["columnDefs"]], grid.columns
         )
@@ -6114,12 +6116,17 @@ def render_workbench(current_user: str) -> None:
         save_col, discard_col, count_col, pause_col, order_col = st.columns([1.2, 1.2, 1.5, 1.7, 1.2])
         if save_col.button("Guardar cambios", type="primary", disabled=not changes, use_container_width=True):
             st.session_state.pop("workbench_save_errors", None)
+            changed_ids = [identifier for identifier, _ in changes]
             saved, errors = save_workbench_changes(grid, edited, current_user)
             if errors and not saved and "workbench_snapshot" in st.session_state:
                 for error in errors:
                     st.error(error)
             else:
                 st.session_state["workbench_feedback"] = (saved, errors)
+                # La tabla se reconstruye por completo al guardar (nueva clave
+                # de grilla); sin esto el scroll siempre vuelve al principio.
+                if changed_ids:
+                    st.session_state["workbench_scroll_to_id"] = changed_ids[0]
                 rerun_active_tab()
         if discard_col.button("Descartar cambios", disabled=not pending, use_container_width=True):
             reset_workbench()
