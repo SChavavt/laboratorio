@@ -89,7 +89,10 @@ TIMES_HEADERS = [
 # ==============================
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
-FORMS_FILE_COLUMN_HINT = "Favor de adjuntar archivos STL"
+# Los 3 formularios usan "Favor de subir archivos en formato ZIP: - Escaneos
+# STL..." (no "adjuntar archivos STL" como en la app de aparatos), por eso el
+# hint es distinto aquí.
+FORMS_FILE_COLUMN_HINT = "archivos en formato ZIP"
 FORMS_EXCLUDED_COLUMN_HINTS = [
     "Acepto que he leído los Términos y Condiciones",
     "Estoy de acuerdo con el resguardo de mis datos personales",
@@ -103,11 +106,15 @@ FORMS_EXCLUDED_COLUMN_HINTS = [
 # misma cuenta de servicio de [gsheets].google_credentials. El sheet_id/worksheet
 # se puede sobreescribir en secrets bajo [google_forms_alineadores.<key>], pero
 # no es obligatorio: si no hay override, se usa el valor por defecto de aquí.
+# sheet_id verificados contra el título real de cada Google Sheet de
+# respuestas (metadata de Drive): "Alineadores (Respuestas)" es el formulario
+# TD, "MARCA BLANCA (Respuestas)" es marca blanca y "Otros Productos
+# (Respuestas)" es el formulario "Otros Productos" (antes iban cruzados).
 ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
     {
         "key": "td",
         "label": "🦷 Prescripción Alineadores TD",
-        "default_sheet_id": "1FFjO3RTMRZQ4OBfoL4thy_8GpIxgdlASkWggN_RMlRU",
+        "default_sheet_id": "1_wBpRLzN9p87sJq9961J_qtHEdpLvYSDEPqNQrqqlZ0",
     },
     {
         "key": "marca_blanca",
@@ -115,9 +122,9 @@ ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
         "default_sheet_id": "1OYwJI_IaqGYOXR4aTffYmLK_38hd0p51_3C7vAjFXEU",
     },
     {
-        "key": "form_3",
-        "label": "📄 Tercer formulario",
-        "default_sheet_id": "1_wBpRLzN9p87sJq9961J_qtHEdpLvYSDEPqNQrqqlZ0",
+        "key": "otros_productos",
+        "label": "📦 Otros Productos",
+        "default_sheet_id": "1FFjO3RTMRZQ4OBfoL4thy_8GpIxgdlASkWggN_RMlRU",
     },
 )
 
@@ -1088,6 +1095,7 @@ def get_forms_file_column(review_df: pd.DataFrame) -> str:
     return find_column_by_hint(
         list(review_df.columns),
         FORMS_FILE_COLUMN_HINT,
+        "Escaneos STL superior e inferior",
         "adjuntar archivos STL",
         "DICOM",
     )
