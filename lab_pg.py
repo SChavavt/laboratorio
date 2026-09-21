@@ -1775,11 +1775,9 @@ def get_current_user() -> str:
 
 
 def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
-    """Admin puede editar todo; cada usuario solo su pestaña."""
+    """Admin, Jime y Lesly pueden editar todo; el resto solo su pestaña."""
 
-    if current_user == "Admin" or current_user == tab_owner:
-        return True
-    return current_user == "Jime" and tab_owner == "Pagos"
+    return current_user in {"Admin", "Jime", "Lesly"} or current_user == tab_owner
 
 
 def get_user_operational_statuses(current_user: str) -> list[str]:
@@ -1835,7 +1833,7 @@ def is_transition_allowed_for_user(
 
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
-    if (current_user == "Admin" or previous_status == new_status
+    if (current_user in {"Admin", "Jime", "Lesly"} or previous_status == new_status
             or (current_user in APP_USERS and (
                 previous_status == PAUSED_STATUS or new_status == PAUSED_STATUS
             ))):
