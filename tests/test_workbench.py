@@ -193,14 +193,21 @@ def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
     assert app.display_selectbox_value(app.STATUS_COLUMN, "PULIDO (EN CONFECCIÓN)") not in options["001"]
 
 
-def test_status_options_also_apply_user_and_printing_permissions():
+def test_jime_and_lesly_have_full_editing_permissions_like_admin():
+    """Jime y Lesly editan cualquier etapa, igual que Admin (Vero conserva sus límites)."""
     jime_row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
-    assert app.display_selectbox_value(app.STATUS_COLUMN, "CANCELO") not in app.workbench_stage_options(jime_row, "Jime")
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "CANCELO") in app.workbench_stage_options(jime_row, "Jime")
+    assert app.is_transition_allowed_for_user("Jime", "PULIDO (EN CONFECCIÓN)", "SOLDADURA (EN CONFECCIÓN)", "MSE")
+    assert app.is_transition_allowed_for_user("Lesly", "ORDEN RECIBIDA", "REVISIÓN DE ARCHIVOS", "MSE")
+    assert not app.is_transition_allowed_for_user("Vero", "ORDEN RECIBIDA", "REVISIÓN DE ARCHIVOS", "MSE")
+    assert app.user_can_edit_tab("Lesly", "Jime") is True
+    assert app.user_can_edit_tab("Vero", "Jime") is False
+
+
+def test_printing_mark_still_gates_lesly_despite_full_permissions():
+    """La marca de impresión sigue exigida a Lesly aunque ahora edite todo."""
     lesly_row = pd.Series(case(status="LISTO P/SINTERIZADO"))
-    assert app.workbench_stage_options(lesly_row, "Lesly") == [
-        app.display_selectbox_value(app.STATUS_COLUMN, "LISTO P/SINTERIZADO"),
-        app.display_selectbox_value(app.STATUS_COLUMN, app.PAUSED_STATUS),
-    ]
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") not in app.workbench_stage_options(lesly_row, "Lesly")
     lesly_row[app.ESTATUS_PRINT_DATE_COLUMN] = "2026/09/03"
     assert app.display_selectbox_value(app.STATUS_COLUMN, "ELABORACIÓN PLATINA") in app.workbench_stage_options(lesly_row, "Lesly")
 
