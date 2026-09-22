@@ -151,7 +151,7 @@ USER_TAB_STATUSES = {
 }
 APP_TAB_OPTIONS = {
     "nuevo": "➕ Nuevo pedido",
-    "estefano": "📐 Planeación y Diseño",
+    "estefano": "📥 Recibidos de Forms",
     "jime": "📋 Recepción y Seguimiento",
     "pagos": "💳 Control de Pagos",
     "lesly": "🖨️ Impresión y Sinterizado",
@@ -4609,7 +4609,6 @@ def get_forms_field_icon(column: str) -> str:
 def render_estefano_forms_review(can_edit: bool) -> None:
     """Muestra respuestas del Google Form para tomar links de Drive en revisión."""
 
-    st.markdown("### 📋 Recibidos desde Forms")
     st.caption(
         "Primero elige la respuesta; abajo verás una ficha tipo resumen con iconos "
         "distintos por dato, sin líneas azules largas ni texto amontonado."
@@ -4822,15 +4821,16 @@ def render_estefano_shipping_tab(
 
 
 def render_estefano_tab(current_user: str) -> None:
-    st.subheader("📐 Planeación y Diseño")
+    """Pestaña Recibidos de Forms.
+
+    El envío de documentos de planeación y diseño se hace desde Seguimiento,
+    en "Archivos de planeación y diseño" del pedido abierto.
+    """
+    st.subheader("📥 Recibidos de Forms")
     can_edit = user_can_edit_tab(current_user, "Jime")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
-    shipping_tab, received_tab = st.tabs(["🚚 Envío de documentos", "📋 Recibidos de Forms"])
-    with shipping_tab:
-        render_estefano_shipping_tab(current_user, can_edit)
-    with received_tab:
-        render_estefano_forms_review(can_edit)
+    render_estefano_forms_review(can_edit)
 
 def render_jime_tab(current_user: str) -> None:
     st.subheader("📋 Recepción y Seguimiento")
