@@ -2668,11 +2668,12 @@ def render_processes(current_user: str) -> None:
             st.caption("🗄️ CANCELADO está disponible desde cualquier etapa activa y archiva el pedido.")
 
 
+# "🚨 Alertas y pausas" (render_alerts) y "⚙️ Procesos y plazos"
+# (render_processes) están ocultas; para mostrarlas otra vez basta con
+# agregarlas aquí.
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📥 Recibidos de Forms",
-    "🚨 Alertas y pausas",
-    "⚙️ Procesos y plazos",
 )
 
 

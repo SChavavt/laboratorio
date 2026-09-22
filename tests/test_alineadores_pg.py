@@ -407,6 +407,7 @@ with (
     patch.object(app, "require_authenticated_user", lambda: "Admin"),
     patch.object(app, "ensure_times_headers", lambda: None),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_aligners_forms_tab", lambda: st.write("forms ejecutados")),
     patch.object(app, "render_alerts", lambda _: st.write("alertas ejecutadas")),
     patch.object(app, "render_processes", lambda _: st.write("procesos ejecutados")),
 ):
@@ -414,18 +415,23 @@ with (
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
+    # Alertas y pausas / Procesos y plazos están ocultas.
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📥 Recibidos de Forms"]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[1].markdown
-    assert not at.tabs[2].markdown
-    assert not at.tabs[3].markdown
 
-    at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
+    at.session_state["aligners_primary_tabs_Admin"] = "📥 Recibidos de Forms"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
+    assert [item.value for item in at.tabs[1].markdown] == ["forms ejecutados"]
+
+    # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
+    at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
+    at.run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[1].markdown
-    assert [item.value for item in at.tabs[2].markdown] == ["alertas ejecutadas"]
-    assert not at.tabs[3].markdown
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):

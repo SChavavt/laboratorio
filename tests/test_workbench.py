@@ -527,9 +527,9 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     expected_tabs = {
-        "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño"],
-        "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño"],
-        "Lesly": ["📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño"],
+        "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
+        "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
+        "Lesly": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
         "Vero": ["📋 Seguimiento", "🛠️ Confección y Calidad"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
@@ -580,7 +580,7 @@ from unittest.mock import patch
 with (
     patch.object(app, "require_authenticated_user", lambda: "Admin"),
     patch.object(app, "ensure_tiempos_headers", lambda: None),
-    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño"]),
+    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
     patch.object(app, "render_workbench_auxiliary", lambda label, _: st.write(f"auxiliar ejecutado: {{label}}")),
 ):
@@ -588,17 +588,48 @@ with (
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "➕ Nuevo pedido", "📐 Planeación y Diseño"]
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert all(not tab.markdown for tab in at.tabs[1:])
 
-    at.session_state["lab_primary_tabs_Admin"] = "📐 Planeación y Diseño"
+    at.session_state["lab_primary_tabs_Admin"] = "📥 Recibidos de Forms"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
     assert [item.value for item in at.tabs[2].markdown] == [
-        "auxiliar ejecutado: 📐 Planeación y Diseño"
+        "auxiliar ejecutado: 📥 Recibidos de Forms"
     ]
+
+
+def test_forms_tab_shows_only_forms_without_document_shipping():
+    from streamlit.testing.v1 import AppTest
+
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import streamlit as st
+import lab_pg as app
+from unittest.mock import patch
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Jime"),
+    patch.object(app, "ensure_tiempos_headers", lambda: None),
+    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "➕ Nuevo pedido", app.APP_TAB_OPTIONS["estefano"]]),
+    patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_estefano_forms_review", lambda can_edit: st.write(f"forms ejecutado: {{can_edit}}")),
+    patch.object(app, "render_estefano_shipping_tab", lambda *args, **kwargs: st.write("envío ejecutado")),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    at.session_state["lab_primary_tabs_Jime"] = "📥 Recibidos de Forms"
+    at.run()
+    assert not at.exception
+    # Sin subpestañas: sólo existen las pestañas principales.
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]
+    assert [item.value for item in at.tabs[2].subheader] == ["📥 Recibidos de Forms"]
+    assert [item.value for item in at.tabs[2].markdown] == ["forms ejecutado: True"]
+    assert not at.tabs[2].warning
+    assert all("envío ejecutado" not in item.value for item in at.markdown)
 
 
 def test_ui_edits_freeze_filters_and_save_to_same_folio():
