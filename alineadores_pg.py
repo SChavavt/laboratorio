@@ -16,6 +16,7 @@ import math
 import re
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterable
@@ -57,6 +58,8 @@ DEFAULT_SPREADSHEET_ID = "1wNKD4bl__w1qMG182xFfu-1NlbcWTZdFEpa-h8ZLtik"
 SHEET_ORDERS = "ALINEADORES (nuevo)"
 SHEET_PROCESSES = "PROCESOS POR PRODUCTO"
 SHEET_TIMES = "TIEMPOS_ALINEADORES"
+SHEET_POLANCO = "POLANCO"
+SHEET_POLANCO_TIMES = "TIEMPOS_POLANCO"
 ORDER_HEADER_ROW = 2
 
 ID_COLUMN = "No. Orden"
@@ -906,15 +909,32 @@ def get_worksheet(sheet_name: str):
     try:
         return run_gsheets_request(lambda: spreadsheet.worksheet(sheet_name))
     except gspread.WorksheetNotFound:
-        if sheet_name != SHEET_TIMES:
+        if sheet_name not in (SHEET_TIMES, SHEET_POLANCO_TIMES):
             raise
         return run_gsheets_request(
             lambda: spreadsheet.add_worksheet(
-                title=SHEET_TIMES,
+                title=sheet_name,
                 rows="2000",
                 cols=str(len(TIMES_HEADERS)),
             )
         )
+
+
+def current_order_sheet() -> str:
+    """El destino pertenece a la sesión; nunca cambia globals compartidos."""
+    value = st.session_state.get("aligners_order_sheet", SHEET_ORDERS)
+    return value if value in (SHEET_ORDERS, SHEET_POLANCO) else SHEET_ORDERS
+
+
+def current_times_sheet() -> str:
+    return SHEET_POLANCO_TIMES if current_order_sheet() == SHEET_POLANCO else SHEET_TIMES
+
+
+def tracking_key(key: str) -> str:
+    """Conserva las claves existentes y aísla tabla, filtros y formularios Polanco."""
+    if current_order_sheet() == SHEET_POLANCO and not key.startswith("polanco_"):
+        return "polanco_" + key
+    return key
 
 
 def ensure_unique_column_names(columns: list[Any]) -> list[str]:
@@ -962,8 +982,8 @@ def normalize_rows(values: list[list[Any]], headers: list[str]) -> list[list[str
 
 
 @st.cache_data(ttl=30)
-def read_order_values() -> list[list[str]]:
-    return run_gsheets_request(lambda: get_worksheet(SHEET_ORDERS).get_all_values())
+def read_order_values(sheet_name: str = SHEET_ORDERS) -> list[list[str]]:
+    return run_gsheets_request(lambda: get_worksheet(sheet_name).get_all_values())
 
 
 @st.cache_data(ttl=30)
@@ -972,15 +992,15 @@ def read_process_values() -> list[list[str]]:
 
 
 @st.cache_data(ttl=30)
-def read_times_values() -> list[list[str]]:
-    return run_gsheets_request(lambda: get_worksheet(SHEET_TIMES).get_all_values())
+def read_times_values(sheet_name: str = SHEET_TIMES) -> list[list[str]]:
+    return run_gsheets_request(lambda: get_worksheet(sheet_name).get_all_values())
 
 
 def clear_sheet_data_cache() -> None:
     """Invalida sólo lecturas de Sheets y conserva validaciones estables."""
-    read_order_values.clear()
+    read_order_values.clear(current_order_sheet())
     read_process_values.clear()
-    read_times_values.clear()
+    read_times_values.clear(current_times_sheet())
     read_forms_responses_df.clear()
 
 
@@ -1453,7 +1473,7 @@ def rerun_active_tab() -> None:
 
 
 def read_orders_df() -> pd.DataFrame:
-    values = read_order_values()
+    values = read_order_values(current_order_sheet())
     if len(values) < ORDER_HEADER_ROW:
         return pd.DataFrame()
     raw_headers = values[ORDER_HEADER_ROW - 1]
@@ -1470,7 +1490,7 @@ def read_orders_df() -> pd.DataFrame:
 
 
 def read_times_df() -> pd.DataFrame:
-    values = read_times_values()
+    values = read_times_values(current_times_sheet())
     if not values:
         return pd.DataFrame(columns=TIMES_HEADERS)
     headers = [canonical_column_name(item) for item in ensure_unique_column_names(values[0])]
@@ -1482,9 +1502,13 @@ def read_process_definitions() -> dict[str, ProcessDefinition]:
     return parse_process_matrix(read_process_values())
 
 
-@st.cache_data(ttl=3600)
 def ensure_times_headers() -> None:
-    worksheet = get_worksheet(SHEET_TIMES)
+    _ensure_times_headers(current_times_sheet())
+
+
+@st.cache_data(ttl=3600)
+def _ensure_times_headers(sheet_name: str) -> None:
+    worksheet = get_worksheet(sheet_name)
     headers = run_gsheets_request(lambda: worksheet.row_values(1))
     if not headers:
         run_gsheets_request(lambda: worksheet.update("A1", [TIMES_HEADERS]))
@@ -1531,7 +1555,7 @@ def get_next_log_id(values: list[list[str]]) -> int:
 def close_active_times(identifier: str, next_status: str) -> str:
     """Cierra cualquier medición activa y devuelve la etapa de reanudación guardada."""
 
-    worksheet = get_worksheet(SHEET_TIMES)
+    worksheet = get_worksheet(current_times_sheet())
     values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) <= 1:
         return ""
@@ -1613,7 +1637,7 @@ def register_status_change(
     previous_resume = close_active_times(identifier, new)
     clear_sheet_data_cache()
 
-    worksheet = get_worksheet(SHEET_TIMES)
+    worksheet = get_worksheet(current_times_sheet())
     values = run_gsheets_request(lambda: worksheet.get_all_values())
     headers = values[0] if values else TIMES_HEADERS
     now = app_now()
@@ -1714,12 +1738,12 @@ def update_order_row(
     result = {"success": False, "updated_columns": [], "skipped_columns": [], "error": ""}
     if not changes:
         return result
-    worksheet = get_worksheet(SHEET_ORDERS)
+    worksheet = get_worksheet(current_order_sheet())
     values = run_gsheets_request(lambda: worksheet.get_all_values())
     if len(values) < ORDER_HEADER_ROW:
-        result["error"] = "No encontré la fila 2 de encabezados en ALINEADORES (nuevo)."
+        result["error"] = f"No encontré la fila 2 de encabezados en {current_order_sheet()}."
         return result
-    headers = values[ORDER_HEADER_ROW - 1]
+    headers = ensure_unique_column_names(values[ORDER_HEADER_ROW - 1])
     id_position = get_header_position(headers, ID_COLUMN)
     if id_position is None:
         result["error"] = f"No encontré la columna {ID_COLUMN}."
@@ -2165,19 +2189,131 @@ def build_grid_configuration(
     )
 
 
+def tracking_columns(available_columns: Iterable[str]) -> list[str]:
+    columns = list(available_columns)
+    visible = [column for column in GRID_COLUMNS if column in columns]
+    # La hoja puede incorporar más campos propios sin cambiar la app.
+    if current_order_sheet() == SHEET_POLANCO:
+        extras = [column for column in columns
+                  if column not in visible and not column.startswith("_")]
+        position = next((i for i, column in enumerate(visible)
+                         if column in COMPUTED_COLUMNS[1:]), len(visible))
+        visible[position:position] = extras
+    return visible
+
+
+def create_order(values: dict[str, Any], current_user: str,
+                 definitions: dict[str, ProcessDefinition]) -> tuple[str, str]:
+    """Añade una orden en la hoja activa y reporta por separado un fallo de bitácora."""
+    row = {key: prepare_sheet_value(value).strip() for key, value in values.items()}
+    for column in (PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
+        if not row.get(column):
+            raise ValueError(f"Completa {column}.")
+    definition = get_process_definition(row[PRODUCT_COLUMN], definitions)
+    if not definition or not definition.normal_statuses:
+        raise ValueError("El producto no tiene un flujo configurado en PROCESOS POR PRODUCTO.")
+    sheet_name = current_order_sheet()
+    worksheet = get_worksheet(sheet_name)
+    existing = run_gsheets_request(lambda: worksheet.get_all_values())
+    if len(existing) < ORDER_HEADER_ROW:
+        raise ValueError(f"No encontré los encabezados de {sheet_name} en la fila 2.")
+    headers = [canonical_column_name(item) for item in
+               ensure_unique_column_names(existing[ORDER_HEADER_ROW - 1])]
+    for column in (ID_COLUMN, STATUS_COLUMN, PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
+        if column not in headers:
+            raise ValueError(f"Falta la columna {column} en {sheet_name}.")
+    identifier = row.get(ID_COLUMN, "")
+    if not identifier:
+        prefix = "POL" if sheet_name == SHEET_POLANCO else "ALI"
+        identifier = f"{prefix}-{app_today():%Y%m%d}-{uuid.uuid4().hex[:12].upper()}"
+    id_index = headers.index(ID_COLUMN)
+    if any(clean_cell(item[id_index]).strip() == identifier
+           for item in existing[ORDER_HEADER_ROW:] if len(item) > id_index):
+        raise ValueError(f"La orden {identifier} ya existe en {sheet_name}.")
+    row.update({ID_COLUMN: identifier, STATUS_COLUMN: definition.normal_statuses[0],
+                "FECHA DE RECEPCIÓN": app_today().isoformat()})
+    # Un append no pisa renglones existentes ni sus fórmulas; RAW conserva folios
+    # con ceros iniciales y evita interpretar nombres/comentarios como fórmulas.
+    # No se reintenta una inserción: un timeout ambiguo podría duplicar la orden.
+    worksheet.append_row([row.get(header, "") for header in headers],
+                         value_input_option="RAW",
+                         table_range=f"A{ORDER_HEADER_ROW}:{rowcol_to_a1(ORDER_HEADER_ROW, len(headers))}")
+    warning = ""
+    try:
+        register_status_change(identifier=identifier, product=row[PRODUCT_COLUMN],
+                               previous_status="", new_status=row[STATUS_COLUMN],
+                               current_user=current_user, definitions=definitions,
+                               comment="Registro inicial desde la app.")
+    except Exception as exc:
+        warning = (f"La orden {identifier} sí se guardó, pero falta iniciar su medición. "
+                   f"Usa Reparar medición en el pedido. Detalle: {exc}")
+    clear_sheet_data_cache()
+    reset_workbench()
+    return identifier, warning
+
+
+def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
+    definitions = snapshot["definitions"]
+    products = [definition.name for definition in definitions.values()
+                if definition.normal_statuses]
+    if not products:
+        st.warning("Configura primero los productos y sus etapas en PROCESOS POR PRODUCTO.")
+        return
+    st.caption(f"Nueva orden en {current_order_sheet()}. La fecha de recepción y la etapa inicial son automáticas.")
+    version = st.session_state.get(tracking_key("aligners_new_version"), 0)
+    with st.form(tracking_key(f"aligners_new_form_{version}")):
+        row: dict[str, Any] = {}
+        left, right = st.columns(2)
+        row[ID_COLUMN] = left.text_input("No. Orden (opcional)", help="Vacío: se genera un folio único al guardar.")
+        row[PRODUCT_COLUMN] = right.selectbox("PRODUCTO *", products)
+        left, right = st.columns(2)
+        row["NOMBRE DOCTOR"] = left.text_input("NOMBRE DOCTOR *")
+        row["NOMBRE PACIENTE"] = right.text_input("NOMBRE PACIENTE *")
+        optional = ["TIPO", "ETAPA SOLICITUD", "VENDEDOR", "SERVICIO",
+                    "PAQUETE MARCA BLANCA", "ARCHIVOS RECIBIDOS"]
+        if current_order_sheet() == SHEET_POLANCO:
+            optional.append("ADEUDO")
+        columns = st.columns(2)
+        for index, column in enumerate(optional):
+            row[column] = columns[index % 2].text_input(column)
+        row["DETALLE COMENTARIOS"] = st.text_area("DETALLE COMENTARIOS")
+        submitted = st.form_submit_button("💾 Guardar nueva orden", type="primary")
+    if submitted:
+        try:
+            identifier, warning = create_order(row, current_user, definitions)
+        except Exception as exc:
+            st.error(f"No se pudo confirmar el guardado: {exc}")
+            st.info("Si hubo un error de conexión, actualiza la tabla y verifica la orden antes de reintentar.")
+            return
+        st.session_state[tracking_key("aligners_new_version")] = version + 1
+        st.session_state[tracking_key("aligners_feedback")] = (
+            [identifier], [warning] if warning else [], f"Orden {identifier} creada en {current_order_sheet()}.")
+        rerun_active_tab()
+
+
+def guard_tracking_tab_change(current_user: str) -> None:
+    """Impide que Streamlit elimine el editor de una pestaña con cambios pendientes."""
+    previous = st.session_state.get("aligners_active_tab", "📋 Seguimiento")
+    key = f"aligners_primary_tabs_{current_user}"
+    snapshot = st.session_state.get(tracking_key("aligners_snapshot")) or {}
+    if st.session_state.get(key) != previous and pending_change_count(snapshot.get("definitions", {})):
+        st.session_state[key] = previous
+        st.session_state["aligners_tab_warning"] = True
+
+
 def reset_workbench() -> None:
-    st.session_state.pop("aligners_snapshot", None)
-    st.session_state.pop("aligners_editor_key", None)
-    st.session_state.pop("aligners_editor_baseline", None)
-    st.session_state["aligners_revision"] = st.session_state.get("aligners_revision", 0) + 1
+    st.session_state.pop(tracking_key("aligners_snapshot"), None)
+    st.session_state.pop(tracking_key("aligners_editor_key"), None)
+    st.session_state.pop(tracking_key("aligners_editor_baseline"), None)
+    st.session_state[tracking_key("aligners_revision")] = st.session_state.get(tracking_key("aligners_revision"), 0) + 1
 
 
 def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
-    key = st.session_state.get("aligners_editor_key", "")
+    key = st.session_state.get(tracking_key("aligners_editor_key"), "")
     if not key:
         return 0
     state = st.session_state.get(key) or {}
-    baseline = st.session_state.get("aligners_editor_baseline")
+    baseline = st.session_state.get(tracking_key("aligners_editor_baseline"))
     if baseline is None or state.get("rows") is None:
         return 0
     try:
@@ -2190,7 +2326,7 @@ def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
 # Interfaz
 # ==============================
 def get_snapshot(current_user: str) -> dict[str, Any]:
-    snapshot = st.session_state.get("aligners_snapshot")
+    snapshot = st.session_state.get(tracking_key("aligners_snapshot"))
     if snapshot is None or snapshot.get("user") != current_user:
         definitions = read_process_definitions()
         orders = read_orders_df()
@@ -2203,23 +2339,23 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
             "table": build_tracking_table(orders, times, definitions),
             "at": app_now(),
         }
-        st.session_state["aligners_snapshot"] = snapshot
+        st.session_state[tracking_key("aligners_snapshot")] = snapshot
     return snapshot
 
 
 def set_aligners_signal_filter(signal: str) -> None:
     """Actualiza el filtro de semáforo desde una tarjeta."""
 
-    st.session_state[ALIGNERS_SIGNAL_FILTER_KEY] = (
+    st.session_state[tracking_key(ALIGNERS_SIGNAL_FILTER_KEY)] = (
         signal if signal in {"Todos", *ALERT_COLORS} else "Todos"
     )
 
 
 def current_aligners_signal_filter() -> str:
-    signal = st.session_state.get(ALIGNERS_SIGNAL_FILTER_KEY, "Todos")
+    signal = st.session_state.get(tracking_key(ALIGNERS_SIGNAL_FILTER_KEY), "Todos")
     if signal not in {"Todos", *ALERT_COLORS}:
         signal = "Todos"
-        st.session_state[ALIGNERS_SIGNAL_FILTER_KEY] = signal
+        st.session_state[tracking_key(ALIGNERS_SIGNAL_FILTER_KEY)] = signal
     return signal
 
 
@@ -2248,7 +2384,7 @@ def render_metrics(
             with container.container(key=f"align_filter_{tone}"):
                 st.button(
                     f"{label}\n\n**{value}**",
-                    key=f"aligners_signal_card_{tone}",
+                    key=tracking_key(f"aligners_signal_card_{tone}"),
                     type="primary" if selected == signal else "secondary",
                     disabled=disabled,
                     use_container_width=True,
@@ -2364,13 +2500,13 @@ def render_case_actions(
         if repairable and get_process_definition(product, definitions) is not None:
             if st.button(
                 "⏱️ Iniciar / reparar medición de esta etapa",
-                key=f"repair_aligner_{identifier}",
+                key=tracking_key(f"repair_aligner_{identifier}"),
                 help="No cambia el status; cierra mediciones incoherentes y comienza a contar desde ahora.",
             ):
                 try:
                     initialize_order_timer(row, current_user, definitions)
                     reset_workbench()
-                    st.session_state["aligners_feedback"] = (
+                    st.session_state[tracking_key("aligners_feedback")] = (
                         [identifier],
                         [],
                         "Medición iniciada en la etapa actual.",
@@ -2401,7 +2537,7 @@ def render_case_actions(
                 if column in history
             ]
             if history.empty:
-                st.info("Este pedido todavía no tiene historial en TIEMPOS_ALINEADORES.")
+                st.info(f"Este pedido todavía no tiene historial en {current_times_sheet()}.")
             else:
                 st.dataframe(
                     history[history_columns].iloc[::-1],
@@ -2437,19 +2573,27 @@ def render_workbench(current_user: str) -> None:
             "Actualizar datos",
             disabled=pending_before_grid,
             use_container_width=True,
-            key="aligners_refresh",
+            key=tracking_key("aligners_refresh"),
         ):
             clear_sheet_data_cache()
             reset_workbench()
             rerun_active_tab()
 
-    feedback = st.session_state.pop("aligners_feedback", None)
+    feedback = st.session_state.pop(tracking_key("aligners_feedback"), None)
     if feedback:
         saved, errors, message = feedback
         if saved:
             st.toast(message or "Guardado: " + ", ".join(saved), icon="✅")
         for error in errors:
             st.error(error)
+
+    with st.expander("➕ Nueva orden", expanded=False,
+                     key=tracking_key("aligners_new_expander"), on_change="rerun") as new_order:
+        if new_order.open:
+            if pending_before_grid:
+                st.info("Guarda o descarta los cambios de la tabla antes de crear una orden.")
+            else:
+                render_new_order(current_user, snapshot)
 
     signal = render_metrics(table, interactive=True, disabled=pending_before_grid)
     st.caption(
@@ -2476,7 +2620,7 @@ def render_workbench(current_user: str) -> None:
         "Buscar pedido",
         placeholder="Orden, doctor, paciente o producto",
         disabled=pending_before_grid,
-        key="aligners_search",
+        key=tracking_key("aligners_search"),
     )
     product_options = sorted(
         {clean_cell(value).strip() for value in table.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
@@ -2485,7 +2629,7 @@ def render_workbench(current_user: str) -> None:
         "Producto",
         product_options,
         disabled=pending_before_grid,
-        key="aligners_products",
+        key=tracking_key("aligners_products"),
     )
     status_options = sorted(
         {clean_cell(value).strip() for value in table.get(STATUS_COLUMN, []) if clean_cell(value).strip()}
@@ -2495,13 +2639,13 @@ def render_workbench(current_user: str) -> None:
         status_options,
         disabled=pending_before_grid,
         format_func=lambda value: status_display_value(value, definitions),
-        key="aligners_statuses",
+        key=tracking_key("aligners_statuses"),
     )
     order_mode = filters[3].selectbox(
         "Orden",
         ["Orden de la hoja", "Atender urgentes primero"],
         disabled=pending_before_grid,
-        key="aligners_order_mode",
+        key=tracking_key("aligners_order_mode"),
     )
     filtered = filter_tracking_table(
         table,
@@ -2516,7 +2660,7 @@ def render_workbench(current_user: str) -> None:
     hide_automatic = visibility[0].checkbox(
         "Ocultar automáticas",
         disabled=pending_before_grid,
-        key="aligners_hide_automatic",
+        key=tracking_key("aligners_hide_automatic"),
     )
     visibility[1].markdown(
         '<div class="align-column-legend"><span class="readonly">🔒 Fijas: No. Orden, Semáforo y columnas principales</span>'
@@ -2533,7 +2677,7 @@ def render_workbench(current_user: str) -> None:
         st.info("No hay pedidos que coincidan con los filtros.")
         return
 
-    visible_columns = [column for column in GRID_COLUMNS if column in filtered]
+    visible_columns = tracking_columns(filtered.columns)
     source_grid = filtered[visible_columns].copy()
     grid = display_workbench_df(source_grid, definitions)
     grid.insert(0, "SELECCIONAR", False)
@@ -2541,7 +2685,7 @@ def render_workbench(current_user: str) -> None:
         json.dumps(
             [
                 current_user,
-                st.session_state.get("aligners_revision", 0),
+                st.session_state.get(tracking_key("aligners_revision"), 0),
                 search,
                 signal,
                 products,
@@ -2553,9 +2697,9 @@ def render_workbench(current_user: str) -> None:
             sort_keys=True,
         ).encode()
     ).hexdigest()[:16]
-    key = f"aligners_grid_{signature}"
-    st.session_state["aligners_editor_key"] = key
-    st.session_state["aligners_editor_baseline"] = grid.copy()
+    key = tracking_key(f"aligners_grid_{signature}")
+    st.session_state[tracking_key("aligners_editor_key")] = key
+    st.session_state[tracking_key("aligners_editor_baseline")] = grid.copy()
 
     hidden: set[str] = set()
     if hide_automatic:
@@ -2577,18 +2721,18 @@ def render_workbench(current_user: str) -> None:
         type="primary",
         disabled=not changes,
         use_container_width=True,
-        key="aligners_save",
+        key=tracking_key("aligners_save"),
     ):
         saved, errors = save_workbench_changes(
             filtered, grid, edited, current_user, definitions
         )
-        st.session_state["aligners_feedback"] = (saved, errors, "")
+        st.session_state[tracking_key("aligners_feedback")] = (saved, errors, "")
         rerun_active_tab()
     if discard_column.button(
         "Descartar cambios",
         disabled=not pending_before_grid and not pending,
         use_container_width=True,
-        key="aligners_discard",
+        key=tracking_key("aligners_discard"),
     ):
         reset_workbench()
         rerun_active_tab()
@@ -2673,6 +2817,7 @@ def render_processes(current_user: str) -> None:
 # agregarlas aquí.
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
+    "📋 Seguimiento Polanco",
     "📥 Recibidos de Forms",
 )
 
@@ -2683,13 +2828,21 @@ def render_app_tabs(current_user: str) -> None:
     tabs = st.tabs(
         ALIGNERS_TAB_LABELS,
         key=f"aligners_primary_tabs_{current_user}",
-        on_change="rerun",
+        on_change=guard_tracking_tab_change,
+        args=(current_user,),
     )
     for label, tab in zip(ALIGNERS_TAB_LABELS, tabs):
         if not tab.open:
             continue
         with tab:
-            if label == "📋 Seguimiento":
+            st.session_state["aligners_active_tab"] = label
+            st.session_state["aligners_order_sheet"] = (
+                SHEET_POLANCO if label == "📋 Seguimiento Polanco" else SHEET_ORDERS
+            )
+            if label in ("📋 Seguimiento", "📋 Seguimiento Polanco"):
+                ensure_times_headers()
+                if st.session_state.pop("aligners_tab_warning", False):
+                    st.warning("Guarda o descarta los cambios antes de cambiar de pestaña.")
                 render_workbench(current_user)
             elif label == "🚨 Alertas y pausas":
                 render_alerts(current_user)
@@ -2860,7 +3013,6 @@ def apply_custom_css() -> None:
 def render_embedded_workspace(current_user: str) -> None:
     """Renderiza alineadores dentro de lab_pg usando la sesión compartida."""
 
-    ensure_times_headers()
     render_app_tabs(current_user)
 
 

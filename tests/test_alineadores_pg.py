@@ -379,10 +379,13 @@ snapshot = {{
     "user": "Admin", "definitions": definitions, "orders": orders,
     "times": times, "table": table, "at": app.datetime(2026, 9, 9, 12),
 }}
-app.require_authenticated_user = lambda: "Admin"
-app.ensure_times_headers = lambda: None
-app.get_snapshot = lambda _: snapshot
-app.main()
+from unittest.mock import patch
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_times_headers", lambda: None),
+    patch.object(app, "get_snapshot", lambda _: snapshot),
+):
+    app.main()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
@@ -416,22 +419,22 @@ with (
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
-    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📥 Recibidos de Forms"]
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📋 Seguimiento Polanco", "📥 Recibidos de Forms"]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[1].markdown
+    assert not at.tabs[2].markdown
 
     at.session_state["aligners_primary_tabs_Admin"] = "📥 Recibidos de Forms"
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[1].markdown] == ["forms ejecutados"]
+    assert [item.value for item in at.tabs[2].markdown] == ["forms ejecutados"]
 
     # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[1].markdown
+    assert not at.tabs[2].markdown
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):
@@ -441,4 +444,4 @@ def test_embedded_workspace_reuses_parent_session(monkeypatch):
 
     app.render_embedded_workspace("Jime")
 
-    assert calls == ["headers", "Jime"]
+    assert calls == ["Jime"]

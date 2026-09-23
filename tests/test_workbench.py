@@ -527,12 +527,17 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     expected_tabs = {
-        "Admin": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
-        "Jime": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
-        "Lesly": ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"],
+        "Admin": ["📋 Seguimiento", "📥 Recibidos de Forms"],
+        "Jime": ["📋 Seguimiento", "📥 Recibidos de Forms"],
+        "Lesly": ["📋 Seguimiento", "📥 Recibidos de Forms"],
         "Vero": ["📋 Seguimiento", "🛠️ Confección y Calidad"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
+    new_order = [item for item in at.expander if item.label == "➕ Nuevo pedido"]
+    assert bool(new_order) == (user != "Vero")
+    if new_order:
+        assert not new_order[0].proto.expanded
+        assert not new_order[0].text_input
     assert not at.toggle
     assert not at.get("segmented_control")
     assert len(at.tabs[0].get("component_instance")) == 1
@@ -580,7 +585,7 @@ from unittest.mock import patch
 with (
     patch.object(app, "require_authenticated_user", lambda: "Admin"),
     patch.object(app, "ensure_tiempos_headers", lambda: None),
-    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]),
+    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "📥 Recibidos de Forms"]),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
     patch.object(app, "render_workbench_auxiliary", lambda label, _: st.write(f"auxiliar ejecutado: {{label}}")),
 ):
@@ -588,7 +593,7 @@ with (
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📥 Recibidos de Forms"]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert all(not tab.markdown for tab in at.tabs[1:])
 
@@ -596,7 +601,7 @@ with (
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[2].markdown] == [
+    assert [item.value for item in at.tabs[1].markdown] == [
         "auxiliar ejecutado: 📥 Recibidos de Forms"
     ]
 
@@ -613,7 +618,7 @@ from unittest.mock import patch
 with (
     patch.object(app, "require_authenticated_user", lambda: "Jime"),
     patch.object(app, "ensure_tiempos_headers", lambda: None),
-    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", "➕ Nuevo pedido", app.APP_TAB_OPTIONS["estefano"]]),
+    patch.object(app, "workbench_tab_options", lambda _: ["📋 Seguimiento", app.APP_TAB_OPTIONS["estefano"]]),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
     patch.object(app, "render_estefano_forms_review", lambda can_edit: st.write(f"forms ejecutado: {{can_edit}}")),
     patch.object(app, "render_estefano_shipping_tab", lambda *args, **kwargs: st.write("envío ejecutado")),
@@ -625,10 +630,10 @@ with (
     at.run()
     assert not at.exception
     # Sin subpestañas: sólo existen las pestañas principales.
-    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "➕ Nuevo pedido", "📥 Recibidos de Forms"]
-    assert [item.value for item in at.tabs[2].subheader] == ["📥 Recibidos de Forms"]
-    assert [item.value for item in at.tabs[2].markdown] == ["forms ejecutado: True"]
-    assert not at.tabs[2].warning
+    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📥 Recibidos de Forms"]
+    assert [item.value for item in at.tabs[1].subheader] == ["📥 Recibidos de Forms"]
+    assert [item.value for item in at.tabs[1].markdown] == ["forms ejecutado: True"]
+    assert not at.tabs[1].warning
     assert all("envío ejecutado" not in item.value for item in at.markdown)
 
 

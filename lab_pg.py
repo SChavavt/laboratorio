@@ -6008,6 +6008,14 @@ def render_workbench(current_user: str) -> None:
             st.toast("Guardado: " + ", ".join(saved), icon="✅")
         if errors:
             st.session_state["workbench_save_errors"] = errors
+    if "nuevo" in USER_VISIBLE_TABS.get(current_user, []):
+        with st.expander("➕ Nuevo pedido", expanded=False,
+                         key="apparatus_new_order_expander", on_change="rerun") as new_order:
+            if new_order.open:
+                if pending:
+                    st.info("Guarda o descarta los cambios de la tabla antes de crear un pedido.")
+                else:
+                    render_nuevo_pedido_tab()
     signal = render_workbench_signal_cards(table, len(paused_table), pending)
     previous_signal = st.session_state.get("workbench_signal_filter_previous")
     if signal == "🚫 Confección en pausa" and previous_signal != "🚫 Confección en pausa":
@@ -6198,7 +6206,7 @@ def workbench_tab_options(current_user: str) -> list[str]:
     """Devuelve únicamente las pestañas de Aparatos habilitadas para el usuario."""
 
     legacy_tabs = USER_VISIBLE_TABS.get(current_user, [])
-    labels = [APP_TAB_OPTIONS[key] for key in legacy_tabs]
+    labels = [APP_TAB_OPTIONS[key] for key in legacy_tabs if key != "nuevo"]
     return ["📋 Seguimiento", *labels]
 
 
@@ -6287,7 +6295,7 @@ def workspace_has_pending_edits(selected_view: str) -> bool:
     if selected_view == LAB_VIEW_APPARATUS:
         return workbench_has_pending_edits()
 
-    snapshot = st.session_state.get("aligners_snapshot") or {}
+    snapshot = st.session_state.get(alineadores_pg.tracking_key("aligners_snapshot")) or {}
     definitions = snapshot.get("definitions") or {}
     return alineadores_pg.pending_change_count(definitions) > 0
 

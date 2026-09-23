@@ -58,3 +58,23 @@ estar compartidos como editores con el `client_email` incluido en
 ```bash
 python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py
 ```
+
+
+### Altas y seguimiento Polanco
+
+- Aparatos: “Nuevo pedido” se encuentra en un desplegable cerrado dentro de
+  Seguimiento, conservando los permisos de alta existentes. Ya no ocupa una pestaña.
+- Alineadores: Seguimiento y Seguimiento Polanco tienen un desplegable “Nueva orden”.
+  El formulario se carga sólo al abrirlo, incluso si no hay pedidos activos.
+- Polanco lee y escribe la pestaña `POLANCO` del mismo archivo Control ALINEADORES.
+  Conserva los campos adicionales, incluido `ADEUDO`, y las columnas repetidas de envíos.
+- Los procesos de ambas pestañas provienen de `PROCESOS POR PRODUCTO`. Los tiempos
+  de Polanco se registran en `TIEMPOS_POLANCO`, creada automáticamente al entrar
+  por primera vez. No necesita secrets nuevos ni mezcla órdenes con igual folio.
+- Las nuevas órdenes requieren producto, doctor y paciente. El número de orden
+  es opcional; vacío genera un folio único. La recepción es la fecha actual y la
+  etapa inicial es la primera etapa normal configurada para el producto.
+- Cada seguimiento conserva su fotografía de datos y su editor por separado. Los
+  cambios pendientes deben guardarse o descartarse antes de cambiar de pestaña.
+- Si la orden se guarda pero falla la bitácora, la app lo informa y permite reparar
+  la medición; no solicita volver a crear la orden.
