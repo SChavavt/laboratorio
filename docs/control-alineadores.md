@@ -52,6 +52,15 @@ estar compartidos como editores con el `client_email` incluido en
   `SOLICITUD DE CAMBIOS` e `IMPRESIÓN EN PAUSA`.
 - Los pedidos enviados o cancelados permanecen en Sheets y se ocultan de la mesa
   activa.
+- Debajo de la tabla de Seguimiento (y de Seguimiento Polanco) está el desplegable
+  **🚚 Enviados · N pedido(s)**, histórico de los pedidos en `ENVIADO`. Tiene buscador
+  (orden, doctor, paciente o producto) y filtro por producto. Sólo se edita la
+  etapa: se ofrece cualquier etapa normal o pausa del producto, excepto Enviado y
+  Cancelado. Al pulsar **Guardar y reactivar** el pedido vuelve a la tabla de
+  pedidos activos y la bitácora registra `ENVIADO → nueva etapa` con el comentario
+  "Reactivado desde el histórico de Enviados.".
+- Mientras haya etapas elegidas sin guardar en Enviados no se puede refrescar,
+  cambiar de pestaña ni guardar la tabla principal; lo mismo al revés.
 
 ## Pruebas
 

@@ -165,3 +165,41 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     assert not at.exception
     assert at.session_state['created_in'] == app.SHEET_POLANCO
     assert at.session_state['created_values']['NOMBRE PACIENTE'] == 'Ejemplo'
+
+
+@pytest.mark.parametrize('sheet_name,times_name,other_name', [
+    (app.SHEET_ORDERS, app.SHEET_TIMES, app.SHEET_POLANCO),
+    (app.SHEET_POLANCO, app.SHEET_POLANCO_TIMES, app.SHEET_ORDERS),
+])
+def test_reactivating_sent_order_returns_it_to_active_table(
+        sheets, monkeypatch, sheet_name, times_name, other_name):
+    monkeypatch.setattr(app, 'read_process_definitions', definitions)
+    sheets[sheet_name].values[2][1] = 'ENVIADO'
+    other_before = copy.deepcopy(sheets[other_name].values)
+    app.st.session_state['aligners_order_sheet'] = sheet_name
+    snapshot = app.get_snapshot('Jime')
+    assert snapshot['table'].empty
+    assert list(snapshot['sent'][app.ID_COLUMN]) == ['001']
+
+    grid = app.display_workbench_df(snapshot['sent'], snapshot['definitions'])
+    edited = grid.copy()
+    edited.loc[0, app.STATUS_COLUMN] = app.status_display_value('REVISIÓN DE ARCHIVOS')
+    saved, errors = app.save_workbench_changes(
+        snapshot['sent'], grid, edited, 'Jime', snapshot['definitions'], reactivate=True)
+
+    assert (saved, errors) == (['001'], [])
+    assert sheets[sheet_name].values[2][1] == 'REVISIÓN DE ARCHIVOS'
+    log = dict(zip(app.TIMES_HEADERS, sheets[times_name].values[-1]))
+    assert log[app.STATUS_COLUMN] == 'REVISIÓN DE ARCHIVOS'
+    assert 'ENVIADO → REVISIÓN DE ARCHIVOS' in log['COMENTARIOS_CAMBIO']
+    assert 'histórico de Enviados' in log['COMENTARIOS_CAMBIO']
+    assert sheets[other_name].values == other_before
+    refreshed = app.get_snapshot('Jime')
+    assert list(refreshed['table'][app.ID_COLUMN]) == ['001']
+    assert refreshed['sent'].empty
+
+
+def test_old_snapshot_without_sent_archive_is_rebuilt(sheets, monkeypatch):
+    monkeypatch.setattr(app, 'read_process_definitions', definitions)
+    app.st.session_state['aligners_snapshot'] = {'user': 'Jime', 'table': pd.DataFrame()}
+    assert 'sent' in app.get_snapshot('Jime')

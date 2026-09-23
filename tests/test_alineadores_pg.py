@@ -445,3 +445,141 @@ def test_embedded_workspace_reuses_parent_session(monkeypatch):
     app.render_embedded_workspace("Jime")
 
     assert calls == ["Jime"]
+
+
+def test_sent_orders_form_their_own_archive(definitions):
+    frame = pd.DataFrame(
+        [
+            order("1", "ENVIADO"),
+            order("2", "CANCELADO"),
+            order("3", "EN PLANEACIÓN"),
+            order("4", "🚚 ENVIADO"),
+        ]
+    )
+    assert list(app.sent_orders(frame, definitions)[app.ID_COLUMN]) == ["1", "4"]
+    assert list(app.active_orders(frame, definitions)[app.ID_COLUMN]) == ["3"]
+    assert app.sent_orders(pd.DataFrame(), definitions).empty
+
+
+def test_sent_order_can_return_to_any_active_stage_of_its_product(definitions):
+    options = app.get_reactivation_statuses("CONVENC.", "ENVIADO", definitions)
+    assert options[0] == "ENVIADO"
+    assert options[1:] == [
+        *[
+            status
+            for status in definitions["CONVENCIONAL"].normal_statuses
+            if status != "ENVIADO"
+        ],
+        *definitions["CONVENCIONAL"].pauses,
+    ]
+    assert "CANCELADO" not in options
+
+    retainers = app.get_reactivation_statuses("RETENEDORES", "ENVIADO", definitions)
+    assert "IMPRESIÓN EN PAUSA" in retainers
+    assert "BORRADOR TITAN" not in retainers
+    # Sólo los enviados usan esta ruta; los demás conservan su flujo normal.
+    assert app.get_reactivation_statuses("CONVENC.", "EN PLANEACIÓN", definitions) == ["EN PLANEACIÓN"]
+    assert app.get_reactivation_statuses("DESCONOCIDO", "ENVIADO", definitions) == ["ENVIADO"]
+
+
+def test_reactivation_only_accepts_an_active_stage(definitions):
+    row = pd.Series(order(status="ENVIADO"))
+    assert not app.validate_delta(
+        row, {app.STATUS_COLUMN: "EN PLANEACIÓN"}, definitions, reactivate=True
+    )
+    assert not app.validate_delta(
+        row, {app.STATUS_COLUMN: "⏸️ SOLICITUD DE CAMBIOS"}, definitions, reactivate=True
+    )
+    assert app.validate_delta(
+        row, {app.STATUS_COLUMN: "CANCELADO"}, definitions, reactivate=True
+    )
+    assert app.validate_delta(
+        row,
+        {app.STATUS_COLUMN: "EN PLANEACIÓN", "NOMBRE DOCTOR": "Otro"},
+        definitions,
+        reactivate=True,
+    )
+    # Fuera del histórico, un enviado sigue sin poder moverse.
+    assert app.validate_delta(row, {app.STATUS_COLUMN: "EN PLANEACIÓN"}, definitions)
+
+
+def test_sent_grid_only_edits_stage_with_reactivation_options(definitions):
+    source = pd.DataFrame([order("1", "ENVIADO", TIPO="Inicial"), order("2", "ENVIADO"), order("2", "ENVIADO")])
+    grid = app.display_workbench_df(source, definitions)
+    options = app.build_grid_configuration(grid, source, definitions, reactivate=True)
+    columns = {item["field"]: item for item in options["columnDefs"]}
+
+    assert columns["NOMBRE DOCTOR"]["editable"] is False
+    assert columns["TIPO"]["editable"] is False
+    assert columns[app.STATUS_COLUMN]["editable"] is not False
+    stages = options["context"]["stageOptions"]
+    assert app.status_display_value("EN PLANEACIÓN", definitions) in stages["1"]
+    assert app.status_display_value("CANCELADO", definitions) not in stages["1"]
+    # Un folio repetido se ve, pero no se puede reactivar.
+    assert stages["2"] == [app.status_display_value("ENVIADO", definitions)]
+
+
+def test_repeated_sent_folios_do_not_block_other_reactivations(definitions, monkeypatch):
+    baseline = app.display_workbench_df(
+        pd.DataFrame([order("1", "ENVIADO"), order("2", "ENVIADO"), order("2", "ENVIADO")]),
+        definitions,
+    )
+    edited = baseline.copy()
+    edited.loc[0, app.STATUS_COLUMN] = app.status_display_value("EN IMPRESIÓN", definitions)
+    with pytest.raises(ValueError):
+        app.grid_changes(baseline, edited, definitions)
+    assert app.grid_changes(*app.without_repeated_orders(baseline, edited), definitions) == [
+        ("1", {app.STATUS_COLUMN: "EN IMPRESIÓN"})
+    ]
+
+    monkeypatch.setattr(app.st, "session_state", {
+        "aligners_sent_editor_key": "sent_grid",
+        "aligners_sent_editor_baseline": baseline,
+        "sent_grid": {"rows": edited.to_dict("records")},
+    })
+    assert app.sent_change_count(definitions) == 1
+    assert app.pending_change_count(definitions) == 1
+    app.discard_sent_changes()
+    assert app.pending_change_count(definitions) == 0
+
+
+def test_sent_archive_opens_with_search_and_product_filters():
+    from streamlit.testing.v1 import AppTest
+
+    repository_root = str(Path(__file__).resolve().parents[1])
+    script = f'''
+import sys
+sys.path.insert(0, {repository_root!r})
+import streamlit as st
+import pandas as pd
+import alineadores_pg as app
+
+definitions = app.parse_process_matrix({PROCESS_VALUES!r})
+orders = pd.DataFrame([{order()!r}, {order("900", "ENVIADO", "GRAPHY")!r}])
+times = pd.DataFrame([{log()!r}])
+snapshot = {{
+    "user": "Admin", "definitions": definitions, "orders": orders, "times": times,
+    "table": app.build_tracking_table(orders, times, definitions, now=app.datetime(2026, 9, 9, 12)),
+    "sent": app.sent_orders(orders, definitions), "at": app.datetime(2026, 9, 9, 12),
+}}
+from unittest.mock import patch
+with patch.object(app, "get_snapshot", lambda _: snapshot):
+    if st.session_state.get("test_open"):
+        st.session_state["aligners_sent_expander"] = True
+    app.render_workbench("Admin")
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert any(item.label == "🚚 Enviados · 1 pedido(s)" for item in at.expander)
+    assert all(item.key != "aligners_sent_search" for item in at.text_input)
+
+    at.session_state["test_open"] = True
+    at.run()
+    assert not at.exception
+    search = at.text_input(key="aligners_sent_search")
+    assert search.label == "Buscar pedido"
+    assert search.placeholder == "Orden, doctor, paciente o producto"
+    products = at.multiselect(key="aligners_sent_products")
+    assert products.label == "Producto"
+    assert products.options == ["GRAPHY"]
+    assert at.button(key="aligners_sent_save").disabled
