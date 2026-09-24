@@ -1,8 +1,8 @@
 # Control de laboratorio unificado
 
 La única app que debe desplegarse en Streamlit es `lab_pg.py`. Desde su recuadro
-principal se cambia entre **Aparatos** y **Alineadores** sin abrir otro enlace ni
-volver a iniciar sesión.
+principal se cambia entre **Aparatos**, **Alineadores** y **Guías** sin abrir otro
+enlace ni volver a iniciar sesión.
 
 `alineadores_pg.py` se conserva como módulo interno porque contiene la lógica,
 la tabla y los flujos de alineadores; `lab_pg.py` lo carga sólo cuando esa vista
@@ -18,6 +18,10 @@ La app unificada utiliza una sola cuenta de servicio y dos IDs independientes:
 google_credentials = """{ ... JSON de la cuenta de servicio ... }"""
 sheet_id = "<ID_CONTROL_APARATOS>"
 alineadores_sheet_id = "<ID_CONTROL_ALINEADORES>"
+# Opcional: por defecto se usa el mismo Excel de pedidos que app_v.
+ventas_sheet_id = "<ID_EXCEL_PEDIDOS_VENTAS>"
+# Opcional: sólo si ventas debe leerse con otra cuenta de servicio.
+# ventas_google_credentials = """{ ... }"""
 
 [auth.passwords]
 Admin = "..."
@@ -31,12 +35,21 @@ La clave `gsheets.sheet_id` corresponde a **CONTROL APARATOS** y
 estar compartidos como editores con el `client_email` incluido en
 `google_credentials`.
 
+La vista **Guías** abre el Excel de pedidos de ventas (el mismo `GOOGLE_SHEET_ID`
+de app_v, o `gsheets.ventas_sheet_id` si se configura). Ese archivo también debe
+compartirse como editor con el mismo `client_email`, o bien configurar
+`gsheets.ventas_google_credentials` con la cuenta de servicio de ventas. Para
+abrir las guías en vista previa se usan las credenciales AWS de `[ventas_aws]`
+o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
+
 ## Navegación y sesión
 
 - El selector **Aparatos / Alineadores** vive dentro del encabezado principal.
 - La vista actual aparece escrita en el mismo encabezado.
-- La elección se conserva en el URL como `vista=aparatos` o
-  `vista=alineadores`.
+- La elección se conserva en el URL como `vista=aparatos`,
+  `vista=alineadores` o `vista=guias`.
+- Cada vista tiene su color: morado (aparatos), verde (alineadores) y azul
+  (guías).
 - El inicio de sesión es único para ambas vistas.
 - El usuario recordado en el enlace lleva una firma; cambiar manualmente
   `usuario=...` no concede permisos de otro usuario.
@@ -124,3 +137,26 @@ python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/t
   cambios pendientes deben guardarse o descartarse antes de cambiar de pestaña.
 - Si la orden se guarda pero falla la bitácora, la app lo informa y permite reparar
   la medición; no solicita volver a crear la orden.
+
+## Solicitudes de guía
+
+En la vista **📋 Guías** todo son solicitudes de guía (no pedidos de venta).
+Usa el mismo registro que ARTTD JIMENA en app_v, para que almacén las vea igual:
+
+- **📋 Solicitar guía**: quien solicita queda fijo como `ARTTD JIMENA` y la
+  fecha de solicitud es la de hoy. Se captura folio de factura (opcional),
+  indicaciones para la guía y la dirección de envío DHL (datos obligatorios y
+  opcionales). Al registrar se agrega un renglón en `data_pedidos` con las mismas
+  columnas y valores que app_v (`Tipo_Envio = 📋 Solicitudes de Guía`,
+  `id_vendedor = ARTTDJIM01`, `Estado = 🟡 Pendiente`, `Fecha_Entrega` = hoy,
+  destinatario en `Cliente` y dirección en `Direccion_Guia_Retorno`). Si faltan
+  las columnas que app_v agrega (`TD_Leal_Etapa`, `Tipo_Venta`, crédito y
+  `Direccion_Guia_Retorno`) se crean al registrar. Reenviar la misma solicitud
+  tras un error de conexión reutiliza su ID, así que no se duplica.
+- **📦 Guías cargadas**: sólo solicitudes de guía (`Tipo_Envio = 📋 Solicitudes de
+  Guía`) de ARTTD JIMENA y SCHAVA a las que almacén ya les cargó la guía, del
+  último mes, en `data_pedidos` (En curso) y `datos_pedidos` (Histórico). Tiene
+  filtros por quién solicitó, últimos 7 días, fecha o rango, y el botón para
+  abrir la guía.
+- Arriba de las pestañas aparece el aviso de solicitudes con guía cargada en las
+  últimas 12 h para `ARTTDJIM01`.

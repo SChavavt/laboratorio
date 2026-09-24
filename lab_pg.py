@@ -24,6 +24,7 @@ from gspread.utils import rowcol_to_a1
 from streamlit.errors import StreamlitAPIException
 
 import alineadores_pg
+import guias_pg
 from workbench_grid import build_grid_options, render_grid
 
 # ==============================
@@ -95,7 +96,8 @@ TIEMPOS_HEADERS = [
 ACTIVE_USER_LABEL = "Usuario Streamlit"
 LAB_VIEW_APPARATUS = "⚙️ Aparatos"
 LAB_VIEW_ALIGNERS = "🦷 Alineadores"
-LAB_WORKSPACE_VIEWS = (LAB_VIEW_APPARATUS, LAB_VIEW_ALIGNERS)
+LAB_VIEW_GUIDES = "📋 Guías"
+LAB_WORKSPACE_VIEWS = (LAB_VIEW_APPARATUS, LAB_VIEW_ALIGNERS, LAB_VIEW_GUIDES)
 LAB_WORKSPACE_STATE_KEY = "lab_workspace_view"
 LAB_WORKSPACE_DETAILS = {
     LAB_VIEW_APPARATUS: {
@@ -107,6 +109,11 @@ LAB_WORKSPACE_DETAILS = {
         "title": "Control de alineadores",
         "subtitle": "Flujos por producto, pausas visibles y tiempos bajo control.",
         "badge": "🦷 FLUJO DE ALINEADORES",
+    },
+    LAB_VIEW_GUIDES: {
+        "title": "Solicitudes de guía",
+        "subtitle": "Solicita guías DHL como ARTTD JIMENA y consulta las que ya cargó almacén.",
+        "badge": "📋 GUÍAS DE ENVÍO",
     },
 }
 APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
@@ -6255,13 +6262,14 @@ def render_workbench_tabs(current_user: str) -> None:
 
 
 def normalize_workspace_view(value: Any) -> str:
-    """Normaliza etiquetas y parámetros del URL a una de las dos áreas."""
+    """Normaliza etiquetas y parámetros del URL a una de las tres áreas."""
 
-    return (
-        LAB_VIEW_ALIGNERS
-        if "ALINEADOR" in normalize_text(value)
-        else LAB_VIEW_APPARATUS
-    )
+    normalized = normalize_text(value)
+    if "ALINEADOR" in normalized:
+        return LAB_VIEW_ALIGNERS
+    if "GUIA" in normalized:
+        return LAB_VIEW_GUIDES
+    return LAB_VIEW_APPARATUS
 
 
 def current_workspace_view() -> str:
@@ -6278,15 +6286,20 @@ def current_workspace_view() -> str:
     return st.session_state[LAB_WORKSPACE_STATE_KEY]
 
 
+LAB_WORKSPACE_URL_VALUES = {
+    LAB_VIEW_APPARATUS: "aparatos",
+    LAB_VIEW_ALIGNERS: "alineadores",
+    LAB_VIEW_GUIDES: "guias",
+}
+
+
 def persist_workspace_view() -> None:
     """Conserva la sección elegida al recargar o compartir el enlace."""
 
     selected_view = normalize_workspace_view(
         st.session_state.get(LAB_WORKSPACE_STATE_KEY, LAB_VIEW_APPARATUS)
     )
-    st.query_params["vista"] = (
-        "alineadores" if selected_view == LAB_VIEW_ALIGNERS else "aparatos"
-    )
+    st.query_params["vista"] = LAB_WORKSPACE_URL_VALUES[selected_view]
 
 
 def workspace_has_pending_edits(selected_view: str) -> bool:
@@ -6294,6 +6307,8 @@ def workspace_has_pending_edits(selected_view: str) -> bool:
 
     if selected_view == LAB_VIEW_APPARATUS:
         return workbench_has_pending_edits()
+    if selected_view == LAB_VIEW_GUIDES:
+        return False
 
     snapshot = st.session_state.get(alineadores_pg.tracking_key("aligners_snapshot")) or {}
     definitions = snapshot.get("definitions") or {}
@@ -6308,7 +6323,7 @@ def render_workspace_header() -> str:
     has_pending_edits = workspace_has_pending_edits(selected_view)
     with st.container(key="lab_workspace_header"):
         copy_column, switch_column = st.columns(
-            [1.65, 1], gap="large", vertical_alignment="center"
+            [1.4, 1.15], gap="large", vertical_alignment="center"
         )
         with copy_column:
             st.markdown(
@@ -6415,11 +6430,44 @@ LAB_SHELL_PALETTES = {
         "TOGGLE_ACTIVE_SHADOW1": "#0A1F1588", "TOGGLE_ACTIVE_SHADOW2": "#FFD65A33",
         "TOGGLE_CHECK_BG": "#D9A62B",
     },
+    LAB_VIEW_GUIDES: {
+        "WASH1": "#CFE3FF", "WASH2": "#D3EEF7", "BASE_BG": "#EEF4FD",
+        "SIDEBAR_BG": "#E3EDFB", "SIDEBAR_BORDER": "#BCD1F0",
+        "HEADING_COLOR": "#17325C",
+        "TABLIST_BG": "#DCE8F9", "TABLIST_BORDER": "#B8CDEE",
+        "TAB_BG": "#F2F7FE", "TAB_BORDER": "#C6D8F2", "TAB_COLOR": "#24477A",
+        "TAB_HOVER_BG": "#CFE0F7", "TAB_HOVER_SHADOW": "#1F5FB01C",
+        "TAB_ACTIVE_GRAD": "linear-gradient(110deg, #2D6FD2, #1B4F9C)",
+        "TAB_ACTIVE_BORDER": "#1F5DB8", "TAB_ACTIVE_SHADOW": "#2466C433",
+        "METRIC_BORDER": "#BCD2F1",
+        "TOTAL_GRAD": "linear-gradient(120deg,#D3E4FF,#E8F1FF)",
+        "TOTAL_BORDER": "#4A83D8", "TOTAL_COLOR": "#1A4786",
+        "GLOW_SHADOW1": "#2A68C433", "GLOW_SHADOW2": "#14305C2B",
+        "CHECK_BADGE_BG": "#1B4F9C",
+        "EDITBAR_READY_BG": "#DFEAFB", "EDITBAR_READY_COLOR": "#1E4C8A",
+        "LEGEND_EDITABLE": "#2A67C0",
+        "WIDGET_LABEL_COLOR": "#24477A",
+        "INPUT_BORDER": "#BFD3F0", "INPUT_FOCUS_RING": "#2F74D629",
+        "DATAFRAME_BORDER": "#6E9BDD", "DATAFRAME_SHADOW": "#1B3E7414",
+        "FORM_BG": "#F6F9FF", "FORM_BORDER": "#C3D6F1",
+        "EXPANDER_BG": "#F0F5FD",
+        "BTN_GRAD": "linear-gradient(110deg,#2F76DA,#1B4F9C)", "BTN_BORDER": "#1F5DB8",
+        "BTN_SHADOW1": "#2F76DA2B", "BTN_SHADOW2": "#2F76DA4D",
+        "BTN_DISABLED_BG": "#D7E4F7", "BTN_DISABLED_BORDER": "#A3BCE2", "BTN_DISABLED_COLOR": "#2D4A73",
+        "HEADER_GRAD": "linear-gradient(115deg, #12294F 0%, #1F5DB8 54%, #3FA7E0 100%)",
+        "HEADER_BORDER": "#86AEE6", "HEADER_SHADOW": "#12294F22",
+        "BRAND_TEXT": "#C9DCFA", "SUBTITLE_TEXT": "#E3EEFF",
+        "SWITCH_LABEL": "#DDE9FF", "CURRENT_TEXT": "#EEF4FF",
+        "TOGGLE_BTN_BG": "#15305ACC", "TOGGLE_BTN_BORDER": "#C2D6F499", "TOGGLE_HOVER_BG": "#23457C",
+        "TOGGLE_ACTIVE_BG": "#0E2244CC", "TOGGLE_ACTIVE_BORDER": "#7FE0FF",
+        "TOGGLE_ACTIVE_SHADOW1": "#08162E88", "TOGGLE_ACTIVE_SHADOW2": "#7FE0FF33",
+        "TOGGLE_CHECK_BG": "#2BA4D9",
+    },
 }
 
 
 def apply_app_shell_css(selected_view: str = LAB_VIEW_APPARATUS) -> None:
-    """Pinta el chrome compartido con la paleta morada (aparatos) o verde (alineadores)."""
+    """Pinta el chrome compartido: morado (aparatos), verde (alineadores) o azul (guías)."""
 
     palette = LAB_SHELL_PALETTES.get(selected_view, LAB_SHELL_PALETTES[LAB_VIEW_APPARATUS])
     css = """<style>
@@ -6634,6 +6682,10 @@ def render_selected_workspace(selected_view: str, current_user: str) -> None:
         alineadores_pg.apply_custom_css()
         alineadores_pg.render_embedded_workspace(current_user)
         return
+    if selected_view == LAB_VIEW_GUIDES:
+        guias_pg.apply_custom_css()
+        guias_pg.render_embedded_workspace(current_user)
+        return
 
     ensure_tiempos_headers()
     refresh_dynamic_process_catalog()
@@ -6656,19 +6708,19 @@ def main() -> None:
                 "Espera 1 minuto y actualiza los datos."
             )
         elif isinstance(exc, gspread.exceptions.SpreadsheetNotFound):
-            source_name = (
-                "Control ALINEADORES"
-                if selected_view == LAB_VIEW_ALIGNERS
-                else "CONTROL APARATOS"
-            )
+            source_name = {
+                LAB_VIEW_ALIGNERS: "Control ALINEADORES",
+                LAB_VIEW_GUIDES: "el Excel de ventas (data_pedidos)",
+            }.get(selected_view, "CONTROL APARATOS")
             st.error(
                 f"La cuenta de servicio no tiene acceso a {source_name}. "
                 "Comparte ese archivo con el client_email de google_credentials."
             )
         else:
-            area_name = (
-                "alineadores" if selected_view == LAB_VIEW_ALIGNERS else "aparatos"
-            )
+            area_name = {
+                LAB_VIEW_ALIGNERS: "alineadores",
+                LAB_VIEW_GUIDES: "solicitudes de guía",
+            }.get(selected_view, "aparatos")
             st.error(f"Ocurrió un problema al cargar la vista de {area_name}.")
             st.exception(exc)
 
