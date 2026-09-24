@@ -62,10 +62,40 @@ estar compartidos como editores con el `client_email` incluido en
 - Mientras haya etapas elegidas sin guardar en Enviados no se puede refrescar,
   cambiar de pestaña ni guardar la tabla principal; lo mismo al revés.
 
+## Tablero para pantalla (📺 Tablero)
+
+Pestaña de sólo lectura pensada para dejarse en una TV. Junta los pedidos activos
+de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
+`TIEMPOS_POLANCO`) sin cambiar la hoja activa de Seguimiento.
+
+- **Encabezado:** pedidos activos por hoja, semáforo de la etapa actual (el mismo
+  de Seguimiento), el pedido más antiguo y lo recibido/enviado esta semana y hoy.
+  Recibidos sale de `FECHA DE RECEPCIÓN`; enviados, de los cambios a `ENVIADO`
+  registrados por la app en la bitácora.
+- **Flujo por etapa:** una columna por etapa normal, en el orden común de
+  `PROCESOS POR PRODUCTO`, y aparte las pausas. Cada tarjeta muestra paciente,
+  antigüedad, folio, tiempo consumido del plazo de la etapa y, si viene de
+  Polanco, la marca `POL`. Las tarjetas van de la más antigua a la más reciente.
+  Una etapa que no está en `PROCESOS POR PRODUCTO` aparece en “Otras etapas”.
+- **Prioridad por antigüedad:** los 10 pedidos activos más antiguos (`#1` … `#10`,
+  la misma marca aparece en su tarjeta).
+- **Antigüedad:** días hábiles (lunes a viernes) desde `FECHA DE RECEPCIÓN`; si la
+  celda está vacía se usa el primer registro del pedido en la bitácora.
+- Se actualiza solo cada 60 s (las lecturas de Sheets se comparten 30 s entre
+  todas las sesiones). Si Sheets falla, conserva la última lectura y lo avisa.
+  **Actualizar** fuerza una lectura nueva. El selector permite ver ambas hojas o
+  una sola.
+- **Modo pantalla** oculta menús, encabezado y pestañas, pinta el tablero a
+  pantalla completa y ajusta cuántas tarjetas caben por columna. Queda guardado
+  en el enlace como `pantalla=1`: abrir
+  `…?vista=alineadores&pantalla=1` (con el usuario recordado) entra directo al
+  tablero en modo pantalla. Para salir, el interruptor de la esquina inferior
+  derecha. Con F11 el navegador quita también su barra.
+
 ## Pruebas
 
 ```bash
-python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py
+python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py
 ```
 
 

@@ -419,7 +419,9 @@ with (
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
-    assert [tab.label for tab in at.tabs] == ["📋 Seguimiento", "📋 Seguimiento Polanco", "📥 Recibidos de Forms"]
+    assert [tab.label for tab in at.tabs] == [
+        "📋 Seguimiento", "📋 Seguimiento Polanco", "📥 Recibidos de Forms", "📺 Tablero"
+    ]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[2].markdown
 
