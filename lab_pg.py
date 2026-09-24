@@ -6710,7 +6710,7 @@ def main() -> None:
         elif isinstance(exc, gspread.exceptions.SpreadsheetNotFound):
             source_name = {
                 LAB_VIEW_ALIGNERS: "Control ALINEADORES",
-                LAB_VIEW_GUIDES: "el Excel de pedidos de ventas (data_pedidos)",
+                LAB_VIEW_GUIDES: "el Excel de ventas (data_pedidos)",
             }.get(selected_view, "CONTROL APARATOS")
             st.error(
                 f"La cuenta de servicio no tiene acceso a {source_name}. "

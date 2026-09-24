@@ -111,38 +111,40 @@ def test_shifted_append_is_moved_back_to_column_a():
 
 
 def sources():
+    guia = "📋 Solicitudes de Guía"
     pedidos = pd.DataFrame([
         {"ID_Pedido": "PED-A", "Cliente": "JUAN MEJIA", "Vendedor_Registro": "ARTTD JIMENA",
-         "Tipo_Envio": "📋 Solicitudes de Guía", "Hora_Registro": "2026-09-24 09:00:00",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-09-24 09:00:00",
          "Fecha_Entrega": "2026-09-24", "id_vendedor": "arttdjim01",
          "Adjuntos_Guia": "https://b/g1.pdf, https://b/g2.pdf", "Folio_Factura": ""},
-        {"ID_Pedido": "PED-B", "Cliente": "OTRO", "Vendedor_Registro": "BLANCA BRASILIA",
-         "Hora_Registro": "2026-09-23 09:00:00", "Adjuntos_Guia": "https://b/g3.pdf", "id_vendedor": "BLANCA96"},
-        {"ID_Pedido": "PED-C", "Cliente": "SIN GUIA", "Vendedor_Registro": "ARTTD JIMENA",
+        {"ID_Pedido": "PED-B", "Cliente": "OTRO", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
+         "Hora_Registro": "2026-09-22 09:00:00", "Adjuntos_Guia": "https://b/g3.pdf", "id_vendedor": "SCHAVA"},
+        {"ID_Pedido": "PED-C", "Cliente": "SIN GUIA", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-09-24 10:00:00", "id_vendedor": "ARTTDJIM01"},
-        {"ID_Pedido": "PED-D", "Cliente": "LIMPIADO", "Vendedor_Registro": "ARTTD JIMENA",
+        {"ID_Pedido": "PED-D", "Cliente": "LIMPIADO", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-09-24 10:00:00", "id_vendedor": "ARTTDJIM01",
          "Hoja_Ruta_Mensajero": "https://b/g4.pdf", "Completados_Limpiado": "sí"},
+        # Un pedido de venta con guía no es una solicitud: no aparece en esta vista.
+        {"ID_Pedido": "PED-E", "Cliente": "VENTA", "Vendedor_Registro": "SCHAVA",
+         "Tipo_Envio": "🚚 Pedido Foráneo", "Hora_Registro": "2026-09-24 11:00:00",
+         "Adjuntos_Guia": "https://b/g5.pdf", "id_vendedor": "ARTTDJIM01"},
+        {"ID_Pedido": "PED-F", "Cliente": "OTRA VENDEDORA", "Vendedor_Registro": "BLANCA BRASILIA",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-09-23 09:00:00", "Adjuntos_Guia": "https://b/g6.pdf"},
     ])
     viejo = pd.DataFrame([
-        {"ID_Pedido": "PED-OLD", "Cliente": "VIEJO", "Vendedor_Registro": "SCHAVA",
+        {"ID_Pedido": "PED-OLD", "Cliente": "VIEJO", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-07-01 09:00:00", "Adjuntos_Guia": "https://b/old.pdf"},
     ])
-    casos = pd.DataFrame([
-        {"ID_Pedido": "CAS-1", "Cliente": "CASO", "Vendedor_Registro": "SCHAVA", "Tipo_Caso": "Garantía",
-         "Hora_Registro": "2026-09-22 09:00:00", "Hoja_Ruta_Mensajero": "https://b/c1.pdf"},
-    ])
-    return {guides.SHEET_PEDIDOS_OPERATIVOS: pedidos, guides.SHEET_PEDIDOS_HISTORICOS: viejo,
-            guides.SHEET_CASOS_ESPECIALES: casos}
+    return {guides.SHEET_PEDIDOS_OPERATIVOS: pedidos, guides.SHEET_PEDIDOS_HISTORICOS: viejo}
 
 
-def test_dataset_keeps_rows_with_guides_from_the_three_sheets():
+def test_dataset_keeps_only_guide_requests_that_already_have_a_guide():
     dataset = guides.build_guides_dataset(sources())
-    assert dataset["ID_Pedido"].tolist() == ["PED-D", "PED-A", "PED-B", "CAS-1", "PED-OLD"]
+    assert dataset["ID_Pedido"].tolist() == ["PED-D", "PED-A", "PED-F", "PED-B", "PED-OLD"]
     first = dataset.set_index("ID_Pedido").loc["PED-A"]
     assert first["Ultima_Guia"] == "https://b/g2.pdf" and first["Folio_O_ID"] == "PED-A"
-    assert dataset.set_index("ID_Pedido").loc["CAS-1", "Tipo_Envio"] == "🛠 Garantía"
     assert dataset.set_index("ID_Pedido").loc["PED-D", "Adjuntos_Guia"] == "https://b/g4.pdf"
+    assert guides.guide_display_label(first) == "📋 PED-A – JUAN MEJIA – ARTTD JIMENA · 24/09/26"
 
 
 def test_notice_counts_recent_uncleared_guides_of_arttd_jimena():
@@ -156,21 +158,13 @@ def test_notice_counts_recent_uncleared_guides_of_arttd_jimena():
 def test_loaded_tab_shows_last_month_of_jimena_and_schava_only():
     dataset = guides.build_guides_dataset(sources())
     visible = guides.visible_vendor_guides(guides.recent_guides(dataset, now=NOW))
-    assert visible["ID_Pedido"].tolist() == ["PED-D", "PED-A", "CAS-1"]
+    assert visible["ID_Pedido"].tolist() == ["PED-D", "PED-A", "PED-B"]
     today = NOW.date()
     assert guides.apply_guides_filters(visible, date_mode="day", day=date(2026, 9, 22), today=today)[
-        "ID_Pedido"].tolist() == ["CAS-1"]
-    assert guides.apply_guides_filters(visible, vendor="SCHAVA", today=today)["ID_Pedido"].tolist() == ["CAS-1"]
+        "ID_Pedido"].tolist() == ["PED-B"]
+    assert guides.apply_guides_filters(visible, vendor="SCHAVA", today=today)["ID_Pedido"].tolist() == ["PED-B"]
     # Un rango invertido no filtra fechas, igual que app_v.
     assert len(guides.apply_guides_filters(visible, date_mode="range", start=today, end=date(2026, 9, 1))) == 3
-
-
-def test_split_urls_accepts_json_and_plain_text():
-    assert guides.split_urls('["https://a/1.pdf", {"url": "https://a/2.pdf"}]') == [
-        "https://a/1.pdf", "https://a/2.pdf"]
-    assert guides.split_urls("https://a/1.pdf, https://a/1.pdf\nhttps://a/3.pdf") == [
-        "https://a/1.pdf", "https://a/3.pdf"]
-    assert guides.split_urls("nan") == []
 
 
 def test_guides_view_is_part_of_the_workspace_switch():
@@ -230,7 +224,7 @@ SOURCES = {{
 
 def fake_register(request):
     st.session_state["registered"] = request
-    return request["direccion"]["nombre"].strip()
+    return request["direccion"]["nombre"].strip(), "PED-TEST"
 
 # patch.object restaura el módulo compartido al terminar cada ejecución.
 with (
@@ -257,15 +251,19 @@ def test_request_form_registers_guide_like_app_v():
     at = AppTest.from_string(GUIDES_SCRIPT, default_timeout=15).run()
     assert not at.exception
     assert [tab.label for tab in at.tabs] == guides.GUIDES_TAB_LABELS
-    assert any("tienes 1 pedido(s) con guía cargada. Clientes: JUAN MEJIA." in item.value for item in at.info)
-    assert at.selectbox(key="guides_vendedor_0").value == "ARTTD JIMENA"
-    assert at.selectbox(key="guides_vendedor_0").disabled
+    assert any("tienes 1 solicitud(es) con guía cargada. Destinatarios: JUAN MEJIA." in item.value
+               for item in at.info)
+    assert not any("pedido" in item.value.lower()
+                   for item in [*at.markdown, *at.info, *at.caption, *at.subheader])
+    assert at.text_input(key="guides_vendedor_0").value == "ARTTD JIMENA"
+    assert at.text_input(key="guides_vendedor_0").disabled
+    assert at.text_input(key="guides_fecha_0").value == "24/09/2026"
     assert at.text_input(key="guides_pais_0").value == "México"
 
     at.text_input(key="guides_nombre_0").input("JUAN MEJIA")
     at.button[0].click().run()
     assert "registered" not in at.session_state
-    assert any("Completa los campos obligatorios" in item.value for item in at.warning)
+    assert any("La solicitud no se registró" in item.value for item in at.warning)
 
     fill_address(at)
     at.text_input(key="guides_folio_0").input(" F999 ")
@@ -276,7 +274,7 @@ def test_request_form_registers_guide_like_app_v():
     assert request["folio_factura"] == " F999 " and request["comentario"] == "Enviar hoy"
     assert request["direccion"]["codigo_postal"] == "06000"
     assert str(request["fecha_entrega"]) == "2026-09-24"
-    assert any("JUAN MEJIA (ID vendedor: ARTTDJIM01) fue subido correctamente" in item.value
+    assert any("Solicitud de guía registrada para JUAN MEJIA (ID PED-TEST)." in item.value
                for item in at.success)
     # El formulario se limpia con una nueva versión de claves.
     assert at.text_input(key="guides_nombre_1").value == ""
@@ -290,8 +288,12 @@ def test_loaded_tab_lists_the_guide_and_its_link():
     at.run()
     assert not at.exception
     assert at.selectbox(key="guides_filter_vendor").value == "ARTTD JIMENA"
-    assert at.selectbox(key="guides_selected_order").value.startswith("📄 PED-A – JUAN MEJIA – ARTTD JIMENA")
-    assert at.dataframe[0].value["Cliente"].tolist() == ["JUAN MEJIA"]
+    assert at.selectbox(key="guides_selected_order").value == "📋 PED-A – JUAN MEJIA – ARTTD JIMENA · 24/09/26"
+    table = at.dataframe[0].value
+    assert list(table.columns) == list(guides.TABLE_COLUMNS.values())
+    assert table["Destinatario"].tolist() == ["JUAN MEJIA"] and table["Registro"].tolist() == ["En curso"]
+    texts = [item.value for item in [*at.markdown, *at.info, *at.caption, *at.subheader]]
+    assert texts and not any("pedido" in text.lower() for text in texts)
 
 
 class FakeOrdersSheet(FakeWorksheet):
@@ -316,7 +318,8 @@ def test_register_adds_missing_columns_and_writes_one_row(monkeypatch):
     monkeypatch.setattr(guides.st, "session_state", {})
     request = {"folio_factura": "", "comentario": " hola ", "direccion": ADDRESS, "fecha_entrega": NOW.date()}
 
-    assert guides.register_guide_request(request) == "JUAN MEJIA"
+    destinatario, pedido_id = guides.register_guide_request(request)
+    assert destinatario == "JUAN MEJIA" and pedido_id.startswith("PED-20260924120000-")
     assert sheet.headers[-len(guides.REQUIRED_ORDER_HEADERS):] == guides.REQUIRED_ORDER_HEADERS
     row = dict(zip(sheet.headers, sheet.appended[0]))
     assert row["id_vendedor"] == "ARTTDJIM01" and row["Cliente"] == "JUAN MEJIA"

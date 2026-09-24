@@ -140,20 +140,23 @@ python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/t
 
 ## Solicitudes de guía
 
-La vista **📋 Guías** replica la sesión de ARTTD JIMENA en app_v:
+En la vista **📋 Guías** todo son solicitudes de guía (no pedidos de venta).
+Usa el mismo registro que ARTTD JIMENA en app_v, para que almacén las vea igual:
 
-- **📋 Solicitud Guía**: formulario con Tipo de Envío fijo en
-  `📋 Solicitudes de Guía`, vendedor bloqueado en `ARTTD JIMENA`, folio de
-  factura opcional, comentario y la dirección DHL (campos obligatorios y
+- **📋 Solicitar guía**: quien solicita queda fijo como `ARTTD JIMENA` y la
+  fecha de solicitud es la de hoy. Se captura folio de factura (opcional),
+  indicaciones para la guía y la dirección de envío DHL (datos obligatorios y
   opcionales). Al registrar se agrega un renglón en `data_pedidos` con las mismas
-  columnas y valores que app_v (`id_vendedor = ARTTDJIM01`, `Estado = 🟡 Pendiente`,
-  `Fecha_Entrega` = hoy, dirección en `Direccion_Guia_Retorno`). Si faltan las
-  columnas que app_v agrega (`TD_Leal_Etapa`, `Tipo_Venta`, crédito y
+  columnas y valores que app_v (`Tipo_Envio = 📋 Solicitudes de Guía`,
+  `id_vendedor = ARTTDJIM01`, `Estado = 🟡 Pendiente`, `Fecha_Entrega` = hoy,
+  destinatario en `Cliente` y dirección en `Direccion_Guia_Retorno`). Si faltan
+  las columnas que app_v agrega (`TD_Leal_Etapa`, `Tipo_Venta`, crédito y
   `Direccion_Guia_Retorno`) se crean al registrar. Reenviar la misma solicitud
-  tras un error de conexión reutiliza su `ID_Pedido`, así que no se duplica.
-- **📦 Guías Cargadas**: guías que almacén subió en `data_pedidos`,
-  `datos_pedidos` y `casos_especiales` del último mes, sólo de ARTTD JIMENA y
-  SCHAVA, con los mismos filtros (vendedor, últimos 7 días, fecha o rango) y el
-  enlace a la última guía.
-- Arriba de las pestañas aparece el aviso de guías cargadas en las últimas 12 h
-  para `ARTTDJIM01`, igual que en app_v.
+  tras un error de conexión reutiliza su ID, así que no se duplica.
+- **📦 Guías cargadas**: sólo solicitudes de guía (`Tipo_Envio = 📋 Solicitudes de
+  Guía`) de ARTTD JIMENA y SCHAVA a las que almacén ya les cargó la guía, del
+  último mes, en `data_pedidos` (En curso) y `datos_pedidos` (Histórico). Tiene
+  filtros por quién solicitó, últimos 7 días, fecha o rango, y el botón para
+  abrir la guía.
+- Arriba de las pestañas aparece el aviso de solicitudes con guía cargada en las
+  últimas 12 h para `ARTTDJIM01`.

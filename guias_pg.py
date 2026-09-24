@@ -1,10 +1,10 @@
 """Solicitudes de guía de ventas dentro del control de laboratorio.
 
-Replica la sesión reducida de ARTTD JIMENA en app_v: "📋 Solicitud Guía"
-registra el mismo renglón en ``data_pedidos`` y "📦 Guías Cargadas" muestra las
-guías que almacén ya subió. Se escribe con el mismo vendedor, ID y columnas que
-app_v para que ventas, almacén y esta vista lean exactamente las mismas
-solicitudes.
+Aquí todo son solicitudes de guía (no pedidos de venta): "📋 Solicitar guía"
+registra la solicitud en ``data_pedidos`` y "📦 Guías cargadas" muestra las que
+almacén ya atendió. Se escribe con el mismo vendedor, ID y columnas que usa
+ARTTD JIMENA en app_v para que ventas, almacén y esta vista lean exactamente
+las mismas solicitudes.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ SCOPE = [
 DEFAULT_SPREADSHEET_ID = "1aWkSelodaz0nWfQx7FZAysGnIYGQFJxAN7RO3YgCiZY"
 SHEET_PEDIDOS_OPERATIVOS = "data_pedidos"
 SHEET_PEDIDOS_HISTORICOS = "datos_pedidos"
-SHEET_CASOS_ESPECIALES = "casos_especiales"
 
 GUIDE_USER_ID = "ARTTDJIM01"
 GUIDE_VENDOR_NAME = "ARTTD JIMENA"
@@ -47,8 +46,8 @@ GUIDES_HISTORY_DAYS = 30
 GUIDES_NOTICE_HOURS = 12
 GUIDES_REFRESH_COOLDOWN_SECONDS = 15
 
-GUIDES_TAB_REQUEST = "📋 Solicitud Guía"
-GUIDES_TAB_LOADED = "📦 Guías Cargadas"
+GUIDES_TAB_REQUEST = "📋 Solicitar guía"
+GUIDES_TAB_LOADED = "📦 Guías cargadas"
 GUIDES_TAB_LABELS = [GUIDES_TAB_REQUEST, GUIDES_TAB_LOADED]
 GUIDES_REFRESH_TOKEN_KEY = "guides_refresh_token"
 
@@ -84,7 +83,7 @@ DHL_OPTIONAL_FIELDS = (
 SOURCE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
     "Fecha_Entrega", "Hora_Registro", "Folio_Factura", "id_vendedor",
-    "Completados_Limpiado", "Adjuntos_Guia", "Hoja_Ruta_Mensajero", "Tipo_Caso",
+    "Completados_Limpiado", "Adjuntos_Guia", "Hoja_Ruta_Mensajero",
 ]
 GUIDE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
@@ -92,10 +91,17 @@ GUIDE_COLUMNS = [
     "URLs_Guia", "Ultima_Guia", "Fuente", "id_vendedor", "Completados_Limpiado",
     "Hora_Registro_dt", "Fecha_Entrega_dt", "Fecha_Filtro_Referencia", "Folio_O_ID",
 ]
-TABLE_COLUMNS = [
-    "Folio_Factura", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
-    "Fecha_Entrega", "Fuente",
-]
+# Nombre visible de cada hoja: en esta vista no se habla de pedidos.
+SOURCE_LABELS = {SHEET_PEDIDOS_OPERATIVOS: "En curso", SHEET_PEDIDOS_HISTORICOS: "Histórico"}
+# Columna del dataset → encabezado visible en la tabla de Guías cargadas.
+TABLE_COLUMNS = {
+    "Folio_O_ID": "Folio / ID",
+    "Cliente": "Destinatario",
+    "Vendedor_Registro": "Solicitó",
+    "Estado": "Estado",
+    "Fecha": "Fecha de solicitud",
+    "Fuente": "Registro",
+}
 OFFICE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
 INLINE_CONTENT_TYPES = {
     ".pdf": "application/pdf",
@@ -325,7 +331,7 @@ def realign_appended_row(worksheet, response: Any, values: Sequence[Any]) -> Non
     if any(str(cell).strip() for left_row in left_cells for cell in left_row):
         worksheet.batch_clear([misplaced])
         raise ValueError(
-            f"Google Sheets anexó el pedido recorrido en {misplaced}; "
+            f"Google Sheets anexó la solicitud recorrida en {misplaced}; "
             "se borró para no mezclarlo con otro renglón."
         )
     padded = list(values) + [""] * (last_column - len(values))
@@ -376,8 +382,8 @@ def submission_identity_for(request: Mapping[str, Any]) -> tuple[str, str]:
     return pedido_id, hora_registro
 
 
-def register_guide_request(request: Mapping[str, Any]) -> str:
-    """Escribe la solicitud en data_pedidos y devuelve el cliente registrado."""
+def register_guide_request(request: Mapping[str, Any]) -> tuple[str, str]:
+    """Escribe la solicitud en data_pedidos y devuelve (destinatario, ID)."""
 
     address = request["direccion"]
     cliente = str(address.get("nombre", "") or "").strip()
@@ -398,7 +404,7 @@ def register_guide_request(request: Mapping[str, Any]) -> str:
     )
     append_row_with_confirmation(worksheet, values, pedido_id, headers.index("ID_Pedido"))
     st.session_state.pop("guides_pending_identity", None)
-    return cliente or pedido_id
+    return cliente, pedido_id
 
 
 # ==============================
@@ -423,11 +429,11 @@ def values_to_dataframe(values: Sequence[Sequence[Any]]) -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def read_guides_sources(refresh_token: float | None = None) -> dict[str, pd.DataFrame]:
-    """Lee las tres hojas donde almacén carga guías, sólo con las columnas útiles."""
+    """Lee las hojas donde viven las solicitudes, sólo con las columnas útiles."""
 
     _ = refresh_token
     sources: dict[str, pd.DataFrame] = {}
-    for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS, SHEET_CASOS_ESPECIALES):
+    for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS):
         try:
             worksheet = get_worksheet(sheet_name)
         except gspread.exceptions.WorksheetNotFound:
@@ -451,18 +457,6 @@ def _consolidated_guides(df: pd.DataFrame, primary: str, fallback: str) -> pd.Se
     return primary_values.mask(primary_values.eq(""), df[fallback].str.strip())
 
 
-def _infer_case_shipping(row: pd.Series) -> str:
-    shipping = str(row.get("Tipo_Envio", "")).strip()
-    if shipping:
-        return shipping
-    case_type = str(row.get("Tipo_Caso", "")).lower()
-    if case_type.startswith("devol"):
-        return "🔁 Devolución"
-    if case_type.startswith("garan"):
-        return "🛠 Garantía"
-    return "Caso especial"
-
-
 def parse_datetime_series(series: pd.Series) -> pd.Series:
     try:
         return pd.to_datetime(series, errors="coerce", format="mixed")
@@ -471,26 +465,21 @@ def parse_datetime_series(series: pd.Series) -> pd.Series:
 
 
 def build_guides_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Une pedidos y casos especiales que ya tienen guía, igual que app_v.
+    """Solicitudes de guía a las que almacén ya les cargó la guía.
 
-    En pedidos la guía vive en Adjuntos_Guia (respaldo: Hoja_Ruta_Mensajero);
-    en casos especiales es al revés.
+    Sólo cuentan los renglones con Tipo_Envio "📋 Solicitudes de Guía"; la guía
+    vive en Adjuntos_Guia (respaldo: Hoja_Ruta_Mensajero), igual que en app_v.
     """
 
     frames = []
-    for sheet_name, primary, fallback in (
-        (SHEET_PEDIDOS_HISTORICOS, "Adjuntos_Guia", "Hoja_Ruta_Mensajero"),
-        (SHEET_PEDIDOS_OPERATIVOS, "Adjuntos_Guia", "Hoja_Ruta_Mensajero"),
-        (SHEET_CASOS_ESPECIALES, "Hoja_Ruta_Mensajero", "Adjuntos_Guia"),
-    ):
+    for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS):
         df = _with_columns(sources.get(sheet_name), SOURCE_COLUMNS)
-        guides = _consolidated_guides(df, primary, fallback)
-        part = df[guides.ne("")].copy()
+        guides = _consolidated_guides(df, "Adjuntos_Guia", "Hoja_Ruta_Mensajero")
+        keep = guides.ne("") & df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA)
+        part = df[keep].copy()
         if part.empty:
             continue
-        part["Adjuntos_Guia"] = guides[guides.ne("")]
-        if sheet_name == SHEET_CASOS_ESPECIALES:
-            part["Tipo_Envio"] = part.apply(_infer_case_shipping, axis=1)
+        part["Adjuntos_Guia"] = guides[keep]
         part["Fuente"] = sheet_name
         frames.append(part)
     if not frames:
@@ -515,7 +504,7 @@ def guide_key(row: pd.Series) -> str:
 
 def summarize_session_guides(df: pd.DataFrame, now: datetime | None = None,
                              id_vendedor: str = GUIDE_USER_ID) -> dict[str, Any]:
-    """Guías de las últimas 12 h para el ID de vendedor que no se han limpiado."""
+    """Solicitudes con guía de las últimas 12 h del ID de vendedor, sin limpiar."""
 
     now = now or app_now()
     if df.empty:
@@ -549,7 +538,7 @@ def recent_guides(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame
 
 
 def visible_vendor_guides(df: pd.DataFrame) -> pd.DataFrame:
-    """ARTTD JIMENA sólo ve sus guías y las de SCHAVA."""
+    """ARTTD JIMENA sólo ve sus solicitudes y las de SCHAVA, como en app_v."""
 
     return df[df["Vendedor_Registro"].astype(str).str.strip().isin(GUIDE_VENDORS)].copy()
 
@@ -574,29 +563,9 @@ def apply_guides_filters(df: pd.DataFrame, *, vendor: str = "Todos", date_mode: 
 
 
 def guide_display_label(row: pd.Series) -> str:
-    return (f"📄 {row['Folio_O_ID']} – {row['Cliente']} – {row['Vendedor_Registro']} "
-            f"({row['Tipo_Envio']}) · {row['Fuente']}")
-
-
-def split_urls(value: Any) -> list[str]:
-    """Adjuntos pueden venir como JSON o como texto separado por comas."""
-
-    text = clean_cell(value)
-    if not text or text.lower() == "n/a":
-        return []
-    urls: list[str] = []
-    try:
-        parsed = json.loads(text)
-        items = parsed if isinstance(parsed, list) else [parsed]
-        for item in items:
-            if isinstance(item, str) and item.strip():
-                urls.append(item.strip())
-            elif isinstance(item, dict):
-                urls.extend(str(item[key]).strip() for key in ("url", "URL", "href", "link")
-                            if str(item.get(key, "")).strip())
-    except (ValueError, TypeError):
-        urls = [part.strip() for part in re.split(r"[,\n;]+", text) if part.strip()]
-    return list(dict.fromkeys(urls))
+    requested = row["Fecha_Filtro_Referencia"]
+    when = f" · {requested:%d/%m/%y}" if pd.notna(requested) else ""
+    return f"📋 {row['Folio_O_ID']} – {row['Cliente']} – {row['Vendedor_Registro']}{when}"
 
 
 def normalize_url(value: str) -> str:
@@ -720,18 +689,18 @@ def load_guides_dataset() -> pd.DataFrame:
 
 
 def render_guides_notice(dataset: pd.DataFrame) -> None:
-    """Mismo aviso que app_v muestra arriba de las pestañas."""
+    """Aviso arriba de las pestañas (el mismo que app_v, en términos de solicitudes)."""
 
     summary = summarize_session_guides(dataset)
     current_keys = set(summary["keys"])
     previous_keys = set(st.session_state.get("guides_home_keys") or [])
     new_keys = current_keys - previous_keys
     if previous_keys and new_keys:
-        st.warning(f"🔔 Aviso rápido: tienes {len(new_keys)} guía(s) nueva(s).")
+        st.warning(f"🔔 Aviso rápido: almacén cargó {len(new_keys)} guía(s) nueva(s).")
     if summary["total"] > 0:
         preview = format_clients_preview(summary["clientes"])
-        clients = f" Clientes: {preview}." if preview else ""
-        st.info(f"📦 Aviso: tienes {summary['total']} pedido(s) con guía cargada.{clients}")
+        clients = f" Destinatarios: {preview}." if preview else ""
+        st.info(f"📦 Aviso: tienes {summary['total']} solicitud(es) con guía cargada.{clients}")
     st.session_state["guides_home_keys"] = sorted(current_keys)
 
 
@@ -749,12 +718,12 @@ def render_request_feedback() -> None:
 
 
 def render_request_tab() -> None:
-    """Formulario "Nuevo Pedido" de ARTTD JIMENA: sólo Solicitudes de Guía."""
+    """Formulario de solicitud de guía DHL a nombre de ARTTD JIMENA."""
 
-    st.subheader("📝 Nuevo Pedido")
+    st.subheader("📝 Nueva solicitud de guía")
     st.caption(
-        f"Registra la solicitud en {SHEET_PEDIDOS_OPERATIVOS} como {GUIDE_VENDOR_NAME}, igual que en app_v. "
-        "Cuando almacén cargue la guía aparecerá en 📦 Guías Cargadas."
+        f"La solicitud queda registrada a nombre de {GUIDE_VENDOR_NAME} en el Excel de ventas. "
+        "Cuando almacén cargue la guía aparecerá en 📦 Guías cargadas."
     )
     render_request_feedback()
     version = st.session_state.get("guides_form_version", 0)
@@ -765,59 +734,56 @@ def render_request_tab() -> None:
         return widget(label, key=f"guides_{key}_{version}", **kwargs)
 
     with st.form(f"guides_request_form_{version}"):
-        section_title("🧾 Información Básica del Cliente y Pedido")
+        section_title("🧾 Datos de la solicitud")
         first = st.columns(3)
-        first[0].selectbox("📦 Tipo de Envío", [TIPO_ENVIO_GUIA], disabled=True,
-                           key=f"guides_tipo_envio_{version}")
-        first[1].selectbox("👤 Vendedor", [GUIDE_VENDOR_NAME], disabled=True,
-                           key=f"guides_vendedor_{version}")
-        folio = field("📄 Folio de Factura (opcional)", "folio", container=first[2])
-        comentario = field("💬 Comentario / Descripción Detallada", "comentario", area=True,
-                           help="Agrega indicaciones o comentarios para la solicitud de guía.")
+        first[0].text_input("👤 Solicita", GUIDE_VENDOR_NAME, disabled=True,
+                            key=f"guides_vendedor_{version}")
+        first[1].text_input("🗓 Fecha de solicitud", f"{today:%d/%m/%Y}", disabled=True,
+                            key=f"guides_fecha_{version}")
+        folio = field("📄 Folio de factura (opcional)", "folio", container=first[2])
+        comentario = field("💬 Indicaciones para la guía", "comentario", area=True,
+                           help="Contenido, paquetería, horario o cualquier dato útil para almacén.")
 
-        with st.expander("📬 Dirección guía Manual  (Obligatorio al Solicitar Guia)", expanded=True):
-            st.info("Completa la dirección para solicitar la guía DHL.")
-            section_title("CAMPOS OBLIGATORIOS DHL (MÉXICO)")
-            left, right = st.columns(2)
-            address = {
-                "nombre": field("Nombre *", "nombre", container=left),
-                "calle_numero": field("Calle y número *", "calle_numero", container=left),
-                "colonia": field("Colonia *", "colonia", container=left),
-                "codigo_postal": field("Código Postal *", "codigo_postal", container=left),
-                "ciudad": field("Ciudad *", "ciudad", container=right),
-                "estado": field("Estado *", "estado", container=right),
-                "pais": field("País *", "pais", container=right, value="México"),
-                "telefono": field("Teléfono *", "telefono", container=right),
-            }
-            section_title("CAMPOS OPCIONALES / RECOMENDADOS")
-            optional = st.columns(3)
-            address["interior"] = field("Interior / Depto", "interior", container=optional[0])
-            address["municipio"] = field("Municipio / Alcaldía", "municipio", container=optional[1])
-            address["correo"] = field("Correo electrónico", "correo", container=optional[2])
-            address["referencias"] = field("Referencias de dirección", "referencias", area=True)
-
-        st.info(f"✅ Tipo de envío seleccionado: {TIPO_ENVIO_GUIA} | "
-                f"Fecha de Entrega Seleccionada: {today:%d/%m/%Y}")
-        submitted = st.form_submit_button("✅ Registrar Pedido", type="primary")
+        section_title("📬 Dirección de envío DHL")
+        st.caption("Los campos con * son obligatorios para que almacén pueda generar la guía.")
+        left, right = st.columns(2)
+        address = {
+            "nombre": field("Destinatario *", "nombre", container=left),
+            "calle_numero": field("Calle y número *", "calle_numero", container=left),
+            "colonia": field("Colonia *", "colonia", container=left),
+            "codigo_postal": field("Código Postal *", "codigo_postal", container=left),
+            "ciudad": field("Ciudad *", "ciudad", container=right),
+            "estado": field("Estado *", "estado", container=right),
+            "pais": field("País *", "pais", container=right, value="México"),
+            "telefono": field("Teléfono *", "telefono", container=right),
+        }
+        section_title("➕ Datos opcionales / recomendados")
+        optional = st.columns(3)
+        address["interior"] = field("Interior / Depto", "interior", container=optional[0])
+        address["municipio"] = field("Municipio / Alcaldía", "municipio", container=optional[1])
+        address["correo"] = field("Correo electrónico", "correo", container=optional[2])
+        address["referencias"] = field("Referencias de dirección", "referencias", area=True)
+        submitted = st.form_submit_button("📋 Registrar solicitud de guía", type="primary")
 
     if not submitted:
         return
     missing = get_missing_dhl_mexico_required_fields(address)
     if missing:
-        st.warning("⚠️ El pedido no se subió. Completa los campos obligatorios para solicitar guía manual.")
-        st.write("Faltan: " + ", ".join(missing))
+        labels = {"Nombre": "Destinatario"}
+        st.warning("⚠️ La solicitud no se registró. Completa los datos obligatorios de la dirección.")
+        st.write("Faltan: " + ", ".join(labels.get(item, item) for item in missing))
         return
     request = {"folio_factura": folio, "comentario": comentario, "direccion": address, "fecha_entrega": today}
     try:
-        with st.spinner("Registrando pedido en Google Sheets..."):
-            reference = register_guide_request(request)
+        with st.spinner("Registrando la solicitud de guía..."):
+            destinatario, pedido_id = register_guide_request(request)
     except Exception as exc:
-        st.error(f"❌ Falla al subir el pedido.\n\n🔍 Detalle: {exc}")
-        st.info("Si fue un error de conexión, vuelve a presionar Registrar Pedido: "
+        st.error(f"❌ No se pudo registrar la solicitud de guía.\n\n🔍 Detalle: {exc}")
+        st.info("Si fue un error de conexión, vuelve a presionar Registrar solicitud de guía: "
                 "la misma solicitud no se duplica.")
         return
     st.session_state["guides_request_success"] = (
-        f"✅ El pedido {reference} (ID vendedor: {GUIDE_USER_ID}) fue subido correctamente."
+        f"✅ Solicitud de guía registrada para {destinatario} (ID {pedido_id})."
     )
     st.session_state["guides_request_celebrate"] = True
     st.session_state["guides_form_version"] = version + 1
@@ -837,43 +803,39 @@ def render_tab_guides_notice(guides: pd.DataFrame) -> None:
     """Aviso por ID de vendedor antes de aplicar filtros visuales, como app_v."""
 
     summary = summarize_session_guides(guides)
-    rows = {guide_key(row): str(row.get("Cliente", "")).strip() or "Cliente sin nombre"
+    rows = {guide_key(row): str(row.get("Cliente", "")).strip() or "Sin destinatario"
             for _, row in guides.iterrows()}
     current_keys = set(summary["keys"])
     previous_keys = set(st.session_state.get("guides_tab_keys") or [])
     new_keys = sorted(current_keys - previous_keys)
     if previous_keys and new_keys:
-        clients = list(dict.fromkeys(rows.get(key, "Cliente sin nombre") for key in new_keys))
+        clients = list(dict.fromkeys(rows.get(key, "Sin destinatario") for key in new_keys))
         detail = ", ".join(clients[:3]) + (f" y {len(clients) - 3} más" if len(clients) > 3 else "")
-        st.success(f"🔔 Se cargaron {len(new_keys)} guía(s) nueva(s) para tus pedidos (ID vendedor: {GUIDE_USER_ID}).")
-        st.info(f"👤 Clientes con nuevas guías: {detail}.")
-        st.toast(f"🔔 Nuevas guías detectadas: {len(new_keys)}", icon="📦")
+        st.success(f"🔔 Almacén cargó {len(new_keys)} guía(s) nueva(s) para tus solicitudes.")
+        st.info(f"👤 Destinatarios con guía nueva: {detail}.")
+        st.toast(f"🔔 Guías nuevas: {len(new_keys)}", icon="📦")
     elif current_keys:
-        st.info(f"📦 Tienes {len(current_keys)} pedido(s) con guía cargada pendiente (ID vendedor: {GUIDE_USER_ID}).")
+        st.info(f"📦 Tienes {len(current_keys)} solicitud(es) con guía cargada en las últimas "
+                f"{GUIDES_NOTICE_HOURS} h.")
     else:
-        st.caption(f"Sin nuevas guías detectadas aún para el ID vendedor {GUIDE_USER_ID}.")
+        st.caption("Todavía no hay guías nuevas para tus solicitudes.")
     st.session_state["guides_tab_keys"] = sorted(current_keys)
 
 
-def render_guide_links(row: pd.Series) -> None:
-    urls = split_urls(row.get("URLs_Guia", ""))
-    last_guide = clean_cell(row.get("Ultima_Guia", ""))
-    if row.get("Fuente") == SHEET_CASOS_ESPECIALES:
-        section_title("📎 Guías Subidas")
-        links = urls or ([last_guide] if last_guide else [])
-    else:
-        section_title("📎 Última Guía Subida")
-        links = [last_guide] if last_guide else []
-    if not links:
+def render_guide_link(row: pd.Series) -> None:
+    """Botón a la última guía cargada, como app_v."""
+
+    section_title("📎 Guía cargada")
+    url = clean_cell(row.get("Ultima_Guia", ""))
+    if not url:
         st.warning("⚠️ No se encontró una URL válida para la guía.")
         return
-    for index, url in enumerate(links):
-        st.link_button(f"📄 {file_name_from_url(url)}", guide_browser_url(url),
-                       key=f"guides_link_{index}_{hashlib.sha256(url.encode()).hexdigest()[:10]}")
+    st.link_button(f"📄 {file_name_from_url(url)}", guide_browser_url(url),
+                   key=f"guides_link_{hashlib.sha256(url.encode()).hexdigest()[:10]}")
 
 
 def render_loaded_tab(dataset: pd.DataFrame) -> None:
-    st.subheader("📦 Pedidos con Guías Subidas desde Almacén y Casos Especiales")
+    st.subheader("📦 Solicitudes con guía cargada por almacén")
     toolbar = st.columns([1.2, 4])
     toolbar[0].button("🔄 Actualizar guías", on_click=refresh_guides, width="stretch")
     if st.session_state.pop("guides_refresh_wait", False):
@@ -881,19 +843,20 @@ def render_loaded_tab(dataset: pd.DataFrame) -> None:
 
     guides = visible_vendor_guides(recent_guides(dataset))
     if guides.empty:
-        st.info("No hay pedidos o casos especiales con guías subidas.")
+        st.info("Todavía no hay solicitudes de guía con la guía cargada.")
         return
     counts = guides["Fuente"].value_counts().sort_index()
     st.markdown(
         '<div class="guides-summary">'
-        + "".join(f"<span>{source}: {count}</span>" for source, count in counts.items())
+        + "".join(f"<span>{SOURCE_LABELS.get(source, source)}: {count}</span>"
+                  for source, count in counts.items())
         + "</div>",
         unsafe_allow_html=True,
     )
     render_tab_guides_notice(guides)
 
     section_title("🔍 Filtros")
-    st.caption(f"⚡ Por velocidad, esta pestaña solo carga guías de los últimos {GUIDES_HISTORY_DAYS} días.")
+    st.caption(f"⚡ Por velocidad, sólo se muestran solicitudes de los últimos {GUIDES_HISTORY_DAYS} días.")
     today = app_today()
     minimum = today - timedelta(days=GUIDES_HISTORY_DAYS)
     # Los defaults viven en session_state (no en value=) para que Streamlit no
@@ -909,7 +872,7 @@ def render_loaded_tab(dataset: pd.DataFrame) -> None:
     vendors = ["Todos", *GUIDE_VENDORS]
     if st.session_state.get("guides_filter_vendor") not in vendors:
         st.session_state["guides_filter_vendor"] = GUIDE_VENDOR_NAME
-    vendor = vendor_column.selectbox("Filtrar por Vendedor", vendors, key="guides_filter_vendor")
+    vendor = vendor_column.selectbox("👤 Solicitó", vendors, key="guides_filter_vendor")
     with date_column:
         use_range = st.checkbox("🔁 Activar búsqueda por rango de fechas", key="guides_filter_range")
         if use_range and st.session_state.get("guides_filter_7d"):
@@ -925,15 +888,16 @@ def render_loaded_tab(dataset: pd.DataFrame) -> None:
             if start and end and start > end:
                 st.warning("⚠️ La fecha inicial no puede ser mayor que la fecha final.")
         else:
-            day = st.date_input("📅 Filtrar por Fecha de Registro:", min_value=minimum,
+            day = st.date_input("📅 Fecha de solicitud:", min_value=minimum,
                                 key="guides_filter_day", disabled=last_7, format="DD/MM/YYYY")
     date_mode = "range" if use_range else ("7d" if last_7 else "day")
     guides = apply_guides_filters(guides, vendor=vendor, date_mode=date_mode, start=start, end=end,
                                   day=day, today=today).reset_index(drop=True)
     guides["display_label"] = guides.apply(guide_display_label, axis=1)
 
-    table = guides[TABLE_COLUMNS].copy()
-    table["Fecha_Entrega"] = guides["Fecha_Entrega_dt"].dt.strftime("%d/%m/%y").fillna("")
+    table = guides.assign(Fecha=guides["Fecha_Filtro_Referencia"].dt.strftime("%d/%m/%y").fillna(""))
+    table["Fuente"] = table["Fuente"].map(lambda source: SOURCE_LABELS.get(source, source))
+    table = table[list(TABLE_COLUMNS)].rename(columns=TABLE_COLUMNS)
     event = st.dataframe(table, width="stretch", hide_index=True, key="guides_table",
                          on_select="rerun", selection_mode="single-row")
     selected_rows = event.selection.rows
@@ -944,15 +908,15 @@ def render_loaded_tab(dataset: pd.DataFrame) -> None:
             st.session_state["guides_selected_order"] = label
             st.session_state["guides_last_table_row"] = label
 
-    section_title("📥 Selecciona un Pedido para Ver la Última Guía Subida")
+    section_title("📥 Selecciona una solicitud para abrir su guía")
     options = guides["display_label"].tolist()
     if not options:
-        st.info("No hay guías con los filtros seleccionados.")
+        st.info("No hay solicitudes con los filtros seleccionados.")
         return
     if st.session_state.get("guides_selected_order") not in options:
         st.session_state["guides_selected_order"] = options[0]
-    selected = st.selectbox("📦 Pedido/Caso con Guía", options, key="guides_selected_order")
-    render_guide_links(guides[guides["display_label"] == selected].iloc[0])
+    selected = st.selectbox("📋 Solicitud", options, key="guides_selected_order")
+    render_guide_link(guides[guides["display_label"] == selected].iloc[0])
 
 
 @st.fragment(key="lab_guides_tab_content")
