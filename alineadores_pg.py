@@ -43,6 +43,7 @@ from reportlab.platypus import (
 )
 from streamlit.errors import StreamlitAPIException
 
+from aligners_board import render_board_html
 from aligners_grid import build_aligners_grid_options, render_aligners_grid
 
 
@@ -1499,8 +1500,9 @@ def rerun_active_tab() -> None:
         st.rerun()
 
 
-def read_orders_df() -> pd.DataFrame:
-    values = read_order_values(current_order_sheet())
+def read_orders_df(sheet_name: str | None = None) -> pd.DataFrame:
+    """Pedidos de la hoja activa, o de ``sheet_name`` (el tablero lee ambas)."""
+    values = read_order_values(sheet_name or current_order_sheet())
     if len(values) < ORDER_HEADER_ROW:
         return pd.DataFrame()
     raw_headers = values[ORDER_HEADER_ROW - 1]
@@ -1516,8 +1518,8 @@ def read_orders_df() -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def read_times_df() -> pd.DataFrame:
-    values = read_times_values(current_times_sheet())
+def read_times_df(sheet_name: str | None = None) -> pd.DataFrame:
+    values = read_times_values(sheet_name or current_times_sheet())
     if not values:
         return pd.DataFrame(columns=TIMES_HEADERS)
     headers = [canonical_column_name(item) for item in ensure_unique_column_names(values[0])]
@@ -3191,6 +3193,516 @@ def render_processes(current_user: str) -> None:
             st.caption("🗄️ CANCELADO está disponible desde cualquier etapa activa y archiva el pedido.")
 
 
+# ==============================
+# Tablero para pantalla
+# ==============================
+BOARD_TAB_LABEL = "📺 Tablero"
+BOARD_ALL_SOURCES = "Ambas hojas"
+BOARD_SOURCES = (
+    ("Alineadores", SHEET_ORDERS, SHEET_TIMES),
+    ("Polanco", SHEET_POLANCO, SHEET_POLANCO_TIMES),
+)
+BOARD_REFRESH_SECONDS = 60
+BOARD_CARDS_PER_STAGE = 5
+# En modo pantalla cada columna recorta con CSS las que no quepan en la altura.
+BOARD_SCREEN_CARDS_PER_STAGE = 14
+BOARD_PRIORITY_ROWS = 10
+BOARD_SCREEN_PARAM = "pantalla"
+BOARD_SCREEN_KEY = "aligners_board_screen"
+BOARD_SOURCE_KEY = "aligners_board_source"
+BOARD_LAST_MODEL_KEY = "aligners_board_last_model"
+BOARD_URL_APPLIED_KEY = "aligners_board_url_applied"
+# Rangos de antigüedad en días hábiles; ``None`` deja abierto el último rango.
+BOARD_AGE_BANDS = ((2, "0–2 d"), (5, "3–5 d"), (10, "6–10 d"), (20, "11–20 d"), (None, "21+ d"))
+BOARD_SIGNALS = (
+    ("late", "🔴 Atrasado"),
+    ("due", "🟡 Por vencer"),
+    ("pause", "🟣 En pausa"),
+    ("ok", "🟢 En tiempo"),
+    ("none", "⚪ Sin medición"),
+)
+SPANISH_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+SPANISH_MONTH_NAMES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+    "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+)
+
+
+def business_days_between(start: date, end: date) -> int:
+    """Días hábiles (lunes a viernes) transcurridos de ``start`` a ``end``."""
+    if end <= start:
+        return 0
+    weeks, remainder = divmod((end - start).days, 7)
+    extra = sum(
+        1 for offset in range(remainder) if (start + timedelta(days=offset)).weekday() < 5
+    )
+    return weeks * 5 + extra
+
+
+def board_age_band(days: Any) -> int | None:
+    if days is None or pd.isna(days):
+        return None
+    return next(
+        index
+        for index, (upper, _) in enumerate(BOARD_AGE_BANDS)
+        if upper is None or int(days) <= upper
+    )
+
+
+def first_log_dates(times_df: pd.DataFrame) -> dict[str, date]:
+    """Primer registro de bitácora por pedido; respaldo si falta FECHA DE RECEPCIÓN."""
+    logs = canonical_times_df(times_df)
+    if not {ID_COLUMN, "FECHA_INICIO"}.issubset(logs.columns):
+        return {}
+    firsts: dict[str, date] = {}
+    for identifier, started in zip(logs[ID_COLUMN], logs["FECHA_INICIO"]):
+        key = clean_cell(identifier).strip()
+        day = parse_simple_date(started)
+        if key and day and (key not in firsts or day < firsts[key]):
+            firsts[key] = day
+    return firsts
+
+
+def build_board_table(
+    sources: Iterable[tuple[str, pd.DataFrame, pd.DataFrame]],
+    definitions: dict[str, ProcessDefinition],
+    *,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    """Une los pedidos activos de cada hoja con su antigüedad, más antiguos primero.
+
+    ``sources`` son tuplas ``(nombre de hoja, pedidos, bitácora)``. El semáforo es
+    el mismo de Seguimiento; la antigüedad cuenta días hábiles desde la
+    recepción y, sin ella, desde el primer registro de la bitácora.
+    """
+
+    current_time = now or app_now()
+    frames: list[pd.DataFrame] = []
+    for label, orders, times in sources:
+        table = build_tracking_table(orders, times, definitions, now=current_time)
+        if table.empty:
+            continue
+        first_logs = first_log_dates(times)
+        received = table.get("FECHA DE RECEPCIÓN", pd.Series("", index=table.index))
+        starts = [
+            parse_simple_date(value) or first_logs.get(clean_cell(identifier).strip())
+            for value, identifier in zip(received, table[ID_COLUMN])
+        ]
+        table = table.copy()
+        for column in ("HORAS EN ETAPA", "PLAZO HORAS"):
+            table[column] = pd.to_numeric(table[column], errors="coerce")
+        table["HOJA"] = label
+        table["INICIO PEDIDO"] = starts
+        table["DÍAS ACTIVO"] = pd.array(
+            [
+                business_days_between(start, current_time.date()) if start else None
+                for start in starts
+            ],
+            dtype="Int64",
+        )
+        frames.append(table)
+    if not frames:
+        return pd.DataFrame(
+            columns=[ID_COLUMN, STATUS_COLUMN, PRODUCT_COLUMN, *COMPUTED_COLUMNS,
+                     "HOJA", "INICIO PEDIDO", "DÍAS ACTIVO"]
+        )
+    board = pd.concat(frames, ignore_index=True, sort=False)
+    board = board.assign(
+        _age=pd.to_numeric(board["DÍAS ACTIVO"], errors="coerce").astype(float).fillna(-1),
+        _signal=board["SEMÁFORO"].map(signal_rank),
+        _hours=pd.to_numeric(board["HORAS EN ETAPA"], errors="coerce").astype(float).fillna(-1),
+    ).sort_values(["_age", "_signal", "_hours"], ascending=[False, True, False], kind="stable")
+    return board.drop(columns=["_age", "_signal", "_hours"]).reset_index(drop=True)
+
+
+def board_stage_order(
+    definitions: dict[str, ProcessDefinition],
+) -> tuple[list[str], list[str]]:
+    """Etapas normales en el orden común de todos los productos, y las pausas."""
+    normal: list[str] = []
+    for definition in definitions.values():
+        position = -1
+        for status in definition.normal_statuses:
+            if is_terminal_status(status):
+                continue
+            keys = [status_key(item) for item in normal]
+            if status_key(status) in keys:
+                position = keys.index(status_key(status))
+                continue
+            position += 1
+            normal.insert(position, status)
+    pauses: dict[str, str] = {}
+    for definition in definitions.values():
+        for status in definition.pauses:
+            pauses.setdefault(status_key(status), status)
+    return normal, list(pauses.values())
+
+
+def board_week_activity(
+    sources: Iterable[tuple[str, pd.DataFrame, pd.DataFrame]],
+    definitions: dict[str, ProcessDefinition],
+    *,
+    today: date,
+) -> dict[str, int]:
+    """Pedidos recibidos (según la hoja) y enviados (según la bitácora) esta semana."""
+    week_start = today - timedelta(days=today.weekday())
+    received = received_today = 0
+    sent: set[tuple[str, str]] = set()
+    sent_today: set[tuple[str, str]] = set()
+    for label, orders, times in sources:
+        frame = orders_with_status(orders, definitions, lambda status: True)
+        for value in frame.get("FECHA DE RECEPCIÓN", []):
+            day = parse_simple_date(value)
+            if day and week_start <= day <= today:
+                received += 1
+                received_today += day == today
+        logs = canonical_times_df(times)
+        if not {ID_COLUMN, STATUS_COLUMN, "FECHA_INICIO"}.issubset(logs.columns):
+            continue
+        for identifier, status, started in zip(
+            logs[ID_COLUMN], logs[STATUS_COLUMN], logs["FECHA_INICIO"]
+        ):
+            day = parse_simple_date(started)
+            if not is_sent_status(status) or not day or not week_start <= day <= today:
+                continue
+            sent.add((label, clean_cell(identifier).strip()))
+            if day == today:
+                sent_today.add((label, clean_cell(identifier).strip()))
+    return {
+        "received": received,
+        "received_today": received_today,
+        "sent": len(sent),
+        "sent_today": len(sent_today),
+    }
+
+
+def format_business_hours(hours: Any) -> str:
+    value = pd.to_numeric(hours, errors="coerce")
+    if value is None or pd.isna(value):
+        return ""
+    value = float(value)
+    if value < 1:
+        return "<1 h"
+    if value < 24:
+        return f"{value:.0f} h"
+    days = value / 24
+    return f"{days:.0f} d" if days >= 10 or days.is_integer() else f"{days:.1f} d"
+
+
+def board_card(
+    row: pd.Series,
+    *,
+    rank: int | None,
+    show_source: bool,
+    signal_keys: dict[str, str],
+) -> dict[str, Any]:
+    signal = clean_cell(row.get("SEMÁFORO", "")).strip()
+    key = signal_keys.get(signal, "none")
+    elapsed = pd.to_numeric(row.get("HORAS EN ETAPA"), errors="coerce")
+    maximum = pd.to_numeric(row.get("PLAZO HORAS"), errors="coerce")
+    status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
+    progress = None
+    if key == "pause":
+        time_label = f"{format_business_hours(elapsed)} en pausa" if pd.notna(elapsed) else "En pausa"
+    elif pd.notna(elapsed) and pd.notna(maximum) and float(maximum) > 0:
+        time_label = f"{format_business_hours(elapsed)} de {format_business_hours(maximum)}"
+        progress = float(elapsed) / float(maximum)
+    else:
+        time_label = "Sin medición"
+    days = row.get("DÍAS ACTIVO")
+    days = None if days is None or pd.isna(days) else int(days)
+    product = strip_visual_prefix(row.get(PRODUCT_COLUMN, ""))
+    return {
+        "folio": clean_cell(row.get(ID_COLUMN, "")).strip(),
+        "patient": clean_cell(row.get("NOMBRE PACIENTE", "")).strip(),
+        "doctor": clean_cell(row.get("NOMBRE DOCTOR", "")).strip(),
+        "product": product,
+        "product_emoji": PRODUCT_EMOJIS.get(product_key(product), "🦷"),
+        "status": status or "Sin etapa",
+        "status_emoji": STATUS_EMOJIS.get(status_key(status), "⚪"),
+        "source": clean_cell(row.get("HOJA", "")).strip(),
+        "show_source": show_source,
+        "signal": key,
+        "signal_emoji": signal.split(" ", 1)[0] if signal else "⚪",
+        "stage_time_label": time_label,
+        "progress": progress,
+        "detail": clean_cell(row.get("DETALLE SEMÁFORO", "")).strip(),
+        "age_days": days,
+        "age_band": board_age_band(days),
+        "rank": rank,
+    }
+
+
+def board_view_model(
+    board: pd.DataFrame,
+    definitions: dict[str, ProcessDefinition],
+    activity: dict[str, int],
+    *,
+    now: datetime,
+    source_filter: str = BOARD_ALL_SOURCES,
+    screen: bool = False,
+    cards_per_stage: int = BOARD_CARDS_PER_STAGE,
+    priority_rows: int = BOARD_PRIORITY_ROWS,
+) -> dict[str, Any]:
+    """Traduce la tabla del tablero al modelo que dibuja ``aligners_board``."""
+
+    signal_keys = {label: key for key, label in BOARD_SIGNALS}
+    source_labels = [label for label, _, _ in BOARD_SOURCES]
+    shown_sources = source_labels if source_filter == BOARD_ALL_SOURCES else [source_filter]
+    cards = [
+        board_card(
+            row,
+            rank=index + 1 if index < priority_rows else None,
+            show_source=source_filter == BOARD_ALL_SOURCES and row.get("HOJA") == "Polanco",
+            signal_keys=signal_keys,
+        )
+        for index, (_, row) in enumerate(board.iterrows())
+    ]
+
+    normal, pauses = board_stage_order(definitions)
+    by_stage: dict[str, list[dict[str, Any]]] = {}
+    known = {status_key(status) for status in [*normal, *pauses]}
+    others: list[dict[str, Any]] = []
+    for card in cards:
+        stage = status_key(card["status"])
+        if stage in known:
+            by_stage.setdefault(stage, []).append(card)
+        else:
+            others.append({**card, "stage_time_label": card["status"]})
+
+    def stage_model(name: str, stage_cards: list[dict[str, Any]], emoji: str | None = None) -> dict[str, Any]:
+        counts = {key: 0 for key, _ in BOARD_SIGNALS}
+        for card in stage_cards:
+            counts[card["signal"]] += 1
+        return {
+            "name": name,
+            "emoji": emoji or STATUS_EMOJIS.get(status_key(name), "⚪"),
+            "accent": status_palette_value(name)[0],
+            "count": len(stage_cards),
+            "signals": counts,
+            "cards": stage_cards[:cards_per_stage],
+            "more": max(len(stage_cards) - cards_per_stage, 0),
+        }
+
+    groups = [
+        {
+            "label": "Flujo normal →",
+            "kind": "normal",
+            "stages": [stage_model(name, by_stage.get(status_key(name), [])) for name in normal],
+        },
+        {
+            "label": "⏸️ Pausas",
+            "kind": "pause",
+            "stages": [stage_model(name, by_stage.get(status_key(name), [])) for name in pauses],
+        },
+    ]
+    if others:
+        groups.append(
+            {
+                "label": "Otras etapas",
+                "kind": "other",
+                "stages": [stage_model("Revisar etapa", others, "❔")],
+            }
+        )
+
+    signals = []
+    for key, label in BOARD_SIGNALS:
+        emoji, text = label.split(" ", 1)
+        signals.append(
+            {"key": key, "emoji": emoji, "label": text, "count": sum(card["signal"] == key for card in cards)}
+        )
+    dated = [card for card in cards if card["age_days"] is not None]
+    oldest = max(dated, key=lambda card: card["age_days"], default=None)
+    ages = [
+        {"label": label, "band": index, "count": sum(card["age_band"] == index for card in cards)}
+        for index, (_, label) in enumerate(BOARD_AGE_BANDS)
+    ]
+    undated = len(cards) - len(dated)
+    if undated:
+        ages.append({"label": "Sin fecha", "band": None, "count": undated})
+
+    return {
+        "screen": screen,
+        "title": "Tablero de alineadores",
+        "subtitle": " + ".join(shown_sources) + " · pedidos activos por etapa · días hábiles (lun–vie)",
+        "clock": f"{now:%H:%M}",
+        "date_label": f"{SPANISH_WEEKDAYS[now.weekday()]} {now.day} de {SPANISH_MONTH_NAMES[now.month - 1]}",
+        "updated": f"{now:%H:%M:%S}",
+        "stale": "",
+        "total": len(cards),
+        "sources": [
+            (label, sum(card["source"] == label for card in cards)) for label in shown_sources
+        ],
+        "signals": signals,
+        "oldest": (
+            {"days": oldest["age_days"], "folio": oldest["folio"], "patient": oldest["patient"]}
+            if oldest
+            else None
+        ),
+        "week": activity,
+        "groups": groups,
+        "priority": [card for card in cards if card["rank"]],
+        "ages": ages,
+        "footer": (
+            f"Se actualiza solo cada {BOARD_REFRESH_SECONDS} s · "
+            "Enviados según la bitácora de la app."
+        ),
+    }
+
+
+def board_source_options() -> list[str]:
+    return [BOARD_ALL_SOURCES, *(label for label, _, _ in BOARD_SOURCES)]
+
+
+def read_board_sources(source_filter: str) -> list[tuple[str, pd.DataFrame, pd.DataFrame]]:
+    """Lee cada hoja por nombre; no toca la hoja activa de Seguimiento."""
+    return [
+        (label, read_orders_df(orders_sheet), read_times_df(times_sheet))
+        for label, orders_sheet, times_sheet in BOARD_SOURCES
+        if source_filter in (BOARD_ALL_SOURCES, label)
+    ]
+
+
+def load_board_model(source_filter: str, *, screen: bool) -> dict[str, Any]:
+    now = app_now()
+    definitions = read_process_definitions()
+    sources = read_board_sources(source_filter)
+    return board_view_model(
+        build_board_table(sources, definitions, now=now),
+        definitions,
+        board_week_activity(sources, definitions, today=now.date()),
+        now=now,
+        source_filter=source_filter,
+        screen=screen,
+        cards_per_stage=BOARD_SCREEN_CARDS_PER_STAGE if screen else BOARD_CARDS_PER_STAGE,
+    )
+
+
+def clear_board_cache() -> None:
+    """Fuerza una lectura nueva de las hojas del tablero sin tocar la mesa de edición."""
+    for _, orders_sheet, times_sheet in BOARD_SOURCES:
+        read_order_values.clear(orders_sheet)
+        read_times_values.clear(times_sheet)
+    read_process_values.clear()
+
+
+def board_screen_requested() -> bool:
+    return normalize_text(get_query_param_value(BOARD_SCREEN_PARAM)) in {"1", "SI", "TRUE"}
+
+
+def apply_board_url(current_user: str) -> None:
+    """Con ``?pantalla=1`` la primera carga abre el tablero en modo pantalla."""
+    if st.session_state.get(BOARD_URL_APPLIED_KEY):
+        return
+    st.session_state[BOARD_URL_APPLIED_KEY] = True
+    if board_screen_requested():
+        st.session_state[f"aligners_primary_tabs_{current_user}"] = BOARD_TAB_LABEL
+        st.session_state[BOARD_SCREEN_KEY] = True
+
+
+def sync_board_screen_param() -> None:
+    """Deja el modo pantalla en el enlace para reabrirlo igual tras recargar."""
+    if st.session_state.get(BOARD_SCREEN_KEY):
+        st.query_params[BOARD_SCREEN_PARAM] = "1"
+    elif BOARD_SCREEN_PARAM in st.query_params:
+        del st.query_params[BOARD_SCREEN_PARAM]
+
+
+def apply_board_css(current_user: str, *, screen: bool) -> None:
+    # La lectura automática no debe atenuar el tablero mientras se recalcula.
+    css = '[data-stale="true"] {opacity:1 !important; transition:none !important;}'
+    if screen:
+        # El tablero se fija sobre toda la ventana; sólo el interruptor queda encima.
+        css += f"""
+        [data-testid="stHeader"], [data-testid="stSidebar"], [data-testid="stExpandSidebarButton"],
+        [data-testid="stStatusWidget"], [data-testid="stToolbar"], [data-testid="stDecoration"],
+        .st-key-lab_workspace_header, .align-hero,
+        .st-key-aligners_primary_tabs_{current_user} [role="tablist"] {{display:none !important;}}
+        .stApp {{background:#0D1813 !important;}}
+        .st-key-aligners_board_screen_bar {{
+            position:fixed; right:14px; bottom:8px; z-index:999999; width:auto !important;
+            background:#F1FCF5; border-radius:10px; padding:2px 12px; opacity:.4;
+            transition:opacity 150ms ease;
+        }}
+        .st-key-aligners_board_screen_bar:hover,
+        .st-key-aligners_board_screen_bar:focus-within {{opacity:1;}}
+        """
+    st.html(f"<style>{css}</style>")
+
+
+def render_board_toolbar() -> None:
+    st.session_state.setdefault(BOARD_SOURCE_KEY, BOARD_ALL_SOURCES)
+    with st.container(key="aligners_board_toolbar"):
+        source, info, screen, refresh = st.columns(
+            [2.3, 2.6, 1.3, 1], vertical_alignment="center"
+        )
+        with source:
+            st.segmented_control(
+                "Hoja",
+                board_source_options(),
+                key=BOARD_SOURCE_KEY,
+                required=True,
+                label_visibility="collapsed",
+            )
+        info.caption(
+            f"🔄 Se actualiza solo cada {BOARD_REFRESH_SECONDS} s · sólo lectura · "
+            "para la pantalla usa Modo pantalla y F11."
+        )
+        screen.toggle(
+            "📺 Modo pantalla", key=BOARD_SCREEN_KEY, on_change=sync_board_screen_param
+        )
+        refresh.button(
+            "Actualizar", key="aligners_board_refresh", width="stretch", on_click=clear_board_cache
+        )
+
+
+@st.fragment(run_every=BOARD_REFRESH_SECONDS)
+def render_board_live(source_filter: str, screen: bool) -> None:
+    """Se vuelve a dibujar solo; si Sheets falla conserva la última lectura."""
+    cache = st.session_state.setdefault(BOARD_LAST_MODEL_KEY, {})
+    try:
+        model = load_board_model(source_filter, screen=screen)
+        cache[source_filter] = model
+    except Exception as exc:
+        previous = cache.get(source_filter)
+        if previous is None and not is_google_sheets_rate_limit_error(exc):
+            raise
+        reason = (
+            "Google Sheets alcanzó el límite temporal de lecturas"
+            if is_google_sheets_rate_limit_error(exc)
+            else f"No se pudieron leer las hojas ({type(exc).__name__})"
+        )
+        if previous is None:
+            st.warning(f"{reason}. El tablero se reintentará en {BOARD_REFRESH_SECONDS} s.")
+            return
+        model = {
+            **previous,
+            "screen": screen,
+            "stale": f"{reason}; se muestra la lectura de las {previous['updated']}. "
+            f"Se reintentará en {BOARD_REFRESH_SECONDS} s.",
+        }
+    st.html(render_board_html(model))
+
+
+def render_board(current_user: str) -> None:
+    """Tablero de sólo lectura para pantalla con Alineadores y Polanco juntos."""
+    screen = bool(st.session_state.get(BOARD_SCREEN_KEY, False))
+    apply_board_css(current_user, screen=screen)
+    if screen:
+        # Conserva la hoja elegida aunque su selector no se dibuje en pantalla.
+        st.session_state[BOARD_SOURCE_KEY] = st.session_state.get(BOARD_SOURCE_KEY, BOARD_ALL_SOURCES)
+        with st.container(key="aligners_board_screen_bar"):
+            st.toggle(
+                "📺 Modo pantalla", key=BOARD_SCREEN_KEY, on_change=sync_board_screen_param
+            )
+    else:
+        render_board_toolbar()
+    source_filter = st.session_state.get(BOARD_SOURCE_KEY, BOARD_ALL_SOURCES)
+    if source_filter not in board_source_options():
+        source_filter = BOARD_ALL_SOURCES
+    render_board_live(source_filter, screen)
+
+
 # "🚨 Alertas y pausas" (render_alerts) y "⚙️ Procesos y plazos"
 # (render_processes) están ocultas; para mostrarlas otra vez basta con
 # agregarlas aquí.
@@ -3198,12 +3710,14 @@ ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📋 Seguimiento Polanco",
     "📥 Recibidos de Forms",
+    BOARD_TAB_LABEL,
 )
 
 
 @st.fragment(key="aligners_active_tab_content")
 def render_app_tabs(current_user: str) -> None:
     """Ejecuta únicamente el contenido de la pestaña visible."""
+    apply_board_url(current_user)
     tabs = st.tabs(
         ALIGNERS_TAB_LABELS,
         key=f"aligners_primary_tabs_{current_user}",
@@ -3227,6 +3741,8 @@ def render_app_tabs(current_user: str) -> None:
                 render_alerts(current_user)
             elif label == "⚙️ Procesos y plazos":
                 render_processes(current_user)
+            elif label == BOARD_TAB_LABEL:
+                render_board(current_user)
             else:
                 render_aligners_forms_tab()
         break
