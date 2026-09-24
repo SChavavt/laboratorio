@@ -16,7 +16,7 @@ import math
 import re
 import time
 import unicodedata
-import uuid
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterable
@@ -2269,10 +2269,118 @@ def tracking_columns(available_columns: Iterable[str]) -> list[str]:
     return visible
 
 
+NEW_ORDER_SELECT_COLUMNS = (
+    "PRODUCTO", "TIPO", "ETAPA SOLICITUD", "VENDEDOR", "SERVICIO",
+    "PAQUETE MARCA BLANCA", "ARCHIVOS RECIBIDOS",
+)
+NEW_ORDER_FIELD_ICONS = {
+    "PRODUCTO": "🦷", "TIPO": "🏷️", "ETAPA SOLICITUD": "📋",
+    "VENDEDOR": "🤝", "SERVICIO": "🛠️", "PAQUETE MARCA BLANCA": "📦",
+    "ARCHIVOS RECIBIDOS": "📁",
+}
+# Indicadores visuales de la app. Sheets expone los valores de los chips, pero
+# no sus colores individuales. Conservamos los tonos observados y añadimos
+# iconos semánticos, sin modificar el texto que se guarda en Drive.
+NEW_ORDER_OPTION_ICONS = {
+    "PRODUCTO": {"CONVENC.": "🔵", "GRAPHY": "🟠", "RETENEDORES": "🟢",
+                 "MODELOS": "🟤", "SETUP": "🟣", "GUARDA": "🌙", "GUIA": "🧭"},
+    "TIPO": {"ARTTDLAB": "🔵", "MARCA BLANCA": "⚪"},
+    "ETAPA SOLICITUD": {"NUEVO": "🟢", "REFIN": "🔵"},
+    "SERVICIO": {"PLANEACION": "🟤", "PLAN+CONFEC.": "🟡",
+                 "CONFECCION": "🟣", "IMPRESION": "🖨️"},
+    "PAQUETE MARCA BLANCA": {"LITE": "🟢", "STANDARD": "🔵",
+                            "LIMITLESS": "🟣", "LIMITLESS+": "🟠", "NO APLICA": "⚪"},
+    "ARCHIVOS RECIBIDOS": {"STLS": "📁", "TOMO": "🩻", "RX LATERAL": "🩻",
+                          "RX PANO": "🩻", "FOTO INTRA": "📸", "FOTO EXTRA": "📷"},
+}
+
+
+def parse_order_form_catalogs(metadata: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Lee opciones nativas de tabla, incluso las que todavía no tienen pedidos."""
+    catalogs = {}
+    for sheet in metadata.get("sheets", []):
+        title = sheet.get("properties", {}).get("title", "")
+        if title not in (SHEET_ORDERS, SHEET_POLANCO):
+            continue
+        catalog: dict[str, list[str]] = {}
+        for table in sheet.get("tables", []):
+            if table.get("range", {}).get("startRowIndex") != ORDER_HEADER_ROW - 1:
+                continue
+            for column in table.get("columnProperties", []):
+                name = canonical_column_name(column.get("columnName", ""))
+                rule = column.get("dataValidationRule", {}).get("condition", {})
+                if name in NEW_ORDER_SELECT_COLUMNS and rule.get("type") == "ONE_OF_LIST":
+                    catalog[name] = list(dict.fromkeys(
+                        item["userEnteredValue"] for item in rule.get("values", [])
+                        if str(item.get("userEnteredValue", "")).strip()))
+        catalogs[title] = catalog
+    return catalogs
+
+
+@st.cache_data(ttl=3600)
+def read_order_form_catalogs(spreadsheet_id: str) -> dict[str, dict[str, list[str]]]:
+    spreadsheet = get_spreadsheet_by_id(spreadsheet_id)
+    metadata = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
+        "includeGridData": "false",
+        "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)))",
+    }))
+    return parse_order_form_catalogs(metadata)
+
+
+def get_order_form_catalog() -> dict[str, list[str]]:
+    catalogs = st.session_state.get("aligners_form_catalogs")
+    if catalogs is None:
+        catalogs = read_order_form_catalogs(configured_spreadsheet_id())
+        st.session_state["aligners_form_catalogs"] = catalogs
+    return catalogs.get(current_order_sheet(), {})
+
+
+def new_order_option_label(column: str, value: str) -> str:
+    text = clean_cell(value).strip()
+    icon = NEW_ORDER_OPTION_ICONS.get(column, {}).get(normalize_text(text))
+    if not icon:
+        icon = "👤" if column == "VENDEDOR" else NEW_ORDER_FIELD_ICONS.get(column, "🔹")
+    return f"{icon} {text}"
+
+
+def generate_order_identifier(values: list[list[Any]], headers: list[str]) -> str:
+    """Mismo folio diario DDMMAAAA-NNN de Aparatos, dentro de la hoja activa."""
+    position = headers.index(ID_COLUMN)
+    existing = {clean_cell(row[position]).strip() for row in values[ORDER_HEADER_ROW:]
+                if len(row) > position}
+    prefix = app_today().strftime("%d%m%Y")
+    sequence = 1
+    while f"{prefix}-{sequence:03d}" in existing:
+        sequence += 1
+    return f"{prefix}-{sequence:03d}"
+
+
+@st.cache_resource
+def order_creation_lock():
+    # Serializa lectura del folio + append entre sesiones de esta instancia.
+    return threading.RLock()
+
+
 def create_order(values: dict[str, Any], current_user: str,
-                 definitions: dict[str, ProcessDefinition]) -> tuple[str, str]:
+                 definitions: dict[str, ProcessDefinition], *,
+                 catalog: dict[str, list[str]] | None = None) -> tuple[str, str]:
+    with order_creation_lock():
+        return _create_order(values, current_user, definitions, catalog=catalog)
+
+
+def _create_order(values: dict[str, Any], current_user: str,
+                  definitions: dict[str, ProcessDefinition], *,
+                  catalog: dict[str, list[str]] | None = None) -> tuple[str, str]:
     """Añade una orden en la hoja activa y reporta por separado un fallo de bitácora."""
     row = {key: prepare_sheet_value(value).strip() for key, value in values.items()}
+    if catalog is not None:
+        for column in NEW_ORDER_SELECT_COLUMNS:
+            selected = values.get(column)
+            if selected:
+                if selected not in catalog.get(column, []):
+                    raise ValueError(f"La opción de {column} no pertenece al catálogo de Sheets.")
+                row[column] = selected  # Preserva espacios de opciones nativas, p. ej. NO APLICA.
+
     for column in (PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
         if not row.get(column):
             raise ValueError(f"Completa {column}.")
@@ -2289,14 +2397,7 @@ def create_order(values: dict[str, Any], current_user: str,
     for column in (ID_COLUMN, STATUS_COLUMN, PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
         if column not in headers:
             raise ValueError(f"Falta la columna {column} en {sheet_name}.")
-    identifier = row.get(ID_COLUMN, "")
-    if not identifier:
-        prefix = "POL" if sheet_name == SHEET_POLANCO else "ALI"
-        identifier = f"{prefix}-{app_today():%Y%m%d}-{uuid.uuid4().hex[:12].upper()}"
-    id_index = headers.index(ID_COLUMN)
-    if any(clean_cell(item[id_index]).strip() == identifier
-           for item in existing[ORDER_HEADER_ROW:] if len(item) > id_index):
-        raise ValueError(f"La orden {identifier} ya existe en {sheet_name}.")
+    identifier = generate_order_identifier(existing, headers)
     row.update({ID_COLUMN: identifier, STATUS_COLUMN: definition.normal_statuses[0],
                 "FECHA DE RECEPCIÓN": app_today().isoformat()})
     # Un append no pisa renglones existentes ni sus fórmulas; RAW conserva folios
@@ -2321,33 +2422,52 @@ def create_order(values: dict[str, Any], current_user: str,
 
 def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
     definitions = snapshot["definitions"]
-    products = [definition.name for definition in definitions.values()
-                if definition.normal_statuses]
-    if not products:
-        st.warning("Configura primero los productos y sus etapas en PROCESOS POR PRODUCTO.")
+    try:
+        catalog = get_order_form_catalog()
+    except Exception as exc:
+        st.error(f"No se pudieron cargar las opciones de Sheets: {exc}")
         return
-    st.caption(f"Nueva orden en {current_order_sheet()}. La fecha de recepción y la etapa inicial son automáticas.")
+    missing = [column for column in NEW_ORDER_SELECT_COLUMNS if not catalog.get(column)]
+    if missing:
+        st.warning("Faltan listas en la tabla de Sheets: " + ", ".join(missing) +
+                   ". Configúralas y pulsa Actualizar datos.")
+        return
+    st.subheader("➕ Nueva orden")
+    st.caption(f"Captura los datos principales en {current_order_sheet()}.")
     version = st.session_state.get(tracking_key("aligners_new_version"), 0)
     with st.form(tracking_key(f"aligners_new_form_{version}")):
+        st.info(f"🔢 Folio automático: DDMMAAAA-NNN · 📥 Recepción: {app_today():%d/%m/%Y} · "
+                "📋 Etapa inicial automática según el producto.")
         row: dict[str, Any] = {}
-        left, right = st.columns(2)
-        row[ID_COLUMN] = left.text_input("No. Orden (opcional)", help="Vacío: se genera un folio único al guardar.")
-        row[PRODUCT_COLUMN] = right.selectbox("PRODUCTO *", products)
-        left, right = st.columns(2)
-        row["NOMBRE DOCTOR"] = left.text_input("NOMBRE DOCTOR *")
-        row["NOMBRE PACIENTE"] = right.text_input("NOMBRE PACIENTE *")
-        optional = ["TIPO", "ETAPA SOLICITUD", "VENDEDOR", "SERVICIO",
-                    "PAQUETE MARCA BLANCA", "ARCHIVOS RECIBIDOS"]
+
+        def select_field(container, column):
+            return container.selectbox(
+                f"{NEW_ORDER_FIELD_ICONS[column]} {column}" + (" *" if column == PRODUCT_COLUMN else ""),
+                catalog[column], index=None, placeholder="Selecciona una opción",
+                format_func=lambda value: new_order_option_label(column, value),
+                key=tracking_key(f"aligners_new_{column}_{version}"),
+            )
+
+        first = st.columns(3)
+        row[PRODUCT_COLUMN] = select_field(first[0], PRODUCT_COLUMN)
+        row["NOMBRE DOCTOR"] = first[1].text_input("👩‍⚕️ NOMBRE DOCTOR *")
+        row["NOMBRE PACIENTE"] = first[2].text_input("👤 NOMBRE PACIENTE *")
+        for group in (("TIPO", "ETAPA SOLICITUD", "VENDEDOR"),
+                      ("SERVICIO", "PAQUETE MARCA BLANCA", "ARCHIVOS RECIBIDOS")):
+            columns = st.columns(3)
+            for container, column in zip(columns, group):
+                row[column] = select_field(container, column)
         if current_order_sheet() == SHEET_POLANCO:
-            optional.append("ADEUDO")
-        columns = st.columns(2)
-        for index, column in enumerate(optional):
-            row[column] = columns[index % 2].text_input(column)
-        row["DETALLE COMENTARIOS"] = st.text_area("DETALLE COMENTARIOS")
-        submitted = st.form_submit_button("💾 Guardar nueva orden", type="primary")
+            comments, balance = st.columns([2, 1])
+            row["DETALLE COMENTARIOS"] = comments.text_area("📝 DETALLE COMENTARIOS", height=80)
+            row["ADEUDO"] = balance.number_input("💰 ADEUDO", min_value=0.0, value=None,
+                                                 step=100.0, format="%.2f", placeholder="Opcional")
+        else:
+            row["DETALLE COMENTARIOS"] = st.text_area("📝 DETALLE COMENTARIOS", height=80)
+        submitted = st.form_submit_button("💾 Guardar nueva orden")
     if submitted:
         try:
-            identifier, warning = create_order(row, current_user, definitions)
+            identifier, warning = create_order(row, current_user, definitions, catalog=catalog)
         except Exception as exc:
             st.error(f"No se pudo confirmar el guardado: {exc}")
             st.info("Si hubo un error de conexión, actualiza la tabla y verifica la orden antes de reintentar.")
@@ -2683,6 +2803,8 @@ def render_workbench(current_user: str) -> None:
             use_container_width=True,
             key=tracking_key("aligners_refresh"),
         ):
+            st.session_state.pop("aligners_form_catalogs", None)
+            read_order_form_catalogs.clear(configured_spreadsheet_id())
             clear_sheet_data_cache()
             reset_workbench()
             rerun_active_tab()

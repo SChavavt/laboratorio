@@ -80,9 +80,16 @@ python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py
 - Los procesos de ambas pestañas provienen de `PROCESOS POR PRODUCTO`. Los tiempos
   de Polanco se registran en `TIEMPOS_POLANCO`, creada automáticamente al entrar
   por primera vez. No necesita secrets nuevos ni mezcla órdenes con igual folio.
-- Las nuevas órdenes requieren producto, doctor y paciente. El número de orden
-  es opcional; vacío genera un folio único. La recepción es la fecha actual y la
-  etapa inicial es la primera etapa normal configurada para el producto.
+- Las nuevas órdenes requieren producto, doctor y paciente. El folio se genera
+  automáticamente al guardar con formato DDMMAAAA-NNN, igual que en Aparatos.
+  La recepción es la fecha actual y la etapa inicial es la primera etapa normal
+  configurada para el producto.
+- El formulario usa tres columnas y selectores con emojis de color. Las opciones
+  se leen de las tablas nativas de cada hoja, incluidas las opciones aún no usadas.
+  Los colores individuales de chips no están expuestos por la API de Sheets:
+  los indicadores visuales son de la app y no alteran los valores guardados.
+- El catálogo se lee al abrir el formulario por primera vez y se conserva durante
+  la sesión. Actualizar datos vuelve a consultar las opciones de Sheets.
 - Cada seguimiento conserva su fotografía de datos y su editor por separado. Los
   cambios pendientes deben guardarse o descartarse antes de cambiar de pestaña.
 - Si la orden se guarda pero falla la bitácora, la app lo informa y permite reparar

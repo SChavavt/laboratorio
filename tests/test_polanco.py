@@ -11,6 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import alineadores_pg as app
 
 
+FORM_CATALOG = {
+    'PRODUCTO': ['CONVENC.', 'GRAPHY'], 'TIPO': ['ARTTDLAB', 'MARCA BLANCA'],
+    'ETAPA SOLICITUD': ['NUEVO', 'REFIN'], 'VENDEDOR': ['JIMENA', 'MICHELLE'],
+    'SERVICIO': ['PLANEACIÓN', 'PLAN+CONFEC.'],
+    'PAQUETE MARCA BLANCA': ['Lite', 'NO APLICA '],
+    'ARCHIVOS RECIBIDOS': ['STLs', 'TOMO'],
+}
+
+
 class Sheet:
     def __init__(self, values):
         self.values = copy.deepcopy(values)
@@ -70,16 +79,17 @@ def test_polanco_edit_and_create_never_write_other_sheet(sheets):
     identifier, warning = app.create_order({app.ID_COLUMN: '002', app.PRODUCT_COLUMN: 'Graphy',
         'NOMBRE DOCTOR': 'Doctor ejemplo', 'NOMBRE PACIENTE': 'Paciente ejemplo', 'ADEUDO': '700'},
         'Jime', definitions())
-    assert (identifier, warning) == ('002', '')
+    assert identifier == f'{app.app_today():%d%m%Y}-001'
+    assert warning == ''
     assert sheets[app.SHEET_POLANCO].values[-1][5] == '700'
     assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
     assert len(sheets[app.SHEET_TIMES].values) == 1
     assert sheets[app.SHEET_ORDERS].values == before
     assert sheets[app.SHEET_POLANCO].appends[0]['value_input_option'] == 'RAW'
-    with pytest.raises(ValueError, match='ya existe'):
-        app.create_order({app.ID_COLUMN: '002', app.PRODUCT_COLUMN: 'Graphy',
-            'NOMBRE DOCTOR': 'Doctor ejemplo', 'NOMBRE PACIENTE': 'Paciente ejemplo'}, 'Jime', definitions())
-    assert len(sheets[app.SHEET_POLANCO].values) == 4
+    second, _ = app.create_order({app.ID_COLUMN: '002', app.PRODUCT_COLUMN: 'Graphy',
+        'NOMBRE DOCTOR': 'Doctor ejemplo', 'NOMBRE PACIENTE': 'Paciente ejemplo'}, 'Jime', definitions())
+    assert second == f'{app.app_today():%d%m%Y}-002'
+    assert len(sheets[app.SHEET_POLANCO].values) == 5
 
 
 def test_cached_reads_snapshots_and_resets_are_isolated(sheets, monkeypatch):
@@ -105,7 +115,7 @@ def test_create_without_folio_and_log_failure_does_not_claim_order_failed(sheets
     monkeypatch.setattr(app, 'register_status_change', fail)
     identifier, warning = app.create_order({app.PRODUCT_COLUMN: 'Graphy',
         'NOMBRE DOCTOR': 'Doctor ejemplo', 'NOMBRE PACIENTE': 'Paciente ejemplo'}, 'Jime', definitions())
-    assert identifier.startswith('ALI-')
+    assert identifier == f'{app.app_today():%d%m%Y}-001'
     assert 'sí se guardó' in warning
     assert len(sheets[app.SHEET_ORDERS].values) == 4
     assert len(sheets[app.SHEET_POLANCO].values) == 3
@@ -135,12 +145,13 @@ from unittest.mock import patch
 snapshot = {{'user': 'Jime', 'definitions': app.parse_process_matrix(
     [['Graphy', ''], ['Fases', 'Tiempo'], ['REVISIÓN DE ARCHIVOS', '<1 dia']]),
     'orders': pd.DataFrame(), 'times': pd.DataFrame(), 'table': pd.DataFrame(columns=app.COMPUTED_COLUMNS), 'at': app.app_now()}}
-def create(values, user, definitions):
+def create(values, user, definitions, **kwargs):
     st.session_state['created_in'] = app.current_order_sheet()
     st.session_state['created_values'] = values
     return 'POL-DEMO', ''
 with patch.object(app, 'ensure_times_headers', lambda: None), \\
      patch.object(app, 'get_snapshot', lambda _: snapshot), \\
+     patch.object(app, 'get_order_form_catalog', lambda: {FORM_CATALOG!r}), \\
      patch.object(app, 'create_order', create):
     st.session_state['aligners_primary_tabs_Jime'] = st.session_state.get('test_tab', '📋 Seguimiento')
     if st.session_state.get('test_open'):
@@ -157,9 +168,15 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     at.session_state['test_open'] = True
     at.run()
     assert not at.exception
-    assert any(item.label == 'ADEUDO' for item in at.text_input)
+    assert any(item.label == '💰 ADEUDO' for item in at.number_input)
+    assert len(at.text_input) == 2
+    assert not any('Orden' in item.label for item in at.text_input)
+    assert len(at.selectbox) == 7
+    product = next(item for item in at.selectbox if 'PRODUCTO' in item.label)
+    assert product.options == ['🔵 CONVENC.', '🟠 GRAPHY']
+    product.select('GRAPHY')
     for item in at.text_input:
-        if item.label in ('NOMBRE DOCTOR *', 'NOMBRE PACIENTE *'):
+        if 'NOMBRE DOCTOR' in item.label or 'NOMBRE PACIENTE' in item.label:
             item.input('Ejemplo')
     next(button for button in at.button if button.label == '💾 Guardar nueva orden').click().run()
     assert not at.exception
@@ -203,3 +220,50 @@ def test_old_snapshot_without_sent_archive_is_rebuilt(sheets, monkeypatch):
     monkeypatch.setattr(app, 'read_process_definitions', definitions)
     app.st.session_state['aligners_snapshot'] = {'user': 'Jime', 'table': pd.DataFrame()}
     assert 'sent' in app.get_snapshot('Jime')
+
+
+def test_native_table_catalog_includes_unused_options_and_keeps_raw_values():
+    metadata = {'sheets': [{'properties': {'title': name}, 'tables': [{
+        'range': {'startRowIndex': 1}, 'columnProperties': [
+            {'columnName': column, 'dataValidationRule': {'condition': {
+                'type': 'ONE_OF_LIST', 'values': [{'userEnteredValue': option} for option in options]}}}
+            for column, options in FORM_CATALOG.items()]}]}
+        for name in (app.SHEET_ORDERS, app.SHEET_POLANCO)]}
+    result = app.parse_order_form_catalogs(metadata)
+    assert result[app.SHEET_POLANCO] == FORM_CATALOG
+    assert result[app.SHEET_ORDERS]['PAQUETE MARCA BLANCA'][-1] == 'NO APLICA '
+    assert app.new_order_option_label('PAQUETE MARCA BLANCA', 'NO APLICA ') == '⚪ NO APLICA'
+
+
+def test_catalog_is_read_once_and_scoped_to_each_sheet(sheets, monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, 'configured_spreadsheet_id', lambda: 'demo')
+    def read(identifier):
+        calls.append(identifier)
+        return {app.SHEET_ORDERS: FORM_CATALOG,
+                app.SHEET_POLANCO: {**FORM_CATALOG, 'VENDEDOR': ['POLANCO DEMO']}}
+    monkeypatch.setattr(app, 'read_order_form_catalogs', read)
+    assert app.get_order_form_catalog()['VENDEDOR'] == ['JIMENA', 'MICHELLE']
+    app.st.session_state['aligners_order_sheet'] = app.SHEET_POLANCO
+    assert app.get_order_form_catalog()['VENDEDOR'] == ['POLANCO DEMO']
+    app.get_order_form_catalog()
+    assert calls == ['demo']
+
+
+def test_invalid_dropdown_value_is_rejected_before_writing(sheets):
+    with pytest.raises(ValueError, match='catálogo'):
+        app.create_order({'PRODUCTO': 'GRAPHY', 'NOMBRE DOCTOR': 'Demo',
+                          'NOMBRE PACIENTE': 'Demo', 'VENDEDOR': 'NO CONFIGURADO'},
+                         'Jime', definitions(), catalog=FORM_CATALOG)
+    assert not sheets[app.SHEET_ORDERS].appends
+
+
+def test_dropdown_raw_values_written_without_visual_prefixes(sheets):
+    sheet = sheets[app.SHEET_ORDERS]
+    sheet.values[1].extend(['VENDEDOR', 'PAQUETE MARCA BLANCA'])
+    app.create_order({'PRODUCTO': 'GRAPHY', 'NOMBRE DOCTOR': 'Demo',
+                      'NOMBRE PACIENTE': 'Demo', 'VENDEDOR': 'JIMENA',
+                      'PAQUETE MARCA BLANCA': 'NO APLICA '},
+                     'Jime', definitions(), catalog=FORM_CATALOG)
+    assert sheet.values[-1][-2:] == ['JIMENA', 'NO APLICA ']
+    assert sheet.values[-1][2] == 'GRAPHY'
