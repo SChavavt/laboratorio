@@ -1,8 +1,9 @@
 """Solicitudes de guía de ventas dentro del control de laboratorio.
 
 Aquí todo son solicitudes de guía (no pedidos de venta): "📋 Solicitar guía"
-registra la solicitud en ``data_pedidos``, "⏳ En espera" muestra las que almacén
-aún no atiende y "📦 Guías cargadas" las que ya tienen guía. Se escribe con el mismo vendedor, ID y columnas que usa
+registra la solicitud en ``data_pedidos``. Mientras Adjuntos_Guia esté vacío la
+solicitud sigue en "⏳ En espera"; en cuanto almacén sube ahí la guía pasa a
+"📦 Guías cargadas". Se escribe con el mismo vendedor, ID y columnas que usa
 ARTTD JIMENA en app_v para que ventas, almacén y esta vista lean exactamente
 las mismas solicitudes.
 """
@@ -84,7 +85,7 @@ DHL_OPTIONAL_FIELDS = (
 SOURCE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
     "Fecha_Entrega", "Hora_Registro", "Folio_Factura", "id_vendedor",
-    "Completados_Limpiado", "Adjuntos_Guia", "Hoja_Ruta_Mensajero",
+    "Completados_Limpiado", "Adjuntos_Guia",
 ]
 GUIDE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
@@ -467,11 +468,6 @@ def _with_columns(df: pd.DataFrame | None, columns: Sequence[str]) -> pd.DataFra
     return df.fillna("").astype(str)
 
 
-def _consolidated_guides(df: pd.DataFrame, primary: str, fallback: str) -> pd.Series:
-    primary_values = df[primary].str.strip()
-    return primary_values.mask(primary_values.eq(""), df[fallback].str.strip())
-
-
 def parse_datetime_series(series: pd.Series) -> pd.Series:
     try:
         return pd.to_datetime(series, errors="coerce", format="mixed")
@@ -490,59 +486,44 @@ def _with_request_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values("Fecha_Filtro_Referencia", ascending=False, na_position="last", kind="stable")
 
 
-def build_guides_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Solicitudes de guía a las que almacén ya les cargó la guía.
+def _guide_requests(sources: Mapping[str, pd.DataFrame], *, with_guide: bool) -> pd.DataFrame | None:
+    """Solicitudes de guía de ambas hojas, separadas sólo por Adjuntos_Guia.
 
-    Sólo cuentan los renglones con Tipo_Envio "📋 Solicitudes de Guía"; la guía
-    vive en Adjuntos_Guia (respaldo: Hoja_Ruta_Mensajero), igual que en app_v.
+    Con contenido en Adjuntos_Guia almacén ya subió la guía; vacía, la solicitud
+    sigue en espera sin importar su Estado.
     """
 
     frames = []
     for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS):
         df = _with_columns(sources.get(sheet_name), SOURCE_COLUMNS)
-        guides = _consolidated_guides(df, "Adjuntos_Guia", "Hoja_Ruta_Mensajero")
-        keep = guides.ne("") & df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA)
+        df["Adjuntos_Guia"] = df["Adjuntos_Guia"].str.strip()
+        has_guide = df["Adjuntos_Guia"].ne("")
+        keep = df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA) & (has_guide if with_guide else ~has_guide)
         part = df[keep].copy()
-        if part.empty:
-            continue
-        part["Adjuntos_Guia"] = guides[keep]
-        part["Fuente"] = sheet_name
-        frames.append(part)
-    if not frames:
-        return pd.DataFrame(columns=GUIDE_COLUMNS)
+        if not part.empty:
+            part["Fuente"] = sheet_name
+            frames.append(part)
+    return _with_request_dates(pd.concat(frames, ignore_index=True)) if frames else None
 
-    df = pd.concat(frames, ignore_index=True)
+
+def build_guides_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Solicitudes de guía a las que almacén ya les subió la guía en Adjuntos_Guia."""
+
+    df = _guide_requests(sources, with_guide=True)
+    if df is None:
+        return pd.DataFrame(columns=GUIDE_COLUMNS)
     df["URLs_Guia"] = df["Adjuntos_Guia"]
     df["Ultima_Guia"] = df["URLs_Guia"].map(lambda text: text.split(",")[-1].strip())
-    return _with_request_dates(df)[GUIDE_COLUMNS].reset_index(drop=True)
-
-
-def is_closed_status(estado: Any) -> bool:
-    """Una solicitud cancelada o completada ya no espera guía."""
-
-    text = clean_cell(estado).casefold()
-    return "cancel" in text or "complet" in text
+    return df[GUIDE_COLUMNS].reset_index(drop=True)
 
 
 def build_pending_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Solicitudes de guía registradas a las que almacén todavía no les carga la guía.
+    """Solicitudes de guía en espera: todavía no hay nada en Adjuntos_Guia."""
 
-    Sólo se buscan en data_pedidos: lo que ya pasó al histórico ya no está en espera.
-    """
-
-    df = _with_columns(sources.get(SHEET_PEDIDOS_OPERATIVOS), SOURCE_COLUMNS)
-    guides = _consolidated_guides(df, "Adjuntos_Guia", "Hoja_Ruta_Mensajero")
-    keep = (
-        df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA)
-        & guides.eq("")
-        & df["Completados_Limpiado"].str.strip().eq("")
-        & ~df["Estado"].map(is_closed_status)
-    )
-    part = df[keep].copy()
-    if part.empty:
+    df = _guide_requests(sources, with_guide=False)
+    if df is None:
         return pd.DataFrame(columns=PENDING_COLUMNS)
-    part["Fuente"] = SHEET_PEDIDOS_OPERATIVOS
-    return _with_request_dates(part)[PENDING_COLUMNS].reset_index(drop=True)
+    return df[PENDING_COLUMNS].reset_index(drop=True)
 
 
 def format_waiting_time(since: Any, now: datetime | None = None) -> str:
@@ -780,10 +761,10 @@ def current_refresh_token() -> float | None:
 
 
 def load_guides_datasets() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(solicitudes con guía cargada, solicitudes en espera) de una sola lectura."""
+    """(solicitudes con guía cargada, solicitudes en espera del último mes) de una sola lectura."""
 
     sources = read_guides_sources(current_refresh_token())
-    return build_guides_dataset(sources), build_pending_dataset(sources)
+    return build_guides_dataset(sources), recent_guides(build_pending_dataset(sources))
 
 
 def own_pending(pending: pd.DataFrame) -> pd.DataFrame:
@@ -958,11 +939,11 @@ def render_refresh_toolbar() -> None:
 
 
 def render_pending_tab(pending: pd.DataFrame) -> None:
-    """Solicitudes ya registradas a las que almacén todavía no les carga la guía."""
+    """Solicitudes registradas a las que almacén todavía no les sube la guía."""
 
     st.subheader("⏳ Solicitudes en espera de guía")
-    st.caption("Ya se registraron, pero almacén todavía no carga la guía. "
-               f"En cuanto la cargue pasan a {GUIDES_TAB_LOADED}.")
+    st.caption("Almacén todavía no les sube la guía. En cuanto la suba, pasan a "
+               f"{GUIDES_TAB_LOADED}. Se muestran las de los últimos {GUIDES_HISTORY_DAYS} días.")
     render_refresh_toolbar()
 
     vendors = ["Todos", *GUIDE_VENDORS]

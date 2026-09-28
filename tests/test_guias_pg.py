@@ -123,29 +123,31 @@ def sources():
          "Hora_Registro": "2026-09-24 10:00:00", "id_vendedor": "ARTTDJIM01"},
         {"ID_Pedido": "PED-D", "Cliente": "LIMPIADO", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-09-24 10:00:00", "id_vendedor": "ARTTDJIM01",
-         "Hoja_Ruta_Mensajero": "https://b/g4.pdf", "Completados_Limpiado": "sí"},
+         "Adjuntos_Guia": "https://b/g4.pdf", "Completados_Limpiado": "sí"},
         # Un pedido de venta con guía no es una solicitud: no aparece en esta vista.
         {"ID_Pedido": "PED-E", "Cliente": "VENTA", "Vendedor_Registro": "SCHAVA",
          "Tipo_Envio": "🚚 Pedido Foráneo", "Hora_Registro": "2026-09-24 11:00:00",
          "Adjuntos_Guia": "https://b/g5.pdf", "id_vendedor": "ARTTDJIM01"},
         {"ID_Pedido": "PED-F", "Cliente": "OTRA VENDEDORA", "Vendedor_Registro": "BLANCA BRASILIA",
          "Tipo_Envio": guia, "Hora_Registro": "2026-09-23 09:00:00", "Adjuntos_Guia": "https://b/g6.pdf"},
-        # Solicitudes sin guía: sólo las abiertas siguen en espera.
-        {"ID_Pedido": "PED-G", "Cliente": "CANCELADA", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
-         "Hora_Registro": "2026-09-24 08:00:00", "Estado": "🔴 Cancelado"},
+        # Sin nada en Adjuntos_Guia sigue en espera, sin importar Estado ni otras columnas.
+        {"ID_Pedido": "PED-G", "Cliente": "COMPLETADA", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
+         "Hora_Registro": "2026-09-24 08:00:00", "Estado": "🟢 Completado", "Adjuntos_Guia": "  "},
         {"ID_Pedido": "PED-H", "Cliente": "DE SCHAVA", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-09-21 09:30:00", "Estado": "🟡 Pendiente", "Folio_Factura": "F77"},
-        {"ID_Pedido": "PED-I", "Cliente": "YA LIMPIADA", "Vendedor_Registro": "ARTTD JIMENA",
-         "Tipo_Envio": guia, "Hora_Registro": "2026-09-24 07:00:00", "Completados_Limpiado": "sí"},
+        {"ID_Pedido": "PED-I", "Cliente": "SOLO HOJA DE RUTA", "Vendedor_Registro": "ARTTD JIMENA",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-09-23 12:00:00", "Hoja_Ruta_Mensajero": "https://b/r.pdf",
+         "Completados_Limpiado": "sí"},
         {"ID_Pedido": "PED-J", "Cliente": "VENTA SIN GUIA", "Vendedor_Registro": "ARTTD JIMENA",
          "Tipo_Envio": "🚚 Pedido Foráneo", "Hora_Registro": "2026-09-24 11:00:00"},
     ])
     viejo = pd.DataFrame([
         {"ID_Pedido": "PED-OLD", "Cliente": "VIEJO", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-07-01 09:00:00", "Adjuntos_Guia": "https://b/old.pdf"},
-        # Lo que pasó al histórico sin guía ya no está en espera.
         {"ID_Pedido": "PED-OLD2", "Cliente": "ARCHIVADO", "Vendedor_Registro": "ARTTD JIMENA",
          "Tipo_Envio": guia, "Hora_Registro": "2026-09-20 09:00:00"},
+        {"ID_Pedido": "PED-OLD3", "Cliente": "DE HACE MESES", "Vendedor_Registro": "ARTTD JIMENA",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-07-02 09:00:00"},
     ])
     return {guides.SHEET_PEDIDOS_OPERATIVOS: pedidos, guides.SHEET_PEDIDOS_HISTORICOS: viejo}
 
@@ -179,30 +181,36 @@ def test_loaded_tab_shows_last_month_of_jimena_and_schava_only():
     assert len(guides.apply_guides_filters(visible, date_mode="range", start=today, end=date(2026, 9, 1))) == 3
 
 
+def test_adjuntos_guia_alone_decides_loaded_or_pending():
+    loaded = set(guides.build_guides_dataset(sources())["ID_Pedido"])
+    pending = set(guides.build_pending_dataset(sources())["ID_Pedido"])
+    assert loaded == {"PED-A", "PED-B", "PED-D", "PED-F", "PED-OLD"}
+    assert pending == {"PED-C", "PED-G", "PED-H", "PED-I", "PED-OLD2", "PED-OLD3"}
 
-def test_pending_lists_open_requests_without_guide_from_data_pedidos_only():
-    pending = guides.build_pending_dataset(sources())
-    assert pending["ID_Pedido"].tolist() == ["PED-C", "PED-H"]
+
+def test_pending_tab_rows_are_last_month_requests_without_guide():
+    pending = guides.recent_guides(guides.build_pending_dataset(sources()), now=NOW)
+    assert pending["ID_Pedido"].tolist() == ["PED-C", "PED-G", "PED-I", "PED-H", "PED-OLD2"]
     assert pending.set_index("ID_Pedido").loc["PED-H", "Folio_O_ID"] == "F77"
     table = guides.pending_table(pending, now=NOW)
     assert list(table.columns) == list(guides.PENDING_TABLE_COLUMNS.values())
-    assert table.to_dict("records") == [
+    assert table["En espera"].tolist() == ["2 h", "4 h", "1 día", "3 días", "4 días"]
+    assert table.to_dict("records")[:2] == [
         {"Folio / ID": "PED-C", "Destinatario": "SIN GUIA", "Solicitó": "ARTTD JIMENA", "Estado": "",
          "Solicitada": "24/09/26 10:00", "En espera": "2 h"},
-        {"Folio / ID": "F77", "Destinatario": "DE SCHAVA", "Solicitó": "SCHAVA", "Estado": "🟡 Pendiente",
-         "Solicitada": "21/09/26 09:30", "En espera": "3 días"},
+        {"Folio / ID": "PED-G", "Destinatario": "COMPLETADA", "Solicitó": "ARTTD JIMENA",
+         "Estado": "🟢 Completado", "Solicitada": "24/09/26 08:00", "En espera": "4 h"},
     ]
-    assert guides.own_pending(pending)["ID_Pedido"].tolist() == ["PED-C"]
-    assert guides.build_pending_dataset({}).empty
+    assert guides.own_pending(pending)["ID_Pedido"].tolist() == ["PED-C", "PED-G", "PED-I", "PED-OLD2"]
+    assert guides.recent_guides(guides.build_pending_dataset({}), now=NOW).empty
 
 
-def test_waiting_time_and_closed_statuses():
+def test_waiting_time_format():
     assert guides.format_waiting_time(datetime(2026, 9, 24, 11, 35), NOW) == "25 min"
     assert guides.format_waiting_time(datetime(2026, 9, 23, 11, 0), NOW) == "1 día"
     assert guides.format_waiting_time(datetime(2026, 9, 24, 12, 5), NOW) == "0 min"
     assert guides.format_waiting_time(pd.NaT, NOW) == ""
-    assert guides.is_closed_status("🟢 Completado") and guides.is_closed_status("🔴 CANCELADO")
-    assert not guides.is_closed_status("🟡 Pendiente") and not guides.is_closed_status("🔵 En Proceso")
+
 
 def test_guides_view_is_part_of_the_workspace_switch():
     assert app.LAB_VIEW_GUIDES in app.LAB_WORKSPACE_VIEWS
