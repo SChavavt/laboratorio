@@ -18,9 +18,19 @@ def order_title(row) -> str:
 
 
 def detail_columns(columns, editable, pinned) -> list[str]:
-    return [column for column in columns if column in editable and column not in pinned
-            and not column.startswith(("_", "Columna_"))
-            and re.sub(r"_\d+$", "", column).strip().upper() != "TOTAL"]
+    eligible = [column for column in columns if column in editable
+                and not column.startswith(("_", "Columna_"))
+                and re.sub(r"_\d+$", "", column).strip().upper() != "TOTAL"]
+    return [column for column in pinned if column in eligible] + [column for column in eligible if column not in pinned]
+
+
+def stage_source(row, namespace, id_column, status_column):
+    """El flujo usa el aparato/producto editado y parte de la etapa guardada."""
+    draft = st.session_state.get(draft_key(namespace), {}).get(str(row[id_column]), {})
+    baseline = draft.get("baseline", row.to_dict())
+    candidate = {**baseline, **draft.get("changes", {})}
+    candidate[status_column] = baseline.get(status_column, "")
+    return pd.Series(candidate)
 
 
 def parse_sheet_catalogs(metadata, canonicalize=lambda value: value.strip()):
@@ -174,7 +184,8 @@ def _now(namespace, identifier, column, key, equivalent, format_datetime, now):
 def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   option_label, palettes, equivalent, parse_date, format_date,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
-                  now=datetime.now, blocked=False, multiple=()):
+                  now=datetime.now, blocked=False, multiple=(), primary=(),
+                  multi_codecs=None, required=(), constrained=()):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real."""
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -185,8 +196,11 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     baseline_values = json.dumps({column: draft["baseline"].get(column, "") for column in columns},
                                  sort_keys=True, default=str, ensure_ascii=False)
     token = hashlib.sha256(f"{namespace}:{identifier}:{version}:{baseline_values}".encode()).hexdigest()[:16]
-    groups = {}
+    primary_group = "📌 Datos principales"
+    groups = {primary_group: [column for column in primary if column in columns]}
     for column in columns:
+        if column in primary:
+            continue
         group = ("💳 Pagos" if any(word in column for word in ("PAGO", "ADEUDO"))
                  else "📅 Fechas y entrega" if "FECHA" in column
                  else "📝 Notas" if "COMENTARIO" in column
@@ -196,9 +210,18 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     st.markdown("#### ✏️ Editar este pedido")
     st.caption("Completa los campos y pulsa Guardar este pedido. Los cambios se aplican únicamente a esta ficha.")
     for group, fields in groups.items():
-        st.markdown(f"**{group}**")
-        for start in range(0, len(fields), 3):
-            for container, column in zip(st.columns(3), fields[start:start + 3]):
+        if not fields:
+            continue
+        section = st.container() if group == primary_group else st.expander(
+            group, expanded=False, key=f"detail_group_{token}_{group}")
+        with section:
+            if group == primary_group:
+                st.markdown(f"**{group}**")
+            regular = [column for column in fields if "COMENTARIO" not in column]
+            field_containers = [pair for start in range(0, len(regular), 3)
+                                for pair in zip(st.columns(3), regular[start:start + 3])]
+            field_containers.extend((st.container(), column) for column in fields if "COMENTARIO" in column)
+            for container, column in field_containers:
                 with container:
                     value = draft["changes"].get(column, draft["baseline"].get(column, ""))
                     text = "" if value is None else str(value)
@@ -208,14 +231,27 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                     common = dict(key=key, disabled=blocked, on_change=_remember, args=args)
                     if column in catalog and catalog[column]:
                         if column in multiple:
-                            values = split_values(text, catalog[column])
+                            decode, encode = (multi_codecs or {}).get(column, (split_values, join_values))
+                            values = decode(text, catalog[column])
                             choices = list(dict.fromkeys([*catalog[column], *values]))
-                            common["args"] = (namespace, identifier, column, key, equivalent, join_values)
+                            common["args"] = (namespace, identifier, column, key, equivalent, encode)
                             st.multiselect(label, choices, default=values,
                                 format_func=lambda value, col=column: option_label(col, value),
                                 placeholder="Elige una o varias opciones", **common)
                         else:
-                            choices = list(dict.fromkeys(["", *catalog[column], *([text] if text else [])]))
+                            choices = list(dict.fromkeys([*([] if column in required else [""]), *catalog[column]]))
+                            if text not in choices:
+                                if column in constrained:
+                                    # Cambiar el aparato/producto puede invalidar una
+                                    # etapa elegida en el borrador. No se ofrece un salto.
+                                    draft["changes"].pop(column, None)
+                                    text = str(draft["baseline"].get(column, ""))
+                                    st.session_state[key] = text
+                                    st.caption("Se restableció la etapa; elige una opción del flujo actual.")
+                                else:
+                                    choices.append(text)
+                            if column in constrained and len(choices) < 2:
+                                common["disabled"] = True
                             st.selectbox(label, choices, index=choices.index(text),
                                          format_func=lambda value, col=column: option_label(col, value) if value else "— Sin dato —",
                                          **common)
