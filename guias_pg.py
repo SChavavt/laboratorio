@@ -1,8 +1,9 @@
 """Solicitudes de guía de ventas dentro del control de laboratorio.
 
 Aquí todo son solicitudes de guía (no pedidos de venta): "📋 Solicitar guía"
-registra la solicitud en ``data_pedidos`` y "📦 Guías cargadas" muestra las que
-almacén ya atendió. Se escribe con el mismo vendedor, ID y columnas que usa
+registra la solicitud en ``data_pedidos``. Mientras Adjuntos_Guia esté vacío la
+solicitud sigue en "⏳ En espera"; en cuanto almacén sube ahí la guía pasa a
+"📦 Guías cargadas". Se escribe con el mismo vendedor, ID y columnas que usa
 ARTTD JIMENA en app_v para que ventas, almacén y esta vista lean exactamente
 las mismas solicitudes.
 """
@@ -47,8 +48,9 @@ GUIDES_NOTICE_HOURS = 12
 GUIDES_REFRESH_COOLDOWN_SECONDS = 15
 
 GUIDES_TAB_REQUEST = "📋 Solicitar guía"
+GUIDES_TAB_PENDING = "⏳ En espera"
 GUIDES_TAB_LOADED = "📦 Guías cargadas"
-GUIDES_TAB_LABELS = [GUIDES_TAB_REQUEST, GUIDES_TAB_LOADED]
+GUIDES_TAB_LABELS = [GUIDES_TAB_REQUEST, GUIDES_TAB_PENDING, GUIDES_TAB_LOADED]
 GUIDES_REFRESH_TOKEN_KEY = "guides_refresh_token"
 
 # app_v agrega estas columnas a data_pedidos si faltan antes de registrar.
@@ -83,7 +85,7 @@ DHL_OPTIONAL_FIELDS = (
 SOURCE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
     "Fecha_Entrega", "Hora_Registro", "Folio_Factura", "id_vendedor",
-    "Completados_Limpiado", "Adjuntos_Guia", "Hoja_Ruta_Mensajero",
+    "Completados_Limpiado", "Adjuntos_Guia",
 ]
 GUIDE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
@@ -101,6 +103,20 @@ TABLE_COLUMNS = {
     "Estado": "Estado",
     "Fecha": "Fecha de solicitud",
     "Fuente": "Registro",
+}
+PENDING_COLUMNS = [
+    "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado", "Fecha_Entrega",
+    "Hora_Registro", "Folio_Factura", "Fuente", "id_vendedor", "Hora_Registro_dt",
+    "Fecha_Entrega_dt", "Fecha_Filtro_Referencia", "Folio_O_ID",
+]
+# Columna calculada → encabezado visible en la tabla de solicitudes en espera.
+PENDING_TABLE_COLUMNS = {
+    "Folio_O_ID": "Folio / ID",
+    "Cliente": "Destinatario",
+    "Vendedor_Registro": "Solicitó",
+    "Estado": "Estado",
+    "Solicitada": "Solicitada",
+    "Espera": "En espera",
 }
 OFFICE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
 INLINE_CONTENT_TYPES = {
@@ -452,11 +468,6 @@ def _with_columns(df: pd.DataFrame | None, columns: Sequence[str]) -> pd.DataFra
     return df.fillna("").astype(str)
 
 
-def _consolidated_guides(df: pd.DataFrame, primary: str, fallback: str) -> pd.Series:
-    primary_values = df[primary].str.strip()
-    return primary_values.mask(primary_values.eq(""), df[fallback].str.strip())
-
-
 def parse_datetime_series(series: pd.Series) -> pd.Series:
     try:
         return pd.to_datetime(series, errors="coerce", format="mixed")
@@ -464,37 +475,84 @@ def parse_datetime_series(series: pd.Series) -> pd.Series:
         return pd.to_datetime(series, errors="coerce")
 
 
-def build_guides_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    """Solicitudes de guía a las que almacén ya les cargó la guía.
+def _with_request_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Fechas de solicitud y Folio / ID; deja primero las solicitudes más recientes."""
 
-    Sólo cuentan los renglones con Tipo_Envio "📋 Solicitudes de Guía"; la guía
-    vive en Adjuntos_Guia (respaldo: Hoja_Ruta_Mensajero), igual que en app_v.
-    """
-
-    frames = []
-    for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS):
-        df = _with_columns(sources.get(sheet_name), SOURCE_COLUMNS)
-        guides = _consolidated_guides(df, "Adjuntos_Guia", "Hoja_Ruta_Mensajero")
-        keep = guides.ne("") & df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA)
-        part = df[keep].copy()
-        if part.empty:
-            continue
-        part["Adjuntos_Guia"] = guides[keep]
-        part["Fuente"] = sheet_name
-        frames.append(part)
-    if not frames:
-        return pd.DataFrame(columns=GUIDE_COLUMNS)
-
-    df = pd.concat(frames, ignore_index=True)
-    df["URLs_Guia"] = df["Adjuntos_Guia"]
-    df["Ultima_Guia"] = df["URLs_Guia"].map(lambda text: text.split(",")[-1].strip())
     df["Hora_Registro_dt"] = parse_datetime_series(df["Hora_Registro"])
     df["Fecha_Entrega_dt"] = parse_datetime_series(df["Fecha_Entrega"])
     df["Fecha_Filtro_Referencia"] = df["Hora_Registro_dt"].fillna(df["Fecha_Entrega_dt"])
     df["Folio_O_ID"] = df["Folio_Factura"].str.strip().mask(df["Folio_Factura"].str.strip().eq(""),
                                                              df["ID_Pedido"].str.strip())
-    df = df.sort_values("Fecha_Filtro_Referencia", ascending=False, na_position="last", kind="stable")
+    return df.sort_values("Fecha_Filtro_Referencia", ascending=False, na_position="last", kind="stable")
+
+
+def _guide_requests(sources: Mapping[str, pd.DataFrame], *, with_guide: bool) -> pd.DataFrame | None:
+    """Solicitudes de guía de ambas hojas, separadas sólo por Adjuntos_Guia.
+
+    Con contenido en Adjuntos_Guia almacén ya subió la guía; vacía, la solicitud
+    sigue en espera sin importar su Estado.
+    """
+
+    frames = []
+    for sheet_name in (SHEET_PEDIDOS_HISTORICOS, SHEET_PEDIDOS_OPERATIVOS):
+        df = _with_columns(sources.get(sheet_name), SOURCE_COLUMNS)
+        df["Adjuntos_Guia"] = df["Adjuntos_Guia"].str.strip()
+        has_guide = df["Adjuntos_Guia"].ne("")
+        keep = df["Tipo_Envio"].str.strip().eq(TIPO_ENVIO_GUIA) & (has_guide if with_guide else ~has_guide)
+        part = df[keep].copy()
+        if not part.empty:
+            part["Fuente"] = sheet_name
+            frames.append(part)
+    return _with_request_dates(pd.concat(frames, ignore_index=True)) if frames else None
+
+
+def build_guides_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Solicitudes de guía a las que almacén ya les subió la guía en Adjuntos_Guia."""
+
+    df = _guide_requests(sources, with_guide=True)
+    if df is None:
+        return pd.DataFrame(columns=GUIDE_COLUMNS)
+    df["URLs_Guia"] = df["Adjuntos_Guia"]
+    df["Ultima_Guia"] = df["URLs_Guia"].map(lambda text: text.split(",")[-1].strip())
     return df[GUIDE_COLUMNS].reset_index(drop=True)
+
+
+def build_pending_dataset(sources: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Solicitudes de guía en espera: todavía no hay nada en Adjuntos_Guia."""
+
+    df = _guide_requests(sources, with_guide=False)
+    if df is None:
+        return pd.DataFrame(columns=PENDING_COLUMNS)
+    return df[PENDING_COLUMNS].reset_index(drop=True)
+
+
+def format_waiting_time(since: Any, now: datetime | None = None) -> str:
+    """Cuánto lleva en espera una solicitud: "25 min", "3 h" o "2 días"."""
+
+    if since is None or pd.isna(since):
+        return ""
+    minutes = max(int(((now or app_now()) - since).total_seconds() // 60), 0)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} h"
+    days = hours // 24
+    return f"{days} día" if days == 1 else f"{days} días"
+
+
+def pending_table(pending: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+    """Tabla visible de la pestaña En espera."""
+
+    now = now or app_now()
+    requested = pending["Fecha_Filtro_Referencia"]
+    has_time = pending["Hora_Registro_dt"].notna()
+    table = pending.assign(
+        Solicitada=requested.dt.strftime("%d/%m/%y %H:%M").where(has_time, requested.dt.strftime("%d/%m/%y")),
+        Espera=requested.map(lambda value: format_waiting_time(value, now)),
+    )
+    table["Solicitada"] = table["Solicitada"].fillna("")
+    return table[list(PENDING_TABLE_COLUMNS)].rename(columns=PENDING_TABLE_COLUMNS)
 
 
 def guide_key(row: pd.Series) -> str:
@@ -671,6 +729,24 @@ def apply_custom_css() -> None:
             border-radius:999px; padding:6px 12px; font-size:.8rem; font-weight:750;
             background:#E8F1FF; border:1px solid #BCD2F1; color:#1A4786;
         }
+        /* El aviso de éxito flota fijo en pantalla: se ve aunque el formulario quede con scroll. */
+        .st-key-guides_request_success_banner {
+            position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:1000;
+            width:min(620px, calc(100vw - 32px)); padding:14px 16px 12px; border-radius:16px;
+            background:#E6F7EC; border:2px solid #2E9D62; box-shadow:0 14px 36px #1B6B4047;
+            animation:guides-success-in 260ms ease-out;
+        }
+        .st-key-guides_request_success_banner [data-testid="stAlertContainer"] {
+            background:#C9F0D8; color:#0F5132; font-size:1.02rem; font-weight:750;
+        }
+        .st-key-guides_request_success_banner [data-testid="stCaptionContainer"] {color:#1F6B45;}
+        .st-key-guides_request_success_banner button {
+            background:#1F8A52; border-color:#1F8A52; color:#FFF; font-weight:750;
+        }
+        .st-key-guides_request_success_banner button:hover {background:#17703F; border-color:#17703F; color:#FFF;}
+        @keyframes guides-success-in {
+            from {opacity:0; transform:translate(-50%, 16px);} to {opacity:1; transform:translate(-50%, 0);}
+        }
         </style>""",
         unsafe_allow_html=True,
     )
@@ -684,11 +760,18 @@ def current_refresh_token() -> float | None:
     return st.session_state.get(GUIDES_REFRESH_TOKEN_KEY)
 
 
-def load_guides_dataset() -> pd.DataFrame:
-    return build_guides_dataset(read_guides_sources(current_refresh_token()))
+def load_guides_datasets() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(solicitudes con guía cargada, solicitudes en espera del último mes) de una sola lectura."""
+
+    sources = read_guides_sources(current_refresh_token())
+    return build_guides_dataset(sources), recent_guides(build_pending_dataset(sources))
 
 
-def render_guides_notice(dataset: pd.DataFrame) -> None:
+def own_pending(pending: pd.DataFrame) -> pd.DataFrame:
+    return pending[pending["Vendedor_Registro"].astype(str).str.strip().eq(GUIDE_VENDOR_NAME)]
+
+
+def render_guides_notice(dataset: pd.DataFrame, pending: pd.DataFrame) -> None:
     """Aviso arriba de las pestañas (el mismo que app_v, en términos de solicitudes)."""
 
     summary = summarize_session_guides(dataset)
@@ -701,20 +784,31 @@ def render_guides_notice(dataset: pd.DataFrame) -> None:
         preview = format_clients_preview(summary["clientes"])
         clients = f" Destinatarios: {preview}." if preview else ""
         st.info(f"📦 Aviso: tienes {summary['total']} solicitud(es) con guía cargada.{clients}")
+    waiting = len(own_pending(pending))
+    if waiting:
+        st.info(f"⏳ Tienes {waiting} solicitud(es) en espera: almacén todavía no carga la guía. "
+                f"Revísalas en {GUIDES_TAB_PENDING}.")
     st.session_state["guides_home_keys"] = sorted(current_keys)
 
 
 def render_request_feedback() -> None:
+    """Aviso verde que flota fijo en pantalla hasta que se acepta.
+
+    El botón para registrar queda al final de un formulario largo; si el aviso
+    fuera parte del flujo quedaría arriba, fuera de la vista.
+    """
+
     message = st.session_state.get("guides_request_success")
     if not message:
         return
     if st.session_state.pop("guides_request_celebrate", False):
-        st.toast(message, icon="✅")
         st.balloons()
-    st.success(message)
-    if st.button("✅ Aceptar y limpiar mensaje", key="guides_request_clear"):
-        st.session_state.pop("guides_request_success", None)
-        rerun_active_tab()
+    with st.container(key="guides_request_success_banner"):
+        st.success(message)
+        st.caption(f"La encuentras en {GUIDES_TAB_PENDING} hasta que almacén cargue la guía.")
+        if st.button("✅ Aceptar y limpiar mensaje", key="guides_request_clear"):
+            st.session_state.pop("guides_request_success", None)
+            rerun_active_tab()
 
 
 def render_request_tab() -> None:
@@ -723,7 +817,8 @@ def render_request_tab() -> None:
     st.subheader("📝 Nueva solicitud de guía")
     st.caption(
         f"La solicitud queda registrada a nombre de {GUIDE_VENDOR_NAME} en el Excel de ventas. "
-        "Cuando almacén cargue la guía aparecerá en 📦 Guías cargadas."
+        f"Mientras almacén la atiende aparece en {GUIDES_TAB_PENDING}; cuando cargue la guía "
+        f"pasa a {GUIDES_TAB_LOADED}."
     )
     render_request_feedback()
     version = st.session_state.get("guides_form_version", 0)
@@ -787,6 +882,8 @@ def render_request_tab() -> None:
     )
     st.session_state["guides_request_celebrate"] = True
     st.session_state["guides_form_version"] = version + 1
+    # Relee las hojas para que la nueva solicitud ya aparezca en En espera.
+    st.session_state[GUIDES_REFRESH_TOKEN_KEY] = time.time()
     rerun_active_tab()
 
 
@@ -834,12 +931,45 @@ def render_guide_link(row: pd.Series) -> None:
                    key=f"guides_link_{hashlib.sha256(url.encode()).hexdigest()[:10]}")
 
 
-def render_loaded_tab(dataset: pd.DataFrame) -> None:
-    st.subheader("📦 Solicitudes con guía cargada por almacén")
+def render_refresh_toolbar() -> None:
     toolbar = st.columns([1.2, 4])
     toolbar[0].button("🔄 Actualizar guías", on_click=refresh_guides, width="stretch")
     if st.session_state.pop("guides_refresh_wait", False):
         toolbar[1].caption("⏳ Espera unos segundos antes de volver a actualizar.")
+
+
+def render_pending_tab(pending: pd.DataFrame) -> None:
+    """Solicitudes registradas a las que almacén todavía no les sube la guía."""
+
+    st.subheader("⏳ Solicitudes en espera de guía")
+    st.caption("Almacén todavía no les sube la guía. En cuanto la suba, pasan a "
+               f"{GUIDES_TAB_LOADED}. Se muestran las de los últimos {GUIDES_HISTORY_DAYS} días.")
+    render_refresh_toolbar()
+
+    vendors = ["Todos", *GUIDE_VENDORS]
+    if st.session_state.get("guides_pending_vendor") not in vendors:
+        st.session_state["guides_pending_vendor"] = GUIDE_VENDOR_NAME
+    vendor = st.columns(2)[0].selectbox("👤 Solicitó", vendors, key="guides_pending_vendor")
+    pending = visible_vendor_guides(pending)
+    if vendor != "Todos":
+        pending = pending[pending["Vendedor_Registro"].astype(str).str.strip().eq(vendor)]
+    if pending.empty:
+        st.success("✅ No hay solicitudes en espera: almacén ya cargó la guía de todas.")
+        return
+
+    now = app_now()
+    chips = [f"⏳ En espera: {len(pending)}"]
+    oldest = pending["Fecha_Filtro_Referencia"].min()
+    if pd.notna(oldest):
+        chips.append(f"🕒 La más antigua lleva {format_waiting_time(oldest, now)}")
+    st.markdown('<div class="guides-summary">' + "".join(f"<span>{chip}</span>" for chip in chips)
+                + "</div>", unsafe_allow_html=True)
+    st.dataframe(pending_table(pending, now), width="stretch", hide_index=True, key="guides_pending_table")
+
+
+def render_loaded_tab(dataset: pd.DataFrame) -> None:
+    st.subheader("📦 Solicitudes con guía cargada por almacén")
+    render_refresh_toolbar()
 
     guides = visible_vendor_guides(recent_guides(dataset))
     if guides.empty:
@@ -923,8 +1053,8 @@ def render_loaded_tab(dataset: pd.DataFrame) -> None:
 def render_guides_tabs(current_user: str) -> None:
     """Ejecuta únicamente la pestaña visible, como las demás vistas del laboratorio."""
 
-    dataset = load_guides_dataset()
-    render_guides_notice(dataset)
+    dataset, pending = load_guides_datasets()
+    render_guides_notice(dataset, pending)
     tabs = st.tabs(GUIDES_TAB_LABELS, key=f"guides_primary_tabs_{current_user}", on_change="rerun")
     for label, tab in zip(GUIDES_TAB_LABELS, tabs):
         if not tab.open:
@@ -932,6 +1062,8 @@ def render_guides_tabs(current_user: str) -> None:
         with tab:
             if label == GUIDES_TAB_REQUEST:
                 render_request_tab()
+            elif label == GUIDES_TAB_PENDING:
+                render_pending_tab(pending)
             else:
                 render_loaded_tab(dataset)
         break
