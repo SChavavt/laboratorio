@@ -795,7 +795,7 @@ app.main()
     assert not at.exception
     assert at.tabs[0].label == "📋 Seguimiento"
     assert at.text_input(key="workbench_search").disabled is False
-    assert any("Pedido 001" in item.value for item in at.markdown)
+    assert any("Pedido · Doctora ejemplo" in item.value for item in at.subheader)
 
 
 def test_remembered_lab_user_is_signed_and_cannot_be_renamed():

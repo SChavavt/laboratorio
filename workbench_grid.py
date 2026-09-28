@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 from st_aggrid import AgGrid, JsCode
 
+BUSINESS_ORDER = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
+
 
 @lru_cache(maxsize=1)
 def date_editor():
@@ -133,7 +135,7 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     maximum_widths = {"SELECCIONAR": 62, "Columna 1": 90, "SEMÁFORO": 126, "APARATO": 156,
                       "STATUS": 180, "NOMBRE DOCTOR": 150, "NOMBRE PACIENTE": 150,
                       "DETALLE COMENTARIOS": 175, "DETALLE SEMÁFORO": 330}
-    business_order = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
+    business_order = BUSINESS_ORDER
     default_order = [*business_order, "RESPONSABLE", "HORAS EN ETAPA",
                      "PLAZO HORAS", "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
     system_fixed = [column for column in ["SELECCIONAR", "Columna 1", "SEMÁFORO"] if column in grid]
