@@ -130,10 +130,22 @@ def sources():
          "Adjuntos_Guia": "https://b/g5.pdf", "id_vendedor": "ARTTDJIM01"},
         {"ID_Pedido": "PED-F", "Cliente": "OTRA VENDEDORA", "Vendedor_Registro": "BLANCA BRASILIA",
          "Tipo_Envio": guia, "Hora_Registro": "2026-09-23 09:00:00", "Adjuntos_Guia": "https://b/g6.pdf"},
+        # Solicitudes sin guía: sólo las abiertas siguen en espera.
+        {"ID_Pedido": "PED-G", "Cliente": "CANCELADA", "Vendedor_Registro": "ARTTD JIMENA", "Tipo_Envio": guia,
+         "Hora_Registro": "2026-09-24 08:00:00", "Estado": "🔴 Cancelado"},
+        {"ID_Pedido": "PED-H", "Cliente": "DE SCHAVA", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
+         "Hora_Registro": "2026-09-21 09:30:00", "Estado": "🟡 Pendiente", "Folio_Factura": "F77"},
+        {"ID_Pedido": "PED-I", "Cliente": "YA LIMPIADA", "Vendedor_Registro": "ARTTD JIMENA",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-09-24 07:00:00", "Completados_Limpiado": "sí"},
+        {"ID_Pedido": "PED-J", "Cliente": "VENTA SIN GUIA", "Vendedor_Registro": "ARTTD JIMENA",
+         "Tipo_Envio": "🚚 Pedido Foráneo", "Hora_Registro": "2026-09-24 11:00:00"},
     ])
     viejo = pd.DataFrame([
         {"ID_Pedido": "PED-OLD", "Cliente": "VIEJO", "Vendedor_Registro": "SCHAVA", "Tipo_Envio": guia,
          "Hora_Registro": "2026-07-01 09:00:00", "Adjuntos_Guia": "https://b/old.pdf"},
+        # Lo que pasó al histórico sin guía ya no está en espera.
+        {"ID_Pedido": "PED-OLD2", "Cliente": "ARCHIVADO", "Vendedor_Registro": "ARTTD JIMENA",
+         "Tipo_Envio": guia, "Hora_Registro": "2026-09-20 09:00:00"},
     ])
     return {guides.SHEET_PEDIDOS_OPERATIVOS: pedidos, guides.SHEET_PEDIDOS_HISTORICOS: viejo}
 
@@ -166,6 +178,31 @@ def test_loaded_tab_shows_last_month_of_jimena_and_schava_only():
     # Un rango invertido no filtra fechas, igual que app_v.
     assert len(guides.apply_guides_filters(visible, date_mode="range", start=today, end=date(2026, 9, 1))) == 3
 
+
+
+def test_pending_lists_open_requests_without_guide_from_data_pedidos_only():
+    pending = guides.build_pending_dataset(sources())
+    assert pending["ID_Pedido"].tolist() == ["PED-C", "PED-H"]
+    assert pending.set_index("ID_Pedido").loc["PED-H", "Folio_O_ID"] == "F77"
+    table = guides.pending_table(pending, now=NOW)
+    assert list(table.columns) == list(guides.PENDING_TABLE_COLUMNS.values())
+    assert table.to_dict("records") == [
+        {"Folio / ID": "PED-C", "Destinatario": "SIN GUIA", "Solicitó": "ARTTD JIMENA", "Estado": "",
+         "Solicitada": "24/09/26 10:00", "En espera": "2 h"},
+        {"Folio / ID": "F77", "Destinatario": "DE SCHAVA", "Solicitó": "SCHAVA", "Estado": "🟡 Pendiente",
+         "Solicitada": "21/09/26 09:30", "En espera": "3 días"},
+    ]
+    assert guides.own_pending(pending)["ID_Pedido"].tolist() == ["PED-C"]
+    assert guides.build_pending_dataset({}).empty
+
+
+def test_waiting_time_and_closed_statuses():
+    assert guides.format_waiting_time(datetime(2026, 9, 24, 11, 35), NOW) == "25 min"
+    assert guides.format_waiting_time(datetime(2026, 9, 23, 11, 0), NOW) == "1 día"
+    assert guides.format_waiting_time(datetime(2026, 9, 24, 12, 5), NOW) == "0 min"
+    assert guides.format_waiting_time(pd.NaT, NOW) == ""
+    assert guides.is_closed_status("🟢 Completado") and guides.is_closed_status("🔴 CANCELADO")
+    assert not guides.is_closed_status("🟡 Pendiente") and not guides.is_closed_status("🔵 En Proceso")
 
 def test_guides_view_is_part_of_the_workspace_switch():
     assert app.LAB_VIEW_GUIDES in app.LAB_WORKSPACE_VIEWS
@@ -219,6 +256,10 @@ SOURCES = {{
         "ID_Pedido": "PED-A", "Cliente": "JUAN MEJIA", "Vendedor_Registro": "ARTTD JIMENA",
         "Tipo_Envio": "📋 Solicitudes de Guía", "Hora_Registro": "2026-09-24 09:00:00",
         "Fecha_Entrega": "2026-09-24", "id_vendedor": "ARTTDJIM01", "Adjuntos_Guia": "https://b/g1.pdf",
+    }}, {{
+        "ID_Pedido": "PED-W", "Cliente": "ANA ESPERA", "Vendedor_Registro": "ARTTD JIMENA",
+        "Tipo_Envio": "📋 Solicitudes de Guía", "Hora_Registro": "2026-09-24 10:30:00",
+        "Fecha_Entrega": "2026-09-24", "id_vendedor": "ARTTDJIM01", "Estado": "🟡 Pendiente",
     }}]),
 }}
 
@@ -253,6 +294,7 @@ def test_request_form_registers_guide_like_app_v():
     assert [tab.label for tab in at.tabs] == guides.GUIDES_TAB_LABELS
     assert any("tienes 1 solicitud(es) con guía cargada. Destinatarios: JUAN MEJIA." in item.value
                for item in at.info)
+    assert any("Tienes 1 solicitud(es) en espera" in item.value for item in at.info)
     assert not any("pedido" in item.value.lower()
                    for item in [*at.markdown, *at.info, *at.caption, *at.subheader])
     assert at.text_input(key="guides_vendedor_0").value == "ARTTD JIMENA"
@@ -276,6 +318,11 @@ def test_request_form_registers_guide_like_app_v():
     assert str(request["fecha_entrega"]) == "2026-09-24"
     assert any("Solicitud de guía registrada para JUAN MEJIA (ID PED-TEST)." in item.value
                for item in at.success)
+    assert any("⏳ En espera" in item.value for item in at.caption)
+    # Se vuelven a leer las hojas para que la solicitud nueva ya salga en espera.
+    assert guides.GUIDES_REFRESH_TOKEN_KEY in at.session_state
+    at.button(key="guides_request_clear").click().run()
+    assert not any("Solicitud de guía registrada" in item.value for item in at.success)
     # El formulario se limpia con una nueva versión de claves.
     assert at.text_input(key="guides_nombre_1").value == ""
 
@@ -295,6 +342,26 @@ def test_loaded_tab_lists_the_guide_and_its_link():
     texts = [item.value for item in [*at.markdown, *at.info, *at.caption, *at.subheader]]
     assert texts and not any("pedido" in text.lower() for text in texts)
 
+
+
+def test_pending_tab_lists_requests_waiting_for_their_guide():
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_string(GUIDES_SCRIPT, default_timeout=15)
+    at.session_state["guides_primary_tabs_Jime"] = guides.GUIDES_TAB_PENDING
+    at.run()
+    assert not at.exception
+    assert at.selectbox(key="guides_pending_vendor").value == "ARTTD JIMENA"
+    table = at.dataframe[0].value
+    assert list(table.columns) == list(guides.PENDING_TABLE_COLUMNS.values())
+    assert table["Destinatario"].tolist() == ["ANA ESPERA"] and table["En espera"].tolist() == ["1 h"]
+    assert any("En espera: 1" in item.value for item in at.markdown)
+    texts = [item.value for item in [*at.markdown, *at.info, *at.caption, *at.subheader]]
+    assert not any("pedido" in text.lower() for text in texts)
+
+    at.selectbox(key="guides_pending_vendor").select("SCHAVA").run()
+    assert not at.dataframe
+    assert any("No hay solicitudes en espera" in item.value for item in at.success)
 
 class FakeOrdersSheet(FakeWorksheet):
     def __init__(self, headers):

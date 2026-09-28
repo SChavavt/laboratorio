@@ -116,7 +116,8 @@ LAB_WORKSPACE_DETAILS = {
     },
     LAB_VIEW_GUIDES: {
         "title": "Solicitudes de guía",
-        "subtitle": "Solicita guías DHL como ARTTD JIMENA y consulta las que ya cargó almacén.",
+        "subtitle": "Solicita guías DHL como ARTTD JIMENA, revisa las que siguen en espera "
+                    "y consulta las que ya cargó almacén.",
         "badge": "📋 GUÍAS DE ENVÍO",
     },
 }
