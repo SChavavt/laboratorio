@@ -326,7 +326,7 @@ def test_request_form_registers_guide_like_app_v():
     assert str(request["fecha_entrega"]) == "2026-09-24"
     assert any("Solicitud de guía registrada para JUAN MEJIA (ID PED-TEST)." in item.value
                for item in at.success)
-    assert any("⏳ En espera" in item.value for item in at.caption)
+    assert any(guides.GUIDES_PENDING_LOCATION in item.value for item in at.caption)
     # Se vuelven a leer las hojas para que la solicitud nueva ya salga en espera.
     assert guides.GUIDES_REFRESH_TOKEN_KEY in at.session_state
     at.button(key="guides_request_clear").click().run()
@@ -344,32 +344,50 @@ def test_loaded_tab_lists_the_guide_and_its_link():
     assert not at.exception
     assert at.selectbox(key="guides_filter_vendor").value == "ARTTD JIMENA"
     assert at.selectbox(key="guides_selected_order").value == "📋 PED-A – JUAN MEJIA – ARTTD JIMENA · 24/09/26"
-    table = at.dataframe[0].value
+    # La primera tabla es la de solicitudes en espera, dentro del expander.
+    table = at.dataframe[1].value
     assert list(table.columns) == list(guides.TABLE_COLUMNS.values())
     assert table["Destinatario"].tolist() == ["JUAN MEJIA"] and table["Registro"].tolist() == ["En curso"]
     texts = [item.value for item in [*at.markdown, *at.info, *at.caption, *at.subheader]]
     assert texts and not any("pedido" in text.lower() for text in texts)
 
 
-
-def test_pending_tab_lists_requests_waiting_for_their_guide():
+def test_loaded_tab_folds_pending_requests_in_an_expander():
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_string(GUIDES_SCRIPT, default_timeout=15)
-    at.session_state["guides_primary_tabs_Jime"] = guides.GUIDES_TAB_PENDING
+    at.session_state["guides_primary_tabs_Jime"] = guides.GUIDES_TAB_LOADED
     at.run()
     assert not at.exception
+    assert [tab.label for tab in at.tabs] == [guides.GUIDES_TAB_REQUEST, guides.GUIDES_TAB_LOADED]
+    expander = at.expander[0]
+    assert expander.label == "⏳ En espera de guía: 1"
     assert at.selectbox(key="guides_pending_vendor").value == "ARTTD JIMENA"
-    table = at.dataframe[0].value
+    table = expander.dataframe[0].value
     assert list(table.columns) == list(guides.PENDING_TABLE_COLUMNS.values())
     assert table["Destinatario"].tolist() == ["ANA ESPERA"] and table["En espera"].tolist() == ["1 h"]
-    assert any("En espera: 1" in item.value for item in at.markdown)
+    assert any("La más antigua lleva 1 h" in item.value for item in expander.markdown)
     texts = [item.value for item in [*at.markdown, *at.info, *at.caption, *at.subheader]]
     assert not any("pedido" in text.lower() for text in texts)
 
     at.selectbox(key="guides_pending_vendor").select("SCHAVA").run()
-    assert not at.dataframe
-    assert any("No hay solicitudes en espera" in item.value for item in at.success)
+    expander = at.expander[0]
+    assert expander.label == "⏳ En espera de guía: 0" and not expander.dataframe
+    assert any("No hay solicitudes en espera" in item.value for item in expander.success)
+
+
+def test_pending_expander_shows_even_without_loaded_guides():
+    from streamlit.testing.v1 import AppTest
+
+    script = GUIDES_SCRIPT.replace('"Adjuntos_Guia": "https://b/g1.pdf"', '"Adjuntos_Guia": ""')
+    assert script != GUIDES_SCRIPT
+    at = AppTest.from_string(script, default_timeout=15)
+    at.session_state["guides_primary_tabs_Jime"] = guides.GUIDES_TAB_LOADED
+    at.run()
+    assert not at.exception
+    assert at.expander[0].label == "⏳ En espera de guía: 2"
+    assert any("Todavía no hay solicitudes de guía con la guía cargada." in item.value for item in at.info)
+
 
 class FakeOrdersSheet(FakeWorksheet):
     def __init__(self, headers):
