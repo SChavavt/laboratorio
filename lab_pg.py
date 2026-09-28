@@ -5864,13 +5864,20 @@ def workbench_form_option_label(column: str, value: str) -> str:
 
 
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
-    catalog = get_workbench_form_catalog()
+    catalog = dict(get_workbench_form_catalog())
+    candidate = order_detail.stage_source(row, "apparatus", ID_COLUMN, STATUS_COLUMN)
+    catalog[APARATO_COLUMN] = list(APARATO_OPTIONS)
+    catalog[STATUS_COLUMN] = list(dict.fromkeys([candidate.get(STATUS_COLUMN, ""),
+        *[normalize_status_alias(value) for value in workbench_stage_options(candidate, current_user)]]))
     fields = order_detail.detail_columns(row.index,
         workbench_editable_columns(current_user, row.index), BUSINESS_ORDER)
     result = order_detail.render_editor(row, namespace="apparatus", id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
         option_label=workbench_form_option_label, palettes=SHEET_STYLE_COLORS,
-        multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row])),
+        primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
+        multiple={APARATO_COLUMN, *dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]))},
+        multi_codecs={APARATO_COLUMN: (lambda value, _: apparatus_components(value),
+                                      lambda values: canonical_apparatus_value(" + ".join(values)))},
         equivalent=values_equivalent_for_column, parse_date=parse_simple_date, format_date=format_sheet_date,
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
         format_datetime=format_sheet_datetime, now=app_now)

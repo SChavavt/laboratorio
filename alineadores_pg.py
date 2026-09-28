@@ -2094,7 +2094,7 @@ def validate_delta(
             errors.append(f"{identifier}: la fecha de {column} no es válida.")
     if STATUS_COLUMN in delta:
         previous = canonical_status(row.get(STATUS_COLUMN, ""), configured_statuses(definitions))
-        product = row.get(PRODUCT_COLUMN, "")
+        product = delta.get(PRODUCT_COLUMN, row.get(PRODUCT_COLUMN, ""))
         allowed_for = get_reactivation_statuses if reactivate else get_allowed_next_statuses
         allowed = allowed_for(product, previous, definitions)
         new = canonical_status(delta[STATUS_COLUMN], configured_statuses(definitions))
@@ -2169,7 +2169,7 @@ def save_workbench_changes(
             try:
                 register_status_change(
                     identifier=identifier,
-                    product=clean_cell(row.get(PRODUCT_COLUMN, "")).strip(),
+                    product=clean_cell(delta.get(PRODUCT_COLUMN, row.get(PRODUCT_COLUMN, ""))).strip(),
                     previous_status=previous_status,
                     new_status=delta[STATUS_COLUMN],
                     current_user=current_user,
@@ -2733,16 +2733,23 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
 
     namespace = tracking_key("aligners")
     try:
-        catalog = get_order_form_catalog()
+        catalog = dict(get_order_form_catalog())
     except Exception:
         st.warning("No se pudieron cargar las listas de Sheets. Pulsa Actualizar datos para volver a intentarlo.")
         return
+    candidate = order_detail.stage_source(row, namespace, ID_COLUMN, STATUS_COLUMN)
+    catalog[STATUS_COLUMN] = list(dict.fromkeys([candidate.get(STATUS_COLUMN, ""),
+        *get_allowed_next_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""), definitions)]))
     fields = order_detail.detail_columns(tracking_columns(row.index),
         aligners_editable_columns(row.index) if current_user in APP_USERS else set(), BUSINESS_ORDER)
     labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
+    labels.update({STATUS_COLUMN: "🚦 STATUS", "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
+                   "NOMBRE PACIENTE": "🙂 NOMBRE PACIENTE", "DETALLE COMENTARIOS": "📝 DETALLE COMENTARIOS"})
     labels.update({column: "📅 " + column.replace("_", " · ") for column in fields if "FECHA" in column})
     result = order_detail.render_editor(row, namespace=namespace, id_column=ID_COLUMN,
-        columns=fields, catalog=catalog, labels=labels, option_label=new_order_option_label,
+        columns=fields, catalog=catalog, labels=labels,
+        option_label=lambda column, value: status_display_value(value, definitions) if column == STATUS_COLUMN else new_order_option_label(column, value),
+        primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
         palettes=order_dropdown_palettes(catalog), multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
         equivalent=values_equivalent, parse_date=parse_simple_date,
         format_date=lambda value: value.isoformat(), now=app_now)

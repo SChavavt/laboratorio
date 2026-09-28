@@ -33,11 +33,11 @@ def restore_demo_overrides():
         setattr(module, name, value)
 
 
-def test_fields_exclude_pinned_computed_and_totals():
+def test_fields_start_with_pinned_business_columns_and_exclude_computed_and_totals():
     columns = [lab.ID_COLUMN, *APPARATUS_PINNED, 'VENDEDOR', 'FECHA ENVÍO', 'SEMÁFORO', '_SHEET_ROW']
-    assert detail.detail_columns(columns, lab.workbench_editable_columns('Jime', columns), APPARATUS_PINNED) == ['VENDEDOR', 'FECHA ENVÍO']
+    assert detail.detail_columns(columns, lab.workbench_editable_columns('Jime', columns), APPARATUS_PINNED) == [*APPARATUS_PINNED, 'VENDEDOR', 'FECHA ENVÍO']
     columns = [align.ID_COLUMN, *ALIGNERS_PINNED, 'SERVICIO', 'FECHA ENVÍO_2', 'Total_2', '_SHEET_ROW']
-    assert detail.detail_columns(columns, align.aligners_editable_columns(columns), ALIGNERS_PINNED) == ['SERVICIO', 'FECHA ENVÍO_2']
+    assert detail.detail_columns(columns, align.aligners_editable_columns(columns), ALIGNERS_PINNED) == [*ALIGNERS_PINNED, 'SERVICIO', 'FECHA ENVÍO_2']
 
 
 def test_catalog_reads_unused_values_and_cell_validation_without_private_row_values():
@@ -157,7 +157,7 @@ def test_form_saves_only_selected_id_and_changed_fields_then_stays_open():
     assert not at.exception
     assert any(item.value == 'Pedido · Cliente A' for item in at.subheader)
     assert button(at, '💾 Guardar este pedido').disabled
-    assert not any('NOMBRE DOCTOR' in item.label for item in at.text_input)
+    assert any('NOMBRE DOCTOR' in item.label for item in at.text_input)
     field(at, 'VENDEDOR').select('MICHELLE').run()
     assert not at.exception
     assert at.text_input(key='workbench_search').disabled
@@ -356,3 +356,76 @@ app.render_aligner_order_editor(pd.Series(st.session_state.row), 'Jime', {{}})
     button(at, '💾 Guardar este pedido').click().run()
     assert at.session_state['attempt'] == [('001', {'VENDEDOR': 'MICHELLE'})]
     assert at.session_state['row']['ARCHIVOS RECIBIDOS'] == 'STLs, FOTO INTRA'
+
+
+def test_apparatus_primary_fields_and_combination_save_with_secondary_fields():
+    at = apparatus_app()
+    sections = [item for item in at.expander if item.label in {
+        '📋 Servicio y archivos', '📅 Fechas y entrega', '📝 Notas', '💳 Pagos', '📦 Otros datos'}]
+    assert sections and all(not item.proto.expanded for item in sections)
+    assert not any('NOMBRE DOCTOR' in widget.label for section in sections for widget in section.text_input)
+    doctor = next(item for item in at.text_input if 'NOMBRE DOCTOR' in item.label)
+    doctor.input('Cliente corregido').run()
+    apparatus = next(item for item in at.multiselect if 'APARATO' in item.label)
+    apparatus.select('TIGER').run()
+    field(at, 'VENDEDOR').select('MICHELLE').run()
+    assert not at.exception
+    combination = lab.canonical_apparatus_value('MSE + TIGER')
+    candidate = pd.Series({lab.ID_COLUMN: '001', lab.APARATO_COLUMN: combination,
+                          lab.STATUS_COLUMN: 'REVISIÓN DE ARCHIVOS'})
+    expected = lab.workbench_stage_options(candidate, 'Jime')
+    assert field(at, 'STATUS').options == [lab.workbench_form_option_label(lab.STATUS_COLUMN, lab.normalize_status_alias(value)) for value in expected]
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('001', {
+        'APARATO': combination, 'NOMBRE DOCTOR': 'Cliente corregido', 'VENDEDOR': 'MICHELLE'})]
+    assert any(item.value == 'Pedido · Cliente corregido' for item in at.subheader)
+
+
+@pytest.mark.parametrize('sheet', [align.SHEET_ORDERS, align.SHEET_POLANCO])
+def test_aligner_primary_product_and_status_follow_the_new_product_flow(sheet):
+    matrix = [['Graphy', '', 'CONVENC.', ''], ['Fases', 'Tiempo', 'Fases', 'Tiempo'],
+              ['REVISIÓN DE ARCHIVOS', '1 día', 'REVISIÓN DE ARCHIVOS', '1 día'],
+              ['EN PLANEACIÓN', '1 día', 'POR HACER SETUP', '1 día']]
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import streamlit as st
+import alineadores_pg as app
+st.session_state['aligners_order_sheet'] = {sheet!r}
+definitions = app.parse_process_matrix({matrix!r})
+st.session_state.setdefault('row', {{app.ID_COLUMN: '001', app.STATUS_COLUMN: 'REVISIÓN DE ARCHIVOS',
+    app.PRODUCT_COLUMN: 'GRAPHY', 'NOMBRE DOCTOR': 'Cliente demo', 'NOMBRE PACIENTE': 'Paciente demo',
+    'TIPO': 'ARTTDLAB', 'ETAPA SOLICITUD': 'NUEVO', 'DETALLE COMENTARIOS': '',
+    'ARCHIVOS RECIBIDOS': 'STLs', 'FECHA OBJETIVO ENVÍO': ''}})
+app.get_order_form_catalog = lambda: {{'PRODUCTO': ['GRAPHY', 'CONVENC.'], 'TIPO': ['ARTTDLAB', 'MARCA BLANCA'],
+    'ETAPA SOLICITUD': ['NUEVO', 'REFIN'], 'ARCHIVOS RECIBIDOS': ['STLs', 'TOMO']}}
+def save(source, baseline, edited, user, definitions, **kwargs):
+    changes = app.grid_changes(baseline, edited, definitions)
+    errors = app.validate_delta(source.iloc[0], dict(changes)['001'], definitions)
+    if errors:
+        return [], errors
+    st.session_state['attempt'] = changes
+    st.session_state.row.update(dict(changes)['001'])
+    return ['001'], []
+app.save_workbench_changes = save
+app.render_aligner_order_editor(pd.Series(st.session_state.row), 'Jime', definitions)
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert len(at.expander) == 2 and all(not item.proto.expanded for item in at.expander)
+    field(at, 'STATUS').select('EN PLANEACIÓN').run()
+    field(at, 'PRODUCTO').select('CONVENC.').run()
+    assert not at.exception
+    assert field(at, 'STATUS').value == 'REVISIÓN DE ARCHIVOS'
+    assert not any('EN PLANEACIÓN' in option for option in field(at, 'STATUS').options)
+    field(at, 'STATUS').select('POR HACER SETUP').run()
+    next(item for item in at.text_input if 'NOMBRE PACIENTE' in item.label).input('Paciente corregido').run()
+    next(item for item in at.multiselect if 'ARCHIVOS RECIBIDOS' in item.label).select('TOMO').run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception and not at.error
+    assert at.session_state['row']['PRODUCTO'] == 'CONVENC.'
+    assert at.session_state['row']['STATUS'] == 'POR HACER SETUP'
+    assert at.session_state['row']['NOMBRE PACIENTE'] == 'Paciente corregido'
+    assert at.session_state['row']['ARCHIVOS RECIBIDOS'] == 'STLs, TOMO'
