@@ -171,7 +171,9 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     assert any(item.label == '💰 ADEUDO' for item in at.number_input)
     assert len(at.text_input) == 2
     assert not any('Orden' in item.label for item in at.text_input)
-    assert len(at.selectbox) == 7
+    assert len(at.selectbox) == 6
+    files = next(item for item in at.multiselect if 'ARCHIVOS RECIBIDOS' in item.label)
+    files.select('STLs').select('TOMO')
     product = next(item for item in at.selectbox if 'PRODUCTO' in item.label)
     assert product.options == ['🔵 CONVENC.', '🟠 GRAPHY']
     product.select('GRAPHY')
@@ -182,6 +184,7 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     assert not at.exception
     assert at.session_state['created_in'] == app.SHEET_POLANCO
     assert at.session_state['created_values']['NOMBRE PACIENTE'] == 'Ejemplo'
+    assert at.session_state['created_values']['ARCHIVOS RECIBIDOS'] == 'STLs, TOMO'
 
 
 @pytest.mark.parametrize('sheet_name,times_name,other_name', [
@@ -267,3 +270,17 @@ def test_dropdown_raw_values_written_without_visual_prefixes(sheets):
                      'Jime', definitions(), catalog=FORM_CATALOG)
     assert sheet.values[-1][-2:] == ['JIMENA', 'NO APLICA ']
     assert sheet.values[-1][2] == 'GRAPHY'
+
+
+def test_multiple_files_are_validated_and_written_as_native_values(sheets):
+    sheet = sheets[app.SHEET_ORDERS]
+    sheet.values[1].append('ARCHIVOS RECIBIDOS')
+    values = {'PRODUCTO': 'GRAPHY', 'NOMBRE DOCTOR': 'Demo',
+              'NOMBRE PACIENTE': 'Demo', 'ARCHIVOS RECIBIDOS': 'STLs, TOMO'}
+    app.create_order(values, 'Jime', definitions(), catalog=FORM_CATALOG)
+    assert sheet.values[-1][-1] == 'STLs, TOMO'
+    before = copy.deepcopy(sheet.values)
+    with pytest.raises(ValueError, match='catálogo'):
+        app.create_order({**values, 'ARCHIVOS RECIBIDOS': 'STLs, INVÁLIDO'},
+                         'Jime', definitions(), catalog=FORM_CATALOG)
+    assert sheet.values == before

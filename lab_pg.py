@@ -26,6 +26,9 @@ from streamlit.errors import StreamlitAPIException
 import alineadores_pg
 import guias_pg
 import order_detail
+from grid_interactions import response_frame
+import dropdown_fields
+from copy import deepcopy
 from workbench_grid import BUSINESS_ORDER, build_grid_options, render_grid
 
 # ==============================
@@ -2129,7 +2132,10 @@ def validate_status_change(
 def get_latest_estefano_files(identifier: str) -> str:
     """Devuelve el último link de archivos de Estefano guardado en TIEMPOS_APARATOS."""
 
-    tiempos_df = read_sheet_df(SHEET_TIEMPOS)
+    return latest_estefano_files_from_frame(identifier, read_sheet_df(SHEET_TIEMPOS))
+
+
+def latest_estefano_files_from_frame(identifier: str, tiempos_df: pd.DataFrame) -> str:
     if tiempos_df.empty or ID_COLUMN not in tiempos_df.columns or "ARCHIVOS_ESTEFANO_URL" not in tiempos_df.columns:
         return ""
     matches = tiempos_df[
@@ -5514,7 +5520,8 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
 
 def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str,
                            *, preferred_order: list[str] | None = None,
-                           hidden_columns: set[str] | None = None) -> dict:
+                           hidden_columns: set[str] | None = None,
+                           select_catalog: dict | None = None) -> dict:
     editable = workbench_editable_columns(current_user, grid.columns)
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
     stages = {row[ID_COLUMN]: workbench_stage_options(row, current_user)
@@ -5544,10 +5551,11 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                     candidate, current_user
                 )
             apparatus_stage_options[identifier][signature] = stage_cache[cache_key]
-    selections = {column: list(dict.fromkeys([
-        *(display_selectbox_value(column, value) for value in SELECTBOX_OPTIONS_BY_COLUMN[column]),
-        *grid[column],
-    ])) for column in editable & set(SELECTBOX_OPTIONS_BY_COLUMN) - {STATUS_COLUMN} if column in grid}
+    catalog = {**SELECTBOX_OPTIONS_BY_COLUMN, **(select_catalog or {})}
+    selections = {column: list(dict.fromkeys(
+        display_selectbox_value(column, value) for value in catalog[column]
+    )) for column in editable & set(catalog) - {STATUS_COLUMN} if column in grid}
+    multiple = dropdown_fields.multiple_columns(catalog, source)
     dates = {}
     for column in editable & (DATE_COLUMNS | DATETIME_TEXT_COLUMNS) & set(grid):
         parser = parse_simple_date if column in DATE_COLUMNS else parse_spanish_datetime
@@ -5560,7 +5568,7 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
         for column, palette in SHEET_STYLE_COLORS.items()
     }
     palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
-    return build_grid_options(grid, editable=editable, automatic=WORKBENCH_AUTOMATIC_COLUMNS,
+    options = build_grid_options(grid, editable=editable, automatic=WORKBENCH_AUTOMATIC_COLUMNS,
                               stage_options=stages, select_options=selections,
                               date_values=dates, datetime_columns=DATETIME_TEXT_COLUMNS,
                               palettes=palettes, time_zone=APP_TIMEZONE_NAME,
@@ -5568,6 +5576,8 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                               apparatus_options=APARATO_OPTIONS,
                               apparatus_stage_options=apparatus_stage_options,
                               apparatus_flow_keys=apparatus_flow_keys)
+    return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
+        palettes=palettes, labeler=lambda column, value: display_selectbox_value(column, clean_display_value(value)))
 
 
 def workbench_saved_column_order(current_user: str, available_columns: Any) -> list[str]:
@@ -5647,6 +5657,7 @@ def validate_workbench_changes(
         if conflicts:
             errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
             continue
+        multiple = dropdown_fields.multiple_columns(select_catalog or {}, original)
         for column, value in delta.items():
             if column == APARATO_COLUMN:
                 if not is_valid_apparatus_combination(value):
@@ -5655,7 +5666,7 @@ def validate_workbench_changes(
                     )
             elif column in {**SELECTBOX_OPTIONS_BY_COLUMN, **(select_catalog or {})} and column != STATUS_COLUMN:
                 options = (select_catalog or {}).get(column, SELECTBOX_OPTIONS_BY_COLUMN.get(column, []))
-                if value and value.strip() not in {str(option).strip() for option in options}:
+                if not dropdown_fields.valid_value(value, options, multiple=column in multiple, previous=old.get(column, "")):
                     errors.append(f"{identifier}: valor no permitido para {column}.")
             if column in DATE_COLUMNS and value and parse_simple_date(value) is None:
                 errors.append(f"{identifier}: fecha no reconocida en {column}.")
@@ -5700,7 +5711,8 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
         return [], [str(exc)]
     if not changes:
         return [], []
-    order_detail.restore_catalog_values(changes, select_catalog)
+    order_detail.restore_catalog_values(changes, select_catalog,
+        dropdown_fields.multiple_columns(select_catalog or {}, original))
     clear_sheet_data_cache()
     fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
     errors = validate_workbench_changes(original, fresh, changes, current_user, select_catalog=select_catalog)
@@ -5797,10 +5809,10 @@ def workbench_grid_pending_count() -> int:
         return 0
     state = st.session_state.get(key) or {}
     baseline = st.session_state.get("workbench_editor_baseline")
-    if baseline is None or state.get("rows") is None:
+    if baseline is None or not state:
         return 0
     try:
-        return len(workbench_changes(baseline, pd.DataFrame(state["rows"])))
+        return len(workbench_changes(baseline, response_frame(baseline, state, ID_COLUMN)))
     except ValueError:
         # Un resultado incompleto tampoco debe permitir refrescar y perder ediciones.
         return 1
@@ -5858,6 +5870,7 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     result = order_detail.render_editor(row, namespace="apparatus", id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
         option_label=workbench_form_option_label, palettes=SHEET_STYLE_COLORS,
+        multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row])),
         equivalent=values_equivalent_for_column, parse_date=parse_simple_date, format_date=format_sheet_date,
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
         format_datetime=format_sheet_datetime, now=app_now)
@@ -5925,18 +5938,21 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
         else:
             st.caption("Este pedido es de consulta para tu usuario en su etapa actual.")
         render_workbench_order_editor(row, current_user)
-        latest_files = get_latest_estefano_files(identifier)
+        times = st.session_state.get("workbench_snapshot", {}).get("times", pd.DataFrame())
+        latest_files = latest_estefano_files_from_frame(identifier, times)
         for url in latest_files.splitlines():
             if url.strip().startswith(("https://", "http://")):
                 st.link_button("Abrir archivo del pedido", url.strip())
         if not form_pending and row[STATUS_COLUMN] in PLANNING_STATUSES and user_can_edit_tab(current_user, "Jime"):
-            with st.expander("Archivos de planeación y diseño"):
-                render_estefano_shipping_tab(current_user, True, selected_row=row)
+            with st.expander("Archivos de planeación y diseño", key=f"detail_files_{identifier}", on_change="rerun") as files:
+                if files.open:
+                    render_estefano_shipping_tab(current_user, True, selected_row=row)
         if not form_pending and row[STATUS_COLUMN] in PAYMENT_STATUSES and user_can_edit_tab(current_user, "Pagos"):
-            with st.expander("Registrar y autorizar pago", expanded=True):
-                render_pagos_tab(current_user, selected_row=row)
+            with st.expander("Registrar y autorizar pago", key=f"detail_payment_{identifier}", on_change="rerun") as payment:
+                if payment.open:
+                    render_pagos_tab(current_user, selected_row=row)
         with st.expander("Historial del pedido"):
-            history = canonical_workbench_df(read_sheet_df(SHEET_TIEMPOS))
+            history = canonical_workbench_df(times)
             if ID_COLUMN in history:
                 history = history[history[ID_COLUMN] == identifier]
             fields = [column for column in [STATUS_COLUMN, "USUARIO", "FECHA_INICIO", "HORA_INICIO",
@@ -6081,12 +6097,13 @@ def render_workbench(current_user: str) -> None:
         snapshot is None
         or snapshot.get("user") != current_user
         or "paused_table" not in snapshot
+        or "times" not in snapshot
     ):
         estatus = read_sheet_df(SHEET_ESTATUS)
         tiempos = read_sheet_df(SHEET_TIEMPOS)
         table = build_workbench_table(estatus, tiempos)
         paused_table = build_workbench_table(estatus, tiempos, paused_only=True)
-        snapshot = {"user": current_user, "table": table, "paused_table": paused_table, "at": app_now()}
+        snapshot = {"user": current_user, "table": table, "paused_table": paused_table, "times": tiempos, "at": app_now()}
         st.session_state["workbench_snapshot"] = snapshot
     table = snapshot["table"]
     paused_table = snapshot.get("paused_table", table.iloc[0:0])
@@ -6229,9 +6246,15 @@ def render_workbench(current_user: str) -> None:
         editable = workbench_editable_columns(current_user, grid.columns)
         hidden = set(WORKBENCH_AUTOMATIC_COLUMNS) if hide_automatic else set()
         saved_order = workbench_saved_column_order(current_user, grid.columns)
-        grid_options = workbench_grid_options(
-            grid, filtered, current_user, preferred_order=saved_order, hidden_columns=hidden
-        )
+        catalog = get_workbench_form_catalog()
+        config_signature = (key, tuple(saved_order))
+        cached = st.session_state.get("workbench_grid_configuration")
+        if not cached or cached[0] != config_signature:
+            cached = (config_signature, workbench_grid_options(
+                grid, filtered, current_user, preferred_order=saved_order,
+                hidden_columns=hidden, select_catalog=catalog))
+            st.session_state["workbench_grid_configuration"] = cached
+        grid_options = deepcopy(cached[1])
         form_pending = bool(order_detail.pending_count("apparatus"))
         order_detail.lock_grid(grid_options, form_pending)
         # Se consume una sola vez: el próximo guardado deja su propio folio.
@@ -6242,6 +6265,7 @@ def render_workbench(current_user: str) -> None:
         edited, current_order = render_grid(grid, grid_options, key)
         selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
         st.session_state["workbench_selected_ids"] = selected_ids.tolist()
+        order_detail.note_selection(selected_ids.tolist(), "apparatus", edited.attrs.get("activeId"))
         selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
         try:
             changes = workbench_changes(grid, edited)
@@ -6252,7 +6276,7 @@ def render_workbench(current_user: str) -> None:
         if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending, use_container_width=True):
             st.session_state.pop("workbench_save_errors", None)
             changed_ids = [identifier for identifier, _ in changes]
-            saved, errors = save_workbench_changes(grid, edited, current_user)
+            saved, errors = save_workbench_changes(grid, edited, current_user, select_catalog=catalog)
             if errors and not saved and "workbench_snapshot" in st.session_state:
                 for error in errors:
                     st.error(error)

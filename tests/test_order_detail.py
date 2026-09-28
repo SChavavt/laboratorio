@@ -270,3 +270,89 @@ def test_equal_folios_have_isolated_drafts_between_areas(monkeypatch):
     detail.clear_drafts('polanco_aligners')
     assert detail.pending_count('apparatus') == detail.pending_count('aligners') == 1
     assert detail.pending_count('polanco_aligners') == 0
+
+
+def test_compact_selection_opens_last_checked_order_and_retains_manual_choice():
+    at = AppTest.from_string(APPARATUS_SCRIPT, default_timeout=15).run()
+    key = at.session_state['workbench_editor_key']
+    component = at.get('component_instance')[0].proto.id
+    for identifiers, active, customer in [(['001'], '001', 'Cliente A'),
+            (['001', '002'], '002', 'Cliente B'), (['001'], None, 'Cliente A'),
+            ([], None, None), (['002'], '002', 'Cliente B')]:
+        at.session_state[key] = {'selectedIds': identifiers, 'activeId': active, 'editedRows': []}
+        at.run()
+        assert not at.exception
+        assert at.get('component_instance')[0].proto.id == component
+        assert not at.text_input(key='workbench_search').disabled
+        assert at.session_state['workbench_selected_ids'] == [i for i in ['002', '001'] if i in identifiers]
+        if customer:
+            assert any(item.value == 'Pedido · ' + customer for item in at.subheader)
+        else:
+            assert not any(item.value.startswith('Pedido · ') for item in at.subheader)
+    at.session_state[key] = {'selectedIds': ['001', '002'], 'activeId': '001', 'editedRows': []}
+    at.run()
+    field(at, 'Pedido para editar').select('002').run()
+    assert any(item.value == 'Pedido · Cliente B' for item in at.subheader)
+    # La respuesta de la tabla sigue trayendo activeId=001 en corridas ajenas;
+    # no debe deshacer la elección manual del selector de fichas.
+    at.run()
+    assert any(item.value == 'Pedido · Cliente B' for item in at.subheader)
+
+
+def test_selecting_planning_order_does_not_fetch_closed_sections():
+    script = APPARATUS_SCRIPT.replace('app.main()', '''
+app.render_estefano_shipping_tab = lambda *a, **k: (_ for _ in ()).throw(AssertionError("Sección cerrada"))
+app.render_pagos_tab = lambda *a, **k: (_ for _ in ()).throw(AssertionError("Sección cerrada"))
+def read_counted(name):
+    st.session_state['reads'] = st.session_state.get('reads', 0) + 1
+    return pd.DataFrame(st.session_state.demo_rows) if name == app.SHEET_ESTATUS else pd.DataFrame()
+app.read_sheet_df = read_counted
+app.main()
+''').replace('"REVISIÓN DE ARCHIVOS"', '"EN PLANEACIÓN"')
+    originals = lab.render_estefano_shipping_tab, lab.render_pagos_tab
+    try:
+        at = AppTest.from_string(script, default_timeout=15).run()
+        reads = at.session_state['reads']
+        key = at.session_state['workbench_editor_key']
+        for identifier in ['001', '002', '001']:
+            at.session_state[key] = {'selectedIds': [identifier], 'editedRows': []}
+            at.run()
+            assert not at.exception
+        assert at.session_state['reads'] == reads
+    finally:
+        lab.render_estefano_shipping_tab, lab.render_pagos_tab = originals
+
+
+@pytest.mark.parametrize('sheet', [align.SHEET_ORDERS, align.SHEET_POLANCO])
+def test_files_form_adds_and_removes_options_without_overwriting_other_fields(sheet):
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import streamlit as st
+import alineadores_pg as app
+st.session_state['aligners_order_sheet'] = {sheet!r}
+st.session_state.setdefault('row', {{app.ID_COLUMN: '001', app.STATUS_COLUMN: 'REVISIÓN DE ARCHIVOS',
+    app.PRODUCT_COLUMN: 'GRAPHY', 'NOMBRE DOCTOR': 'Cliente demo', 'ARCHIVOS RECIBIDOS': 'STLs, TOMO',
+    'VENDEDOR': 'JIMENA'}})
+app.get_order_form_catalog = lambda: {{'ARCHIVOS RECIBIDOS': ['STLs', 'TOMO', 'FOTO INTRA'], 'VENDEDOR': ['JIMENA', 'MICHELLE']}}
+def save(source, baseline, edited, user, definitions, **kwargs):
+    changes = app.grid_changes(baseline, edited, definitions)
+    st.session_state['attempt'] = changes
+    st.session_state.row.update(dict(changes)['001'])
+    return ['001'], []
+app.save_workbench_changes = save
+app.render_aligner_order_editor(pd.Series(st.session_state.row), 'Jime', {{}})
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    files = next(item for item in at.multiselect if 'ARCHIVOS RECIBIDOS' in item.label)
+    assert files.value == ['STLs', 'TOMO']
+    files.select('FOTO INTRA').unselect('TOMO').run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('001', {'ARCHIVOS RECIBIDOS': 'STLs, FOTO INTRA'})]
+    field(at, 'VENDEDOR').select('MICHELLE').run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert at.session_state['attempt'] == [('001', {'VENDEDOR': 'MICHELLE'})]
+    assert at.session_state['row']['ARCHIVOS RECIBIDOS'] == 'STLs, FOTO INTRA'

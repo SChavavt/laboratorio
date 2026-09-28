@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 from st_aggrid import AgGrid, JsCode
+from grid_interactions import COLLECT_ROWS, configure_selection, response_frame
 
 BUSINESS_ORDER = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
 
@@ -25,15 +26,17 @@ def apparatus_editor():
     )
 
 
-COLLECT_ROWS = JsCode("""function(params) {
-    const rows = [];
-    params.eventData.api.forEachNode(node => rows.push(node.data));
-    const columnOrder = params.eventData.api.getColumnState()
-        .map(column => column.colId).filter(Boolean);
-    return {rows: rows, columnOrder: columnOrder};
-}""")
-
 GRID_CSS = {
+    ".lab-dropdown-chips": {"display": "flex", "flex-wrap": "wrap", "gap": "4px", "padding": "4px 0", "line-height": "22px", "min-width": "0"},
+    ".lab-dropdown-chip": {"border-radius": "12px", "padding": "0 9px", "font-size": "12px", "font-weight": "600", "max-width": "100%", "overflow": "hidden", "text-overflow": "ellipsis", "white-space": "nowrap"},
+    ".lab-dropdown-editor": {"background": "#FFFFFF", "border": "1px solid #B199D4", "border-radius": "12px", "padding": "12px", "width": "320px", "box-shadow": "0 8px 24px #39236530", "display": "grid", "gap": "10px", "font": "14px sans-serif", "color": "#392365"},
+    ".lab-dropdown-editor input": {"padding": "9px", "border": "1px solid #CBBDE3", "border-radius": "7px", "font": "inherit"},
+    ".lab-dropdown-list": {"display": "grid", "gap": "5px", "max-height": "240px", "overflow-y": "auto"},
+    ".lab-dropdown-option": {"text-align": "left", "padding": "8px 12px", "border": "2px solid transparent", "border-radius": "9px", "cursor": "pointer", "font": "inherit"},
+    ".lab-dropdown-option[aria-pressed='true']": {"border-color": "#68419D", "font-weight": "700"},
+    ".lab-dropdown-option:focus-visible": {"outline": "2px solid #68419D"},
+    ".lab-order-check": {"width": "19px", "height": "19px", "cursor": "pointer", "accent-color": "#7443AA", "vertical-align": "middle"},
+    ".lab-row-open": {"background": "#EDE2FF !important"},
     ".ag-root-wrapper": {"border": "2px solid #B199D4", "border-radius": "12px", "width": "100%", "max-width": "100%"},
     ".ag-root-wrapper-body": {"width": "100%"},
     ".ag-root": {"width": "100%"},
@@ -289,6 +292,7 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
 
 
 def render_grid(grid: pd.DataFrame, options: dict, key: str) -> tuple[pd.DataFrame, list[str]]:
+    configure_selection(options, grid, "Columna 1")
     response = AgGrid(
         grid.copy(), gridOptions=options, key=key, height=min(680, max(270, 36 * (len(grid) + 1) + 24)),
         data_return_mode="CUSTOM", custom_jscode_for_grid_return=COLLECT_ROWS,
@@ -296,8 +300,6 @@ def render_grid(grid: pd.DataFrame, options: dict, key: str) -> tuple[pd.DataFra
         enable_enterprise_modules=False, server_sync_strategy="client_wins",
         theme="streamlit", custom_css=GRID_CSS, show_toolbar=False,
     )
-    rows = response.get("rows")
-    # El componente añade su identificador técnico; nunca pasa al guardado en Sheets.
-    edited = pd.DataFrame(rows).reindex(columns=grid.columns) if rows is not None else grid.copy()
+    edited = response_frame(grid, response, "Columna 1")
     order = response.get("columnOrder") or [column["field"] for column in options["columnDefs"]]
     return edited, order
