@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+import order_detail
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
@@ -612,7 +613,7 @@ def values_equivalent(column: str, old_value: Any, new_value: Any) -> bool:
         return status_key(old_text) == status_key(new_text)
     if column == PRODUCT_COLUMN:
         return product_key(old_text) == product_key(new_text)
-    if column in DATE_COLUMNS:
+    if column in DATE_COLUMNS or column.startswith("FECHA"):
         old_date, new_date = parse_simple_date(old_text), parse_simple_date(new_text)
         if old_date is not None and new_date is not None:
             return old_date == new_date
@@ -841,6 +842,8 @@ def login_user(username: str, password: str) -> bool:
 
 
 def logout_user() -> None:
+    for namespace in ("aligners", "polanco_aligners"):
+        order_detail.clear_drafts(namespace)
     for key in [
         "aligners_authenticated_user",
         "aligners_snapshot",
@@ -1805,6 +1808,9 @@ def update_order_row(
             continue
         updates.append(Cell(row_number, position, prepare_sheet_value(value)))
         result["updated_columns"].append(column)
+    if result["skipped_columns"]:
+        result["error"] = "Faltan columnas en la hoja: " + ", ".join(result["skipped_columns"])
+        return result
     if not updates:
         result["error"] = "No encontré encabezados válidos para los cambios."
         return result
@@ -2075,7 +2081,7 @@ def validate_delta(
         errors.append(f"{identifier}: no se puede editar {', '.join(sorted(invalid_columns))}.")
     if reactivate and set(delta) - {STATUS_COLUMN}:
         errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
-    for column in DATE_COLUMNS & set(delta):
+    for column in {column for column in delta if column in DATE_COLUMNS or column.startswith("FECHA")}:
         value = clean_cell(delta[column]).strip()
         if value and parse_simple_date(value) is None:
             errors.append(f"{identifier}: la fecha de {column} no es válida.")
@@ -2098,6 +2104,7 @@ def save_workbench_changes(
     definitions: dict[str, ProcessDefinition],
     *,
     reactivate: bool = False,
+    select_catalog: dict | None = None,
 ) -> tuple[list[str], list[str]]:
     """Guarda por número de orden; ``reactivate`` saca pedidos del histórico de Enviados."""
     try:
@@ -2106,10 +2113,24 @@ def save_workbench_changes(
         return [], [str(exc)]
     if not changes:
         return [], []
+    order_detail.restore_catalog_values(changes, select_catalog)
+
+    if current_user not in APP_USERS:
+        return [], ["Tu usuario no tiene permiso para editar pedidos."]
+    if source[ID_COLUMN].duplicated().any():
+        return [], ["Hay números de orden duplicados; corrige la hoja antes de guardar."]
 
     source_by_id = source.set_index(ID_COLUMN, drop=False)
     saved: list[str] = []
     errors: list[str] = []
+    # Prevalidar todo el lote antes del primer write evita aplicar sólo la parte válida.
+    for identifier, delta in changes:
+        if identifier not in source_by_id.index:
+            errors.append(f"{identifier}: el pedido ya no está en la vista actual.")
+        else:
+            errors.extend(validate_delta(source_by_id.loc[identifier], delta, definitions, reactivate=reactivate))
+    if errors:
+        return [], errors
     for identifier, delta in changes:
         if identifier not in source_by_id.index:
             errors.append(f"{identifier}: el pedido ya no está en la vista actual.")
@@ -2311,7 +2332,7 @@ def parse_order_form_catalogs(metadata: dict[str, Any]) -> dict[str, dict[str, l
             for column in table.get("columnProperties", []):
                 name = canonical_column_name(column.get("columnName", ""))
                 rule = column.get("dataValidationRule", {}).get("condition", {})
-                if name in NEW_ORDER_SELECT_COLUMNS and rule.get("type") == "ONE_OF_LIST":
+                if rule.get("type") == "ONE_OF_LIST":
                     catalog[name] = list(dict.fromkeys(
                         item["userEnteredValue"] for item in rule.get("values", [])
                         if str(item.get("userEnteredValue", "")).strip()))
@@ -2547,7 +2568,8 @@ def sent_change_count(definitions: dict[str, ProcessDefinition]) -> int:
 
 def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
     """Suma la mesa activa y el histórico de Enviados: refrescar perdería ambos."""
-    return editor_change_count("aligners", definitions) + sent_change_count(definitions)
+    return (editor_change_count("aligners", definitions) + sent_change_count(definitions)
+            + order_detail.pending_count(tracking_key("aligners")))
 
 
 # ==============================
@@ -2555,6 +2577,8 @@ def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
 # ==============================
 def get_snapshot(current_user: str) -> dict[str, Any]:
     snapshot = st.session_state.get(tracking_key("aligners_snapshot"))
+    if snapshot is not None and snapshot.get("user") != current_user:
+        order_detail.clear_drafts(tracking_key("aligners"))
     # Las sesiones abiertas antes del histórico de Enviados no traen "sent".
     if snapshot is None or snapshot.get("user") != current_user or "sent" not in snapshot:
         definitions = read_process_definitions()
@@ -2666,6 +2690,49 @@ def filter_tracking_table(
     return filtered.reset_index(drop=True)
 
 
+def aligners_batch_stages(selected: pd.DataFrame, definitions: dict) -> list[str]:
+    return order_detail.common_stages(selected,
+        lambda row: get_allowed_next_statuses(row.get(PRODUCT_COLUMN, ""), row.get(STATUS_COLUMN, ""), definitions),
+        STATUS_COLUMN, status_key)
+
+
+def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: dict) -> None:
+    from aligners_grid import BUSINESS_ORDER
+
+    namespace = tracking_key("aligners")
+    try:
+        catalog = get_order_form_catalog()
+    except Exception:
+        st.warning("No se pudieron cargar las listas de Sheets. Pulsa Actualizar datos para volver a intentarlo.")
+        return
+    fields = order_detail.detail_columns(tracking_columns(row.index),
+        aligners_editable_columns(row.index) if current_user in APP_USERS else set(), BUSINESS_ORDER)
+    labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
+    labels.update({column: "📅 " + column.replace("_", " · ") for column in fields if "FECHA" in column})
+    result = order_detail.render_editor(row, namespace=namespace, id_column=ID_COLUMN,
+        columns=fields, catalog=catalog, labels=labels, option_label=new_order_option_label,
+        palettes={}, equivalent=values_equivalent, parse_date=parse_simple_date,
+        format_date=lambda value: value.isoformat(), now=app_now)
+    if result:
+        baseline, delta = result
+        for column, value in delta.items():
+            if column in catalog and value and value not in catalog[column]:
+                st.error(f"La opción de {column} no pertenece al catálogo de Sheets.")
+                return
+        source = pd.DataFrame([baseline])
+        edited = pd.DataFrame([{**baseline, **delta}])
+        saved, errors = save_workbench_changes(source, source, edited, current_user, definitions,
+                                             select_catalog=catalog)
+        if saved:
+            order_detail.clear_drafts(namespace)
+            st.session_state[tracking_key("aligners_selected_ids")] = list(dict.fromkeys(
+                [*st.session_state.get(tracking_key("aligners_selected_ids"), []), *saved]))
+            st.session_state[tracking_key("aligners_feedback")] = (saved, errors, f"{order_detail.order_title(row)} guardado.")
+            rerun_active_tab()
+        for error in errors:
+            st.error(error)
+
+
 def render_case_actions(
     selected: pd.DataFrame,
     times_df: pd.DataFrame,
@@ -2673,31 +2740,46 @@ def render_case_actions(
     definitions: dict[str, ProcessDefinition],
     pending: bool,
 ) -> None:
-    if selected.empty:
-        st.caption("Marca la casilla de un pedido para ver sus datos, historial y acciones.")
+    namespace = tracking_key("aligners")
+    detail_rows = order_detail.rows_with_drafts(selected, namespace, ID_COLUMN)
+    if detail_rows.empty:
+        st.caption("☑️ Marca un pedido para editar su ficha; marca varios para aplicar acciones en lote.")
         return
     if pending:
         st.info("Guarda o descarta los cambios de la tabla antes de abrir acciones del pedido.")
         return
-    if len(selected) != 1:
-        st.caption("Selecciona un solo pedido para abrir su detalle e historial.")
+    st.markdown(f"### Pedidos seleccionados · {len(selected)}")
+    form_pending = bool(order_detail.pending_count(namespace))
+    if len(selected) > 1 and not form_pending:
+        with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
+            options = aligners_batch_stages(selected, definitions)
+            target = st.selectbox("Etapa para todos", options, index=None,
+                placeholder="Selecciona una etapa común", format_func=lambda value: status_display_value(value, definitions),
+                key=tracking_key("aligners_bulk_stage"))
+            st.caption("Sólo aparecen etapas y pausas permitidas para todos los pedidos marcados.")
+            if st.button(f"Aplicar a {len(selected)} pedidos", disabled=not target,
+                         key=tracking_key("aligners_bulk_apply")):
+                edited = selected.copy()
+                edited[STATUS_COLUMN] = target
+                saved, errors = save_workbench_changes(selected, selected, edited, current_user, definitions)
+                st.session_state[tracking_key("aligners_feedback")] = (saved, errors, "")
+                rerun_active_tab()
+    row = order_detail.choose_order(detail_rows, namespace, ID_COLUMN)
+    if row is None:
         return
-
-    row = selected.iloc[0]
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
     status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
     product = clean_cell(row.get(PRODUCT_COLUMN, "")).strip()
     background, foreground = status_palette_value(status)
     with st.container(border=True):
-        st.markdown(f"### Pedido {html.escape(identifier)} · {html.escape(product)}")
+        st.subheader(order_detail.order_title(row))
         st.markdown(
             f'<span class="align-stage-chip" style="background:{background};color:{foreground}">'
             f'{html.escape(status_display_value(status, definitions))}</span>',
             unsafe_allow_html=True,
         )
         st.caption(
-            f"{clean_cell(row.get('NOMBRE DOCTOR', '')).strip()} · "
-            f"{clean_cell(row.get('NOMBRE PACIENTE', '')).strip()}"
+            f"Paciente: {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()} · {product}"
         )
         st.write(f"{row.get('SEMÁFORO', '')} — {row.get('DETALLE SEMÁFORO', '')}")
         if is_pause_status(status):
@@ -2716,6 +2798,7 @@ def render_case_actions(
                 + " · ".join(status_display_value(item, definitions) for item in targets)
             )
 
+        render_aligner_order_editor(row, current_user, definitions)
         detail_text = clean_cell(row.get("DETALLE SEMÁFORO", ""))
         repairable = any(
             phrase in detail_text.lower()
@@ -2727,7 +2810,7 @@ def render_case_actions(
                 "inicia la medición",
             ]
         )
-        if repairable and get_process_definition(product, definitions) is not None:
+        if not form_pending and repairable and get_process_definition(product, definitions) is not None:
             if st.button(
                 "⏱️ Iniciar / reparar medición de esta etapa",
                 key=tracking_key(f"repair_aligner_{identifier}"),
@@ -2857,7 +2940,7 @@ def render_active_orders(
     bar_text = (
         f"✏️ {stored_pending} pedidos con cambios · Guarda o descarta antes de filtrar."
         if pending_before_grid
-        else "✨ Listo para trabajar · Edita una celda habilitada y después guarda."
+        else "✨ Marca un pedido en Abrir para editarlo en una ficha amplia debajo de la tabla."
     )
     st.markdown(
         f'<div class="align-edit-bar {"is-pending" if pending_before_grid else "is-ready"}">{bar_text}</div>',
@@ -2929,7 +3012,7 @@ def render_active_orders(
     visible_columns = tracking_columns(filtered.columns)
     source_grid = filtered[visible_columns].copy()
     grid = display_workbench_df(source_grid, definitions)
-    grid.insert(0, "SELECCIONAR", False)
+    grid.insert(0, "SELECCIONAR", grid[ID_COLUMN].isin(st.session_state.get(tracking_key("aligners_selected_ids"), [])))
     signature = hashlib.sha256(
         json.dumps(
             [
@@ -2956,6 +3039,8 @@ def render_active_orders(
     options = build_grid_configuration(
         grid, source_grid, definitions, hidden_columns=hidden
     )
+    form_pending = bool(order_detail.pending_count(tracking_key("aligners")))
+    order_detail.lock_grid(options, form_pending)
     edited = render_aligners_grid(grid, options, key)
     try:
         changes = grid_changes(grid, edited, definitions)
@@ -2970,7 +3055,7 @@ def render_active_orders(
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not changes or sent_pending,
+        disabled=not changes or sent_pending or form_pending,
         use_container_width=True,
         key=tracking_key("aligners_save"),
         help=(
@@ -2990,18 +3075,20 @@ def render_active_orders(
         use_container_width=True,
         key=tracking_key("aligners_discard"),
     ):
+        order_detail.clear_drafts(tracking_key("aligners"))
         reset_workbench()
         rerun_active_tab()
-    count_column.caption(f"{len(changes)} pedidos con cambios pendientes")
+    count_column.caption(f"{len(changes) + order_detail.pending_count(tracking_key('aligners'))} pedidos con cambios pendientes")
 
     selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
+    st.session_state[tracking_key("aligners_selected_ids")] = selected_ids.tolist()
     selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
     render_case_actions(
         selected,
         snapshot["times"],
         current_user,
         definitions,
-        pending,
+        pending or sent_pending,
     )
 
 
@@ -3009,7 +3096,8 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
     """Histórico de enviados; cambiar la etapa devuelve el pedido a la mesa activa."""
     definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
     sent: pd.DataFrame = snapshot.get("sent", pd.DataFrame())
-    main_pending = editor_change_count("aligners", definitions) > 0
+    main_pending = (editor_change_count("aligners", definitions) > 0
+                    or order_detail.pending_count(tracking_key("aligners")) > 0)
     sent_pending = sent_change_count(definitions) > 0
     expander_key = tracking_key("aligners_sent_expander")
     if sent_pending and not st.session_state.get(expander_key):
@@ -3087,6 +3175,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
         st.session_state[tracking_key("aligners_sent_editor_baseline")] = grid.copy()
 
         options = build_grid_configuration(grid, source_grid, definitions, reactivate=True)
+        order_detail.lock_grid(options, bool(order_detail.pending_count(tracking_key("aligners"))))
         edited = render_aligners_grid(grid, options, key)
         baseline, reactivated = without_repeated_orders(grid, edited)
         try:
