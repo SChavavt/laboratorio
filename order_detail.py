@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+from dropdown_fields import join_values, option_colors, split_values
 
 
 def order_title(row) -> str:
@@ -103,6 +104,16 @@ def choose_order(rows, namespace, id_column):
     return rows[rows[id_column] == chosen].iloc[0]
 
 
+def note_selection(identifiers, namespace, active_id=None):
+    """Abre la última casilla marcada sin desmarcar las demás ni perder borradores."""
+    key = f"order_detail_selection_{namespace}"
+    previous = st.session_state.get(key, [])
+    added = [identifier for identifier in identifiers if identifier not in previous]
+    st.session_state[key] = list(identifiers)
+    if added and not pending_count(namespace):
+        st.session_state[f"order_detail_choice_{namespace}"] = active_id if active_id in added else added[-1]
+
+
 def common_stages(rows, options_for, status_column, normalize):
     """Intersección de transiciones, nunca la unión de permisos de las filas."""
     if rows.empty:
@@ -114,10 +125,13 @@ def common_stages(rows, options_for, status_column, normalize):
                 and any(normalize(row[status_column]) != normalize(value) for _, row in rows.iterrows())))
 
 
-def restore_catalog_values(changes, catalog):
+def restore_catalog_values(changes, catalog, multiple=()):
     """Preserva el valor nativo del chip, incluidos sus espacios significativos."""
     for _, delta in changes:
         for column, value in list(delta.items()):
+            if column in multiple:
+                delta[column] = join_values(split_values(value, (catalog or {}).get(column, [])))
+                continue
             matches = [option for option in (catalog or {}).get(column, [])
                        if str(option).strip() == str(value).strip()]
             if matches:
@@ -160,7 +174,7 @@ def _now(namespace, identifier, column, key, equivalent, format_datetime, now):
 def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   option_label, palettes, equivalent, parse_date, format_date,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
-                  now=datetime.now, blocked=False):
+                  now=datetime.now, blocked=False, multiple=()):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real."""
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -193,15 +207,24 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                     args = (namespace, identifier, column, key, equivalent, lambda value: value or "")
                     common = dict(key=key, disabled=blocked, on_change=_remember, args=args)
                     if column in catalog and catalog[column]:
-                        choices = list(dict.fromkeys(["", *catalog[column], *([text] if text else [])]))
-                        st.selectbox(label, choices, index=choices.index(text),
-                                     format_func=lambda value, col=column: option_label(col, value) if value else "— Sin dato —",
-                                     **common)
-                        colors = palettes.get(column, {}).get(text.strip())
-                        if colors and text:
+                        if column in multiple:
+                            values = split_values(text, catalog[column])
+                            choices = list(dict.fromkeys([*catalog[column], *values]))
+                            common["args"] = (namespace, identifier, column, key, equivalent, join_values)
+                            st.multiselect(label, choices, default=values,
+                                format_func=lambda value, col=column: option_label(col, value),
+                                placeholder="Elige una o varias opciones", **common)
+                        else:
+                            choices = list(dict.fromkeys(["", *catalog[column], *([text] if text else [])]))
+                            st.selectbox(label, choices, index=choices.index(text),
+                                         format_func=lambda value, col=column: option_label(col, value) if value else "— Sin dato —",
+                                         **common)
+                            values = [text] if text else []
+                        for selected_value in values:
+                            colors = option_colors(column, selected_value, palettes)
                             st.markdown(f'<span style="display:inline-block;border-radius:8px;padding:3px 9px;'
                                         f'background:{colors[0]};color:{colors[1]};font-size:.8rem">'
-                                        f'{html.escape(option_label(column, text))}</span>', unsafe_allow_html=True)
+                                        f'{html.escape(option_label(column, selected_value))}</span>', unsafe_allow_html=True)
                     elif column in datetime_columns and (not text or parse_datetime(text) is not None):
                         parsed = parse_datetime(text) if text else None
                         dt_args = (namespace, identifier, column, key, equivalent, format_datetime)

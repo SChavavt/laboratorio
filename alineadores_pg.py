@@ -26,6 +26,9 @@ import gspread
 import pandas as pd
 import streamlit as st
 import order_detail
+from grid_interactions import response_frame
+import dropdown_fields
+from copy import deepcopy
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
@@ -174,6 +177,8 @@ DATE_COLUMNS = {
     "FECHA ENTREGA TITAN",
     "FECHA OBJETIVO ENVÍO",
 }
+
+MULTI_SELECT_COLUMNS = {"ARCHIVOS RECIBIDOS"}
 
 SELECT_COLUMNS = {
     "ETAPA SOLICITUD",
@@ -609,6 +614,8 @@ def parse_simple_date(value: Any) -> date | None:
 def values_equivalent(column: str, old_value: Any, new_value: Any) -> bool:
     old_text = strip_visual_prefix(old_value) if column in {STATUS_COLUMN, PRODUCT_COLUMN} else clean_cell(old_value).strip()
     new_text = strip_visual_prefix(new_value) if column in {STATUS_COLUMN, PRODUCT_COLUMN} else clean_cell(new_value).strip()
+    if column in MULTI_SELECT_COLUMNS:
+        return set(dropdown_fields.split_values(old_text)) == set(dropdown_fields.split_values(new_text))
     if column == STATUS_COLUMN:
         return status_key(old_text) == status_key(new_text)
     if column == PRODUCT_COLUMN:
@@ -2113,7 +2120,8 @@ def save_workbench_changes(
         return [], [str(exc)]
     if not changes:
         return [], []
-    order_detail.restore_catalog_values(changes, select_catalog)
+    multiple = dropdown_fields.multiple_columns(select_catalog or {}, source, MULTI_SELECT_COLUMNS)
+    order_detail.restore_catalog_values(changes, select_catalog, multiple)
 
     if current_user not in APP_USERS:
         return [], ["Tu usuario no tiene permiso para editar pedidos."]
@@ -2129,6 +2137,11 @@ def save_workbench_changes(
             errors.append(f"{identifier}: el pedido ya no está en la vista actual.")
         else:
             errors.extend(validate_delta(source_by_id.loc[identifier], delta, definitions, reactivate=reactivate))
+            for column, value in delta.items():
+                if column in (select_catalog or {}) and column != STATUS_COLUMN and not dropdown_fields.valid_value(
+                    value, select_catalog[column], multiple=column in multiple,
+                    previous=source_by_id.loc[identifier].get(column, "")):
+                    errors.append(f"{identifier}: valor no permitido para {column}.")
     if errors:
         return [], errors
     for identifier, delta in changes:
@@ -2217,6 +2230,7 @@ def build_grid_configuration(
     *,
     hidden_columns: set[str] | None = None,
     reactivate: bool = False,
+    select_catalog: dict | None = None,
 ) -> dict:
     """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa."""
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
@@ -2228,12 +2242,13 @@ def build_grid_configuration(
         )
         for _, row in source.iterrows()
     }
-    selections: dict[str, list[str]] = {}
-    for column in SELECT_COLUMNS & set(grid):
+    selections: dict[str, list[str]] = dict(select_catalog or {})
+    multiple = dropdown_fields.multiple_columns(selections, source, MULTI_SELECT_COLUMNS)
+    for column in SELECT_COLUMNS & set(grid) - set(selections):
         values = [clean_cell(value).strip() for value in source[column]]
         selections[column] = list(dict.fromkeys(["", *[value for value in values if value]]))
     dates: dict[str, dict[str, str]] = {}
-    for column in DATE_COLUMNS & set(grid):
+    for column in {col for col in grid if col in DATE_COLUMNS or col.startswith("FECHA")}:
         dates[column] = {
             value: parsed.isoformat()
             for value in set(grid[column])
@@ -2262,7 +2277,7 @@ def build_grid_configuration(
         },
         "SEMÁFORO": ALERT_COLORS,
     }
-    return build_aligners_grid_options(
+    options = build_aligners_grid_options(
         grid,
         editable=(
             {STATUS_COLUMN} & set(grid.columns)
@@ -2277,6 +2292,9 @@ def build_grid_configuration(
         time_zone=APP_TIMEZONE_NAME,
         hidden_columns=hidden_columns,
     )
+    return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
+        labeler=new_order_option_label, palettes=order_dropdown_palettes(selections),
+        canonicalize=lambda col, value: strip_visual_prefix(value) if col == PRODUCT_COLUMN else str(value))
 
 
 def tracking_columns(available_columns: Iterable[str]) -> list[str]:
@@ -2320,32 +2338,18 @@ NEW_ORDER_OPTION_ICONS = {
 
 def parse_order_form_catalogs(metadata: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
     """Lee opciones nativas de tabla, incluso las que todavía no tienen pedidos."""
-    catalogs = {}
-    for sheet in metadata.get("sheets", []):
-        title = sheet.get("properties", {}).get("title", "")
-        if title not in (SHEET_ORDERS, SHEET_POLANCO):
-            continue
-        catalog: dict[str, list[str]] = {}
-        for table in sheet.get("tables", []):
-            if table.get("range", {}).get("startRowIndex") != ORDER_HEADER_ROW - 1:
-                continue
-            for column in table.get("columnProperties", []):
-                name = canonical_column_name(column.get("columnName", ""))
-                rule = column.get("dataValidationRule", {}).get("condition", {})
-                if rule.get("type") == "ONE_OF_LIST":
-                    catalog[name] = list(dict.fromkeys(
-                        item["userEnteredValue"] for item in rule.get("values", [])
-                        if str(item.get("userEnteredValue", "")).strip()))
-        catalogs[title] = catalog
-    return catalogs
+    return {title: catalog for title, catalog in
+            order_detail.parse_sheet_catalogs(metadata, canonical_column_name).items()
+            if title in (SHEET_ORDERS, SHEET_POLANCO)}
 
 
 @st.cache_data(ttl=3600)
 def read_order_form_catalogs(spreadsheet_id: str) -> dict[str, dict[str, list[str]]]:
     spreadsheet = get_spreadsheet_by_id(spreadsheet_id)
     metadata = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
-        "includeGridData": "false",
-        "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)))",
+        "includeGridData": "true",
+        "ranges": ["'ALINEADORES (nuevo)'!A2:CA12", "'POLANCO'!A2:CB12"],
+        "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)),data(startRow,rowData(values(formattedValue,dataValidation))))",
     }))
     return parse_order_form_catalogs(metadata)
 
@@ -2356,6 +2360,27 @@ def get_order_form_catalog() -> dict[str, list[str]]:
         catalogs = read_order_form_catalogs(configured_spreadsheet_id())
         st.session_state["aligners_form_catalogs"] = catalogs
     return catalogs.get(current_order_sheet(), {})
+
+
+def tracking_form_catalog() -> dict:
+    try:
+        return get_order_form_catalog()
+    except Exception:
+        # Evita repetir solicitudes fallidas en cada clic. Actualizar datos
+        # descarta esta caché y vuelve a consultar los catálogos.
+        st.session_state["aligners_form_catalogs"] = {}
+        st.warning("No se pudieron cargar las listas de Sheets. Pulsa Actualizar datos para reintentarlo.")
+        return {}
+
+
+def order_dropdown_palettes(catalog):
+    tones = {"🔵": ("#DBEAFE", "#1E40AF"), "🟢": ("#DCFCE7", "#166534"),
+             "🟣": ("#F3E8FF", "#6B21A8"), "🟠": ("#FFEDD5", "#9A3412"),
+             "🟤": ("#EFEBE9", "#5D4037"), "🟡": ("#FEF3C7", "#92400E"),
+             "⚪": ("#F1F5F9", "#475569")}
+    return {column: {value: tones.get(NEW_ORDER_OPTION_ICONS.get(column, {}).get(normalize_text(value)),
+                                    dropdown_fields.option_colors(column, value))
+                     for value in values} for column, values in catalog.items()}
 
 
 def new_order_option_label(column: str, value: str) -> str:
@@ -2400,9 +2425,10 @@ def _create_order(values: dict[str, Any], current_user: str,
         for column in NEW_ORDER_SELECT_COLUMNS:
             selected = values.get(column)
             if selected:
-                if selected not in catalog.get(column, []):
+                if not dropdown_fields.valid_value(selected, catalog.get(column, []), multiple=column in MULTI_SELECT_COLUMNS):
                     raise ValueError(f"La opción de {column} no pertenece al catálogo de Sheets.")
-                row[column] = selected  # Preserva espacios de opciones nativas, p. ej. NO APLICA.
+                row[column] = (dropdown_fields.join_values(dropdown_fields.split_values(selected, catalog[column]))
+                               if column in MULTI_SELECT_COLUMNS else selected)
 
     for column in (PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
         if not row.get(column):
@@ -2464,6 +2490,12 @@ def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
         row: dict[str, Any] = {}
 
         def select_field(container, column):
+            if column in MULTI_SELECT_COLUMNS:
+                values = container.multiselect(f"{NEW_ORDER_FIELD_ICONS[column]} {column}",
+                    catalog[column], placeholder="Elige una o varias opciones",
+                    format_func=lambda value: new_order_option_label(column, value),
+                    key=tracking_key(f"aligners_new_{column}_{version}"))
+                return dropdown_fields.join_values(values)
             return container.selectbox(
                 f"{NEW_ORDER_FIELD_ICONS[column]} {column}" + (" *" if column == PRODUCT_COLUMN else ""),
                 catalog[column], index=None, placeholder="Selecciona una opción",
@@ -2551,9 +2583,9 @@ def editor_change_count(
         return 0
     state = st.session_state.get(key) or {}
     baseline = st.session_state.get(tracking_key(f"{prefix}_editor_baseline"))
-    if baseline is None or state.get("rows") is None:
+    if baseline is None or not state:
         return 0
-    edited = pd.DataFrame(state["rows"])
+    edited = response_frame(baseline, state, ID_COLUMN)
     if skip_repeated:
         baseline, edited = without_repeated_orders(baseline, edited)
     try:
@@ -2711,14 +2743,11 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
     labels.update({column: "📅 " + column.replace("_", " · ") for column in fields if "FECHA" in column})
     result = order_detail.render_editor(row, namespace=namespace, id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=labels, option_label=new_order_option_label,
-        palettes={}, equivalent=values_equivalent, parse_date=parse_simple_date,
+        palettes=order_dropdown_palettes(catalog), multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
+        equivalent=values_equivalent, parse_date=parse_simple_date,
         format_date=lambda value: value.isoformat(), now=app_now)
     if result:
         baseline, delta = result
-        for column, value in delta.items():
-            if column in catalog and value and value not in catalog[column]:
-                st.error(f"La opción de {column} no pertenece al catálogo de Sheets.")
-                return
         source = pd.DataFrame([baseline])
         edited = pd.DataFrame([{**baseline, **delta}])
         saved, errors = save_workbench_changes(source, source, edited, current_user, definitions,
@@ -3036,9 +3065,14 @@ def render_active_orders(
     hidden: set[str] = set()
     if hide_automatic:
         hidden |= AUTOMATIC_COLUMNS
-    options = build_grid_configuration(
-        grid, source_grid, definitions, hidden_columns=hidden
-    )
+    catalog = tracking_form_catalog()
+    config_key = tracking_key("aligners_grid_configuration")
+    cached = st.session_state.get(config_key)
+    if not cached or cached[0] != key:
+        cached = (key, build_grid_configuration(grid, source_grid, definitions,
+            hidden_columns=hidden, select_catalog=catalog))
+        st.session_state[config_key] = cached
+    options = deepcopy(cached[1])
     form_pending = bool(order_detail.pending_count(tracking_key("aligners")))
     order_detail.lock_grid(options, form_pending)
     edited = render_aligners_grid(grid, options, key)
@@ -3065,7 +3099,7 @@ def render_active_orders(
         ),
     ):
         saved, errors = save_workbench_changes(
-            filtered, grid, edited, current_user, definitions
+            filtered, grid, edited, current_user, definitions, select_catalog=catalog
         )
         st.session_state[tracking_key("aligners_feedback")] = (saved, errors, "")
         rerun_active_tab()
@@ -3082,6 +3116,7 @@ def render_active_orders(
 
     selected_ids = edited.loc[edited["SELECCIONAR"].eq(True), ID_COLUMN]
     st.session_state[tracking_key("aligners_selected_ids")] = selected_ids.tolist()
+    order_detail.note_selection(selected_ids.tolist(), tracking_key("aligners"), edited.attrs.get("activeId"))
     selected = filtered[filtered[ID_COLUMN].isin(selected_ids)]
     render_case_actions(
         selected,

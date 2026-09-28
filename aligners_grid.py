@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 from st_aggrid import AgGrid, JsCode
 
-from workbench_grid import COLLECT_ROWS, GRID_CSS, date_editor
+from workbench_grid import GRID_CSS, date_editor
+from grid_interactions import COLLECT_ROWS, configure_selection, response_frame
 
 
 @lru_cache(maxsize=1)
@@ -276,6 +277,7 @@ def build_aligners_grid_options(
 def render_aligners_grid(
     grid: pd.DataFrame, options: dict, key: str
 ) -> pd.DataFrame:
+    configure_selection(options, grid, "No. Orden")
     response = AgGrid(
         grid.copy(),
         gridOptions=options,
@@ -291,7 +293,4 @@ def render_aligners_grid(
         custom_css=GRID_CSS,
         show_toolbar=False,
     )
-    rows = response.get("rows")
-    if rows is None:
-        return grid.copy()
-    return pd.DataFrame(rows).reindex(columns=grid.columns)
+    return response_frame(grid, response, "No. Orden")
