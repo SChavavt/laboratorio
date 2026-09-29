@@ -2835,36 +2835,40 @@ def render_case_actions(
             )
 
         render_aligner_order_editor(row, current_user, definitions)
-        detail_text = clean_cell(row.get("DETALLE SEMÁFORO", ""))
-        repairable = any(
-            phrase in detail_text.lower()
-            for phrase in [
-                "sin registro de inicio",
-                "no corresponde",
-                "varios registros",
-                "fecha de inicio",
-                "inicia la medición",
-            ]
-        )
-        if not form_pending and repairable and get_process_definition(product, definitions) is not None:
-            if st.button(
-                "⏱️ Iniciar / reparar medición de esta etapa",
-                key=tracking_key(f"repair_aligner_{identifier}"),
-                help="No cambia el status; cierra mediciones incoherentes y comienza a contar desde ahora.",
-            ):
-                try:
-                    initialize_order_timer(row, current_user, definitions)
-                    reset_workbench()
-                    st.session_state[tracking_key("aligners_feedback")] = (
-                        [identifier],
-                        [],
-                        "Medición iniciada en la etapa actual.",
-                    )
-                    rerun_active_tab()
-                except Exception as exc:
-                    st.error(f"No se pudo iniciar la medición: {exc}")
+        with st.expander("🛠️ Historial y opciones avanzadas", expanded=False):
+            detail_text = clean_cell(row.get("DETALLE SEMÁFORO", ""))
+            repairable = any(
+                phrase in detail_text.lower()
+                for phrase in [
+                    "sin registro de inicio",
+                    "no corresponde",
+                    "varios registros",
+                    "fecha de inicio",
+                    "inicia la medición",
+                ]
+            )
+            if not form_pending and repairable and get_process_definition(product, definitions) is not None:
+                st.caption("Úsalo si falta el inicio o hay registros inconsistentes. Mantiene la etapa actual, "
+                           "cierra las mediciones abiertas e inicia una nueva desde ahora. "
+                           "No recupera el tiempo transcurrido anteriormente; la acción queda en el historial.")
+                if st.button(
+                    "⏱️ Iniciar conteo de esta etapa desde ahora",
+                    key=tracking_key(f"repair_aligner_{identifier}"),
+                    help="No cambia el status; cierra mediciones incoherentes y comienza a contar desde ahora.",
+                ):
+                    try:
+                        initialize_order_timer(row, current_user, definitions)
+                        reset_workbench()
+                        st.session_state[tracking_key("aligners_feedback")] = (
+                            [identifier],
+                            [],
+                            "Medición iniciada en la etapa actual.",
+                        )
+                        rerun_active_tab()
+                    except Exception as exc:
+                        st.error(f"No se pudo iniciar la medición: {exc}")
 
-        with st.expander("🕘 Historial del pedido"):
+            st.markdown("#### 🕘 Historial del pedido")
             history = canonical_times_df(times_df)
             if ID_COLUMN in history:
                 history = history[
@@ -2894,7 +2898,7 @@ def render_case_actions(
                     use_container_width=True,
                 )
 
-        with st.expander("📋 Todos los datos de la hoja"):
+            st.markdown("#### 📋 Todos los datos de la hoja")
             excluded = {*COMPUTED_COLUMNS, "_SHEET_ROW"}
             details = [
                 {"Campo": column, "Valor": clean_cell(value)}
@@ -3295,7 +3299,8 @@ def render_alerts(current_user: str) -> None:
         st.dataframe(attention[columns], hide_index=True, use_container_width=True)
     st.caption(
         "Los pedidos grises existentes necesitan que abras el pedido en Seguimiento y pulses "
-        "Iniciar / reparar medición. Desde ese momento la app contará el plazo de la etapa actual."
+        "Historial y opciones avanzadas → Iniciar conteo de esta etapa desde ahora. "
+        "Desde ese momento la app contará el plazo de la etapa actual."
     )
 
 

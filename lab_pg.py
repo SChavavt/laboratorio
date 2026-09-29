@@ -5959,7 +5959,8 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
             with st.expander("Registrar y autorizar pago", key=f"detail_payment_{identifier}", on_change="rerun") as payment:
                 if payment.open:
                     render_pagos_tab(current_user, selected_row=row)
-        with st.expander("Historial del pedido"):
+        with st.expander("🛠️ Historial y opciones avanzadas", expanded=False):
+            st.markdown("#### 🕘 Historial del pedido")
             history = canonical_workbench_df(times)
             if ID_COLUMN in history:
                 history = history[history[ID_COLUMN] == identifier]
