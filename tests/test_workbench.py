@@ -135,8 +135,20 @@ def test_vendor_catalog_contains_only_active_sellers():
         "NORMA",
         "PAULINA",
         "SANTIAGO",
+        "JIME",
+        "LESLY",
     ]
     assert list(app.VENDEDOR_DISPLAY) == app.VENDEDOR_OPTIONS
+
+
+def test_sheet_vendor_list_also_offers_jime_and_lesly(monkeypatch):
+    app.st.session_state.pop("apparatus_form_catalog", None)
+    monkeypatch.setattr(app, "read_workbench_form_catalog", lambda _: {"VENDEDOR": ["NORMA", "LESLY"]})
+    monkeypatch.setattr(app.st, "secrets", {"gsheets": {"sheet_id": "demo"}})
+    try:
+        assert app.get_workbench_form_catalog()["VENDEDOR"] == ["NORMA", "LESLY", "JIME"]
+    finally:
+        app.st.session_state.pop("apparatus_form_catalog", None)
 
 
 def test_outsourced_work_datetime_labels_reference_stefano():
@@ -184,13 +196,34 @@ def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
     options = app.workbench_grid_options(grid, source, "Admin")["context"]["stageOptions"]
     assert options["001"] == [
         app.display_selectbox_value(app.STATUS_COLUMN, value)
-        for value in app.get_allowed_next_statuses("MSE", "REVISIÓN DE ARCHIVOS")
+        for value in app.get_allowed_next_statuses("MSE", "REVISIÓN DE ARCHIVOS", "Admin")
     ]
     assert options["002"] == [
         app.display_selectbox_value(app.STATUS_COLUMN, value)
-        for value in app.get_allowed_next_statuses("HYRAX", "LISTO P/CONFECCIÓN")
+        for value in app.get_allowed_next_statuses("HYRAX", "LISTO P/CONFECCIÓN", "Admin")
     ]
-    assert app.display_selectbox_value(app.STATUS_COLUMN, "PULIDO (EN CONFECCIÓN)") not in options["001"]
+    # Sólo se ofrecen etapas del flujo de cada aparato.
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "SOLICITUD GUÍA PSM + PSM") not in options["001"]
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "REVISIÓN DISEÑO DOCTOR") not in options["002"]
+
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
+def test_admin_jime_and_lesly_can_jump_to_planning_without_payment(user):
+    """De REVISIÓN DE ARCHIVOS pueden pasar directo a EN PLANEACIÓN aunque no haya pago."""
+    row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
+    options = app.workbench_stage_options(row, user)
+    assert options[0] == app.display_selectbox_value(app.STATUS_COLUMN, "REVISIÓN DE ARCHIVOS")
+    for status in ("EN PLANEACIÓN", "PAGO PLANEACIÓN", "ORDEN RECIBIDA", "LISTO P/SINTERIZADO", "CANCELO", app.PAUSED_STATUS):
+        assert app.display_selectbox_value(app.STATUS_COLUMN, status) in options
+    original = pd.DataFrame([case()])
+    assert not app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], user)
+
+
+def test_vero_keeps_the_step_by_step_flow():
+    row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "EN PLANEACIÓN") not in app.workbench_stage_options(row, "Vero")
+    original = pd.DataFrame([case()])
+    assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], "Vero")
 
 
 def test_jime_and_lesly_have_full_editing_permissions_like_admin():
@@ -410,7 +443,9 @@ def test_jime_owns_planning_and_is_default_responsible_filter():
 
 def test_skip_stage_and_foreign_role_rejected():
     original = pd.DataFrame([case()])
-    assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Admin")
+    assert not app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Admin")
+    assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PDTE ENVIAR GUÍA PSM + PSM"})],"Admin")
+    assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Vero")
     assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"ESCANEO MAL (EN REPETICIÓN)"})],"Vero")
     assert not app.validate_workbench_changes(original,original,[("001",{"STATUS":"ESCANEO MAL (EN REPETICIÓN)"})],"Jime")
 
@@ -424,12 +459,21 @@ def test_lesly_cannot_advance_before_printing():
 
 
 def test_payment_blocks_advancement_without_authorization(monkeypatch):
+    monkeypatch.setattr(app,"get_active_tiempo_row",lambda _: (2,{"PUEDE_AVANZAR":"No"}))
+    monkeypatch.setattr(app,"get_case_commercial_payment_status",lambda _: "SIN PAGO")
+    allowed, reason = app.can_advance_from_payment("001","PAGO PLANEACIÓN","Vero")
+    assert not allowed and "pago" in reason
+    monkeypatch.setattr(app,"get_active_tiempo_row",lambda _: (2,{"PUEDE_AVANZAR":"Sí"}))
+    assert app.can_advance_from_payment("001","PAGO PLANEACIÓN","Vero") == (True,"")
+
+
+def test_admin_jime_and_lesly_are_not_blocked_by_pending_payment(monkeypatch):
     original = pd.DataFrame([case(status="PAGO PLANEACIÓN")])
     delta = [("001", {"STATUS":"EN PLANEACIÓN"})]
     monkeypatch.setattr(app,"get_active_tiempo_row",lambda _: (2,{"PUEDE_AVANZAR":"No"}))
-    assert "pago" in app.validate_workbench_changes(original,original,delta,"Jime")[0]
-    monkeypatch.setattr(app,"get_active_tiempo_row",lambda _: (2,{"PUEDE_AVANZAR":"Sí"}))
-    assert not app.validate_workbench_changes(original,original,delta,"Jime")
+    for user in ("Admin", "Jime", "Lesly"):
+        assert not app.validate_workbench_changes(original,original,delta,user)
+        assert app.can_advance_from_payment("001","PAGO PLANEACIÓN",user) == (True,"")
 
 
 def test_concurrent_status_change_blocks_even_metadata_edit():
@@ -443,7 +487,7 @@ def test_batch_preflight_does_not_write_any_row_on_error(monkeypatch):
     original = pd.DataFrame([case("001"),case("002")])
     edited = original.copy()
     edited.loc[0,"PAGO"] = "TOTAL"
-    edited.loc[1,"STATUS"] = "PRODUCTO ENVIADO"
+    edited.loc[1,"STATUS"] = "PDTE ENVIAR GUÍA PSM + PSM"
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
     monkeypatch.setattr(app,"read_sheet_df",lambda _: original)
     def forbidden(*args, **kwargs):

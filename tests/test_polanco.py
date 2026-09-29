@@ -246,9 +246,9 @@ def test_catalog_is_read_once_and_scoped_to_each_sheet(sheets, monkeypatch):
         return {app.SHEET_ORDERS: FORM_CATALOG,
                 app.SHEET_POLANCO: {**FORM_CATALOG, 'VENDEDOR': ['POLANCO DEMO']}}
     monkeypatch.setattr(app, 'read_order_form_catalogs', read)
-    assert app.get_order_form_catalog()['VENDEDOR'] == ['JIMENA', 'MICHELLE']
+    assert app.get_order_form_catalog()['VENDEDOR'] == ['JIMENA', 'MICHELLE', 'JIME', 'LESLY']
     app.st.session_state['aligners_order_sheet'] = app.SHEET_POLANCO
-    assert app.get_order_form_catalog()['VENDEDOR'] == ['POLANCO DEMO']
+    assert app.get_order_form_catalog()['VENDEDOR'] == ['POLANCO DEMO', 'JIME', 'LESLY']
     app.get_order_form_catalog()
     assert calls == ['demo']
 

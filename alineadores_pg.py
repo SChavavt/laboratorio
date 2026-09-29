@@ -2359,7 +2359,7 @@ def get_order_form_catalog() -> dict[str, list[str]]:
     if catalogs is None:
         catalogs = read_order_form_catalogs(configured_spreadsheet_id())
         st.session_state["aligners_form_catalogs"] = catalogs
-    return catalogs.get(current_order_sheet(), {})
+    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}))
 
 
 def tracking_form_catalog() -> dict:
