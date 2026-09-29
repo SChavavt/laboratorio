@@ -129,6 +129,8 @@ USER_VISIBLE_TABS = {
     "Vero": ["vero"],
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
+# Pueden elegir cualquier etapa del flujo y avanzar aunque el pago esté pendiente.
+UNRESTRICTED_STAGE_USERS = frozenset({"Admin", "Jime", "Lesly"})
 PLANNING_STATUSES = ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"]
 USER_TAB_STATUSES = {
     "Jime": [
@@ -365,6 +367,7 @@ VENDEDOR_OPTIONS = [
     "NORMA",
     "PAULINA",
     "SANTIAGO",
+    *dropdown_fields.APP_VENDORS,
 ]
 
 SERVICIO_OPTIONS = [
@@ -450,6 +453,8 @@ VENDEDOR_DISPLAY = {
     "NORMA": "👩 NORMA",
     "PAULINA": "👩 PAULINA",
     "SANTIAGO": "👨 SANTIAGO",
+    "JIME": "👩 JIME",
+    "LESLY": "👩 LESLY",
 }
 
 SERVICIO_DISPLAY = {
@@ -1547,12 +1552,19 @@ SPECIAL_TRANSITIONS = {
 
 
 
-def get_allowed_next_statuses(apparatus: str, current_status: str) -> list[str]:
+def get_allowed_next_statuses(
+    apparatus: str, current_status: str, current_user: str = ""
+) -> list[str]:
     """Regresa status actual y transiciones permitidas según el flujo programado."""
 
     normalized_current_status = normalize_status_alias(current_status)
     flow = get_process_flow(apparatus)
     statuses = [status for status, _ in flow]
+    if current_user in UNRESTRICTED_STAGE_USERS and statuses:
+        # Estos usuarios pueden mover el pedido a cualquier etapa de su flujo,
+        # por ejemplo de REVISIÓN DE ARCHIVOS a EN PLANEACIÓN sin pasar por pagos.
+        current = [normalized_current_status] if normalized_current_status else []
+        return list(dict.fromkeys([*current, *statuses, "CANCELO", PAUSED_STATUS]))
     if normalize_text(normalized_current_status) == normalize_text(PAUSED_STATUS):
         # Una pausa no forma parte del flujo: al reactivar el caso se puede
         # elegir la etapa real en la que debe continuar este aparato.
@@ -2071,10 +2083,13 @@ def get_case_commercial_payment_status(identifier: str) -> str:
     return clean_display_value(clean_cell(matches.iloc[0].get("PAGO", "")).strip()).upper()
 
 
-def can_advance_from_payment(identifier: str, current_status: str) -> tuple[bool, str]:
+def can_advance_from_payment(
+    identifier: str, current_status: str, current_user: str = ""
+) -> tuple[bool, str]:
     """Bloquea avances desde pagos si el pago no habilita cambio de STATUS."""
 
-    if normalize_status_alias(current_status) not in PAYMENT_STATUSES:
+    if (normalize_status_alias(current_status) not in PAYMENT_STATUSES
+            or current_user in UNRESTRICTED_STAGE_USERS):
         return True, ""
     _, active_row = get_active_tiempo_row(identifier)
     if not active_row:
@@ -2114,7 +2129,7 @@ def validate_status_change(
     new_status = normalize_status_alias(new_status)
     if new_status == previous_status:
         return True, ""
-    allowed_statuses = get_allowed_next_statuses(apparatus, previous_status)
+    allowed_statuses = get_allowed_next_statuses(apparatus, previous_status, current_user)
     if new_status not in allowed_statuses:
         return False, (
             f"STATUS no permitido para {apparatus}: {previous_status} → {new_status}. "
@@ -2124,7 +2139,7 @@ def validate_status_change(
         return False, "El usuario actual no tiene permiso para realizar este cambio de STATUS."
     if new_status == PAUSED_STATUS or previous_status == PAUSED_STATUS:
         return True, ""
-    can_advance, reason = can_advance_from_payment(identifier, previous_status)
+    can_advance, reason = can_advance_from_payment(identifier, previous_status, current_user)
     if not can_advance:
         return False, reason
     return True, ""
@@ -3955,7 +3970,7 @@ def render_alert_order_updater(tiempos_df: pd.DataFrame, current_user: str = "Ad
     selected_row = alert_df[alert_df[ID_COLUMN].astype(str).str.strip() == selected_id].iloc[0]
     apparatus = clean_cell(selected_row.get("APARATO", "")).strip()
     current_status = normalize_status_alias(clean_cell(selected_row.get("STATUS", "")).strip())
-    allowed_statuses = get_allowed_next_statuses(apparatus, current_status)
+    allowed_statuses = get_allowed_next_statuses(apparatus, current_status, current_user)
 
     info_cols = st.columns(4)
     info_cols[0].metric("Pedido", selected_id)
@@ -5091,7 +5106,7 @@ def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -
         else:
             st.error(result["error"] or "No se pudo actualizar el estado de pago.")
     if current_status in PAYMENT_STATUSES:
-        can_advance, _ = can_advance_from_payment(selected_id, current_status)
+        can_advance, _ = can_advance_from_payment(selected_id, current_status, current_user)
         if can_advance:
             apparatus = clean_cell(get_row_value_by_column(row, APARATO_COLUMN, ""))
             if current_status == "PAGO PLANEACIÓN":
@@ -5508,7 +5523,7 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     if current_user in APP_USERS:
         options.extend(
             target
-            for target in get_allowed_next_statuses(apparatus, current)
+            for target in get_allowed_next_statuses(apparatus, current, current_user)
             if is_transition_allowed_for_user(
                 current_user, current, target, apparatus
             )
@@ -5688,7 +5703,7 @@ def validate_workbench_changes(
         if STATUS_COLUMN not in delta:
             continue
         new_status = normalize_status_alias(delta[STATUS_COLUMN])
-        if new_status not in get_allowed_next_statuses(apparatus, previous_status):
+        if new_status not in get_allowed_next_statuses(apparatus, previous_status, current_user):
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
             errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
@@ -5696,7 +5711,7 @@ def validate_workbench_changes(
             current_user, previous_status, new_status, row
         ):
             errors.append(f"{identifier}: primero marca el pedido como impresión.")
-        elif previous_status in PAYMENT_STATUSES:
+        elif previous_status in PAYMENT_STATUSES and current_user not in UNRESTRICTED_STAGE_USERS:
             _, payment = get_active_tiempo_row(identifier)
             if not payment or (clean_cell(payment.get("PUEDE_AVANZAR", "")) != "Sí"
                                and clean_cell(row.get("PAGO", "")).strip().upper() != "TOTAL"):
@@ -5846,7 +5861,8 @@ def get_workbench_form_catalog() -> dict:
         except Exception:
             catalog = {}
             st.warning("No se pudieron consultar las listas de Sheets. Se usarán las opciones disponibles en la app.")
-        st.session_state["apparatus_form_catalog"] = {**SELECTBOX_OPTIONS_BY_COLUMN, **catalog}
+        st.session_state["apparatus_form_catalog"] = dropdown_fields.with_app_vendors(
+            {**SELECTBOX_OPTIONS_BY_COLUMN, **catalog})
     return st.session_state["apparatus_form_catalog"]
 
 
@@ -5939,9 +5955,11 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
         )
         st.caption(f"Paciente: {row.get('NOMBRE PACIENTE', '')} · {row.get(APARATO_COLUMN, '')}")
         st.write(f"{row['SEMÁFORO']} — {row['DETALLE SEMÁFORO']}")
-        targets = [target for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN])
+        targets = [target for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)
                    if target != row[STATUS_COLUMN] and is_transition_allowed_for_user(current_user, row[STATUS_COLUMN], target, row.get(APARATO_COLUMN, ""))]
-        if targets:
+        if targets and current_user in UNRESTRICTED_STAGE_USERS:
+            st.caption("Tu usuario puede mover este pedido a cualquier etapa de su flujo, aunque el pago siga pendiente.")
+        elif targets:
             st.caption("Etapas permitidas para tu usuario: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets))
         else:
             st.caption("Este pedido es de consulta para tu usuario en su etapa actual.")

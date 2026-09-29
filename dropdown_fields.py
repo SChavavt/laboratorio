@@ -6,6 +6,15 @@ from pathlib import Path
 
 from st_aggrid import JsCode
 
+# Vendedores que la app ofrece aunque la lista de Sheets todavía no los incluya.
+APP_VENDORS = ("JIME", "LESLY")
+
+
+def with_app_vendors(catalog):
+    if not catalog.get("VENDEDOR"):
+        return catalog  # Sin lista en Sheets el campo sigue siendo texto libre.
+    return {**catalog, "VENDEDOR": list(dict.fromkeys([*catalog["VENDEDOR"], *APP_VENDORS]))}
+
 
 def split_values(value, options=()):
     text = str(value or "").strip()

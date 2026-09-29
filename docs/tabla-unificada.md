@@ -35,8 +35,9 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
 2. Edita las celdas habilitadas. **Guardar cambios** valida todos los pedidos
    modificados antes de comenzar las escrituras. Admin, Jime y Lesly pueden
    avanzar cualquier pedido a cualquier etapa admitida por su aparato, igual
-   que Admin; Vero conserva sus permisos de transición limitados a sus
-   propias etapas. El selector de etapa se calcula por pedido: para Admin,
+   que Admin, aunque el pago siga pendiente (por ejemplo, de Revisión de
+   archivos directo a En planeación); Vero conserva sus permisos de transición
+   limitados a sus propias etapas. El selector de etapa se calcula por pedido: para Admin,
    Jime y Lesly incluye la etapa actual y todos los destinos admitidos por
    ese aparato; para el resto, sólo los destinos inmediatos que su usuario
    tiene permitidos. Las fechas
