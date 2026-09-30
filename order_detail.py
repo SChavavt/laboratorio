@@ -155,13 +155,21 @@ def lock_grid(options, locked):
                 column["editable"] = False
 
 
-def _remember(namespace, identifier, column, key, equivalent, convert):
+def draft_value(draft, column):
+    return draft["changes"].get(column, draft["baseline"].get(column, ""))
+
+
+def set_draft_value(namespace, identifier, column, value, equivalent):
+    """Anota un valor en el borrador; volver al original deja el campo sin cambios."""
     draft = st.session_state[draft_key(namespace)][identifier]
-    value = convert(st.session_state[key])
     if equivalent(column, draft["baseline"].get(column, ""), value):
         draft["changes"].pop(column, None)
     else:
         draft["changes"][column] = value
+
+
+def _remember(namespace, identifier, column, key, equivalent, convert):
+    set_draft_value(namespace, identifier, column, convert(st.session_state[key]), equivalent)
 
 
 def _remember_datetime(namespace, identifier, column, key, equivalent, format_datetime):
@@ -185,8 +193,12 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   option_label, palettes, equivalent, parse_date, format_date,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
-                  multi_codecs=None, required=(), constrained=()):
-    """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real."""
+                  multi_codecs=None, required=(), constrained=(), extra=None):
+    """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
+
+    ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
+    del botón Guardar, para que un solo guardado incluya todos los campos.
+    """
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
     draft = drafts.setdefault(identifier, {"baseline": row.to_dict(), "changes": {}})
@@ -280,6 +292,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                         st.text_input(label, value=text, **common)
                         if "FECHA" in column and text:
                             st.caption("Se conserva el texto de esta fecha; puedes corregirlo aquí.")
+    if extra is not None:
+        extra()
     save, discard, count = st.columns([1.4, 1.4, 2])
     changed = bool(draft["changes"])
     submitted = save.button("💾 Guardar este pedido", key=f"detail_save_{token}", type="primary",

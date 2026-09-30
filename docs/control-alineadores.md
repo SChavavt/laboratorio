@@ -75,6 +75,35 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
 - Mientras haya etapas elegidas sin guardar en Enviados no se puede refrescar,
   cambiar de pestaña ni guardar la tabla principal; lo mismo al revés.
 
+## Envíos y alineadores (ficha del pedido)
+
+Las columnas del plan de tratamiento (`TEMPLATE SUP` … `Total`, R:V) y de los
+ocho envíos (`TEMP. SUP`, `TEMP. INF`, `NO. ALIN SUP`, `NO. ALIN INF`, `Total`,
+`FECHA PAGO IMPRESIÓN`, `FECHA ENVÍO`, de W a BZ) no aparecen en la tabla. Se
+capturan en la ficha del pedido, dentro del desplegable
+**🚚 Envíos y alineadores**, y se guardan con el mismo **💾 Guardar este pedido**.
+
+- **Plan de tratamiento:** templates y alineadores de todo el caso. El total se
+  calcula solo.
+- **Un envío a la vez:** si el pedido no tiene envíos, sólo se captura el
+  Envío 1. Si ya tiene alguno, se muestra el último registrado (para corregirlo)
+  y el botón **➕ Registrar Envío N**. Al pulsarlo, los campos quedan vacíos y
+  debajo de cada uno aparece lo del envío anterior (`↳ Envío 1: 1-7`), para
+  escribir lo nuevo o lo mismo. **📋 Usar las mismas cantidades** copia las
+  cantidades del envío anterior y **✖️ Cancelar nuevo envío** descarta sólo ese
+  envío.
+- **Cantidades:** templates con número; alineadores con número (`7`) o rango
+  (`1-7`, cuenta 7 piezas), como ya se usa en la hoja. Otro texto no se guarda.
+- **Total:** se calcula al cambiar las cantidades del bloque. Si la celda de la
+  hoja tiene fórmula, se conserva la fórmula.
+- **Pago impresión:** fecha, 🎁 Cortesía (`CORTESIA`) o ⏳ Pendiente
+  (`PENDIENTE`). **Fecha envío:** calendario.
+- Arriba del envío se ve el avance: `Enviado 14 de 28 piezas del plan · faltan 14`.
+- En Polanco, las mismas columnas salen de los campos sueltos de la ficha y se
+  capturan en este desplegable; su tabla no cambia.
+- Los pedidos en `ENVIADO` se reactivan desde el histórico de Enviados para
+  registrar su siguiente envío.
+
 ## Tablero para pantalla (📺 Tablero)
 
 Pestaña de sólo lectura pensada para dejarse en una TV. Junta los pedidos activos
@@ -108,7 +137,7 @@ de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
 ## Pruebas
 
 ```bash
-python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py
+python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py tests/test_shipments.py
 ```
 
 
