@@ -1,11 +1,11 @@
 """Solicitudes de guía de ventas dentro del control de laboratorio.
 
 Aquí todo son solicitudes de guía (no pedidos de venta): "📋 Solicitar guía"
-registra la solicitud en ``data_pedidos``. Mientras Adjuntos_Guia esté vacío la
-solicitud sigue en "⏳ En espera"; en cuanto almacén sube ahí la guía pasa a
-"📦 Guías cargadas". Se escribe con el mismo vendedor, ID y columnas que usa
-ARTTD JIMENA en app_v para que ventas, almacén y esta vista lean exactamente
-las mismas solicitudes.
+registra la solicitud en ``data_pedidos`` y "📦 Guías cargadas" muestra las que ya
+tienen guía en Adjuntos_Guia; las que siguen con Adjuntos_Guia vacío van en el
+expander "⏳ En espera de guía" de esa misma pestaña. Se escribe con el mismo
+vendedor, ID y columnas que usa ARTTD JIMENA en app_v para que ventas, almacén y
+esta vista lean exactamente las mismas solicitudes.
 """
 
 from __future__ import annotations
@@ -48,9 +48,11 @@ GUIDES_NOTICE_HOURS = 12
 GUIDES_REFRESH_COOLDOWN_SECONDS = 15
 
 GUIDES_TAB_REQUEST = "📋 Solicitar guía"
-GUIDES_TAB_PENDING = "⏳ En espera"
 GUIDES_TAB_LOADED = "📦 Guías cargadas"
-GUIDES_TAB_LABELS = [GUIDES_TAB_REQUEST, GUIDES_TAB_PENDING, GUIDES_TAB_LOADED]
+GUIDES_TAB_LABELS = [GUIDES_TAB_REQUEST, GUIDES_TAB_LOADED]
+GUIDES_PENDING_LABEL = "⏳ En espera de guía"
+# Dónde se ven las solicitudes en espera: un expander dentro de Guías cargadas.
+GUIDES_PENDING_LOCATION = f"{GUIDES_TAB_LOADED} › {GUIDES_PENDING_LABEL}"
 GUIDES_REFRESH_TOKEN_KEY = "guides_refresh_token"
 
 # app_v agrega estas columnas a data_pedidos si faltan antes de registrar.
@@ -542,7 +544,7 @@ def format_waiting_time(since: Any, now: datetime | None = None) -> str:
 
 
 def pending_table(pending: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
-    """Tabla visible de la pestaña En espera."""
+    """Tabla visible de las solicitudes en espera."""
 
     now = now or app_now()
     requested = pending["Fecha_Filtro_Referencia"]
@@ -787,7 +789,7 @@ def render_guides_notice(dataset: pd.DataFrame, pending: pd.DataFrame) -> None:
     waiting = len(own_pending(pending))
     if waiting:
         st.info(f"⏳ Tienes {waiting} solicitud(es) en espera: almacén todavía no carga la guía. "
-                f"Revísalas en {GUIDES_TAB_PENDING}.")
+                f"Revísalas en {GUIDES_PENDING_LOCATION}.")
     st.session_state["guides_home_keys"] = sorted(current_keys)
 
 
@@ -805,7 +807,7 @@ def render_request_feedback() -> None:
         st.balloons()
     with st.container(key="guides_request_success_banner"):
         st.success(message)
-        st.caption(f"La encuentras en {GUIDES_TAB_PENDING} hasta que almacén cargue la guía.")
+        st.caption(f"La encuentras en {GUIDES_PENDING_LOCATION} hasta que almacén suba la guía.")
         if st.button("✅ Aceptar y limpiar mensaje", key="guides_request_clear"):
             st.session_state.pop("guides_request_success", None)
             rerun_active_tab()
@@ -817,8 +819,8 @@ def render_request_tab() -> None:
     st.subheader("📝 Nueva solicitud de guía")
     st.caption(
         f"La solicitud queda registrada a nombre de {GUIDE_VENDOR_NAME} en el Excel de ventas. "
-        f"Mientras almacén la atiende aparece en {GUIDES_TAB_PENDING}; cuando cargue la guía "
-        f"pasa a {GUIDES_TAB_LOADED}."
+        f"Puedes seguirla en {GUIDES_TAB_LOADED}: queda en «{GUIDES_PENDING_LABEL}» hasta que "
+        "almacén suba la guía."
     )
     render_request_feedback()
     version = st.session_state.get("guides_form_version", 0)
@@ -938,38 +940,37 @@ def render_refresh_toolbar() -> None:
         toolbar[1].caption("⏳ Espera unos segundos antes de volver a actualizar.")
 
 
-def render_pending_tab(pending: pd.DataFrame) -> None:
-    """Solicitudes registradas a las que almacén todavía no les sube la guía."""
-
-    st.subheader("⏳ Solicitudes en espera de guía")
-    st.caption("Almacén todavía no les sube la guía. En cuanto la suba, pasan a "
-               f"{GUIDES_TAB_LOADED}. Se muestran las de los últimos {GUIDES_HISTORY_DAYS} días.")
-    render_refresh_toolbar()
+def render_pending_expander(pending: pd.DataFrame) -> None:
+    """Solicitudes a las que almacén todavía no les sube la guía, plegadas en Guías cargadas."""
 
     vendors = ["Todos", *GUIDE_VENDORS]
     if st.session_state.get("guides_pending_vendor") not in vendors:
         st.session_state["guides_pending_vendor"] = GUIDE_VENDOR_NAME
-    vendor = st.columns(2)[0].selectbox("👤 Solicitó", vendors, key="guides_pending_vendor")
+    vendor = st.session_state["guides_pending_vendor"]
     pending = visible_vendor_guides(pending)
     if vendor != "Todos":
         pending = pending[pending["Vendedor_Registro"].astype(str).str.strip().eq(vendor)]
-    if pending.empty:
-        st.success("✅ No hay solicitudes en espera: almacén ya cargó la guía de todas.")
-        return
+    # La key fija la identidad del expander: no se pliega cuando cambia el conteo del título.
+    with st.expander(f"{GUIDES_PENDING_LABEL}: {len(pending)}", key="guides_pending_expander"):
+        st.caption("Almacén todavía no les sube la guía; en cuanto la suba, aparecen en la lista de "
+                   f"guías cargadas. Se muestran las de los últimos {GUIDES_HISTORY_DAYS} días.")
+        st.columns(2)[0].selectbox("👤 Solicitó", vendors, key="guides_pending_vendor")
+        if pending.empty:
+            st.success("✅ No hay solicitudes en espera: almacén ya subió la guía de todas.")
+            return
+        now = app_now()
+        oldest = pending["Fecha_Filtro_Referencia"].min()
+        if pd.notna(oldest):
+            st.markdown('<div class="guides-summary"><span>🕒 La más antigua lleva '
+                        f"{format_waiting_time(oldest, now)}</span></div>", unsafe_allow_html=True)
+        st.dataframe(pending_table(pending, now), width="stretch", hide_index=True,
+                     key="guides_pending_table")
 
-    now = app_now()
-    chips = [f"⏳ En espera: {len(pending)}"]
-    oldest = pending["Fecha_Filtro_Referencia"].min()
-    if pd.notna(oldest):
-        chips.append(f"🕒 La más antigua lleva {format_waiting_time(oldest, now)}")
-    st.markdown('<div class="guides-summary">' + "".join(f"<span>{chip}</span>" for chip in chips)
-                + "</div>", unsafe_allow_html=True)
-    st.dataframe(pending_table(pending, now), width="stretch", hide_index=True, key="guides_pending_table")
 
-
-def render_loaded_tab(dataset: pd.DataFrame) -> None:
+def render_loaded_tab(dataset: pd.DataFrame, pending: pd.DataFrame) -> None:
     st.subheader("📦 Solicitudes con guía cargada por almacén")
     render_refresh_toolbar()
+    render_pending_expander(pending)
 
     guides = visible_vendor_guides(recent_guides(dataset))
     if guides.empty:
@@ -1062,10 +1063,8 @@ def render_guides_tabs(current_user: str) -> None:
         with tab:
             if label == GUIDES_TAB_REQUEST:
                 render_request_tab()
-            elif label == GUIDES_TAB_PENDING:
-                render_pending_tab(pending)
             else:
-                render_loaded_tab(dataset)
+                render_loaded_tab(dataset, pending)
         break
 
 
