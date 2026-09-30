@@ -5369,6 +5369,8 @@ def render_active_app_tab(current_user: str) -> None:
 # 📋 MESA ÚNICA DE TRABAJO
 # ==============================
 WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
+# Histórico de terminados: ENVIADO heredado y los que ya enviaron su encuesta.
+WORKBENCH_SENT_STATUSES = ("ENVIADO", "ENVÍO DE ENCUESTA")
 WORKBENCH_COMPUTED_COLUMNS = [
     "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
     "DETALLE SEMÁFORO",
@@ -5432,6 +5434,32 @@ def paused_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
         result[ID_COLUMN].ne("")
         & result[STATUS_COLUMN].map(normalize_text).eq(normalize_text(PAUSED_STATUS))
     ].reset_index(drop=True)
+
+
+def sent_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
+    """Histórico de enviados; se consulta aparte de la mesa activa."""
+    result = canonical_workbench_df(df)
+    if not {ID_COLUMN, STATUS_COLUMN}.issubset(result.columns):
+        return result.iloc[0:0]
+    sent = {normalize_text(status) for status in WORKBENCH_SENT_STATUSES}
+    return result[
+        result[ID_COLUMN].ne("") & result[STATUS_COLUMN].map(normalize_text).isin(sent)
+    ].reset_index(drop=True)
+
+
+def workbench_reactivation_statuses(apparatus: Any, current_status: Any) -> list[str]:
+    """Etapas a las que puede regresar un pedido enviado para volver a la mesa activa.
+
+    Se ofrece cualquier etapa del flujo del aparato salvo las de cierre (Envío
+    de encuesta, Cancelo). Un pedido que no está enviado sólo conserva su etapa.
+    """
+    current = normalize_status_alias(current_status)
+    flow = [status for status, _ in get_process_flow(apparatus)]
+    sent = {normalize_text(status) for status in WORKBENCH_SENT_STATUSES}
+    if normalize_text(current) not in sent or not flow:
+        return [current]
+    closed = {normalize_text(status) for status in WORKBENCH_CLOSED_STATUSES}
+    return list(dict.fromkeys([current, *(status for status in flow if normalize_text(status) not in closed)]))
 
 
 def workbench_signal(state: str) -> str:
@@ -5576,14 +5604,7 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
     for column in editable & (DATE_COLUMNS | DATETIME_TEXT_COLUMNS) & set(grid):
         parser = parse_simple_date if column in DATE_COLUMNS else parse_spanish_datetime
         dates[column] = {value: parsed.isoformat() for value in set(grid[column]) if (parsed := parser(value))}
-    palettes = {
-        column: {
-            (value if column == APARATO_COLUMN else display_selectbox_value(column, value)): colors
-            for value, colors in palette.items()
-        }
-        for column, palette in SHEET_STYLE_COLORS.items()
-    }
-    palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
+    palettes = workbench_grid_palettes()
     options = build_grid_options(grid, editable=editable, automatic=WORKBENCH_AUTOMATIC_COLUMNS,
                               stage_options=stages, select_options=selections,
                               date_values=dates, datetime_columns=DATETIME_TEXT_COLUMNS,
@@ -5594,6 +5615,45 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                               apparatus_flow_keys=apparatus_flow_keys)
     return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
         palettes=palettes, labeler=lambda column, value: display_selectbox_value(column, clean_display_value(value)))
+
+
+def workbench_grid_palettes() -> dict[str, dict[str, tuple[str, str]]]:
+    palettes = {
+        column: {
+            (value if column == APARATO_COLUMN else display_selectbox_value(column, value)): colors
+            for value, colors in palette.items()
+        }
+        for column, palette in SHEET_STYLE_COLORS.items()
+    }
+    palettes["SEMÁFORO"] = WORKBENCH_SIGNAL_COLORS
+    return palettes
+
+
+def workbench_sent_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str) -> dict:
+    """En Enviados sólo se edita la etapa; los folios repetidos no se reactivan."""
+    can_reactivate = current_user in UNRESTRICTED_STAGE_USERS
+    duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
+    # El histórico crece sin límite; aparato y etapa se repiten mucho entre filas.
+    cache: dict[tuple[str, str, bool], list[str]] = {}
+    stages = {}
+    for _, row in source.iterrows():
+        identifier = row[ID_COLUMN]
+        signature = (row.get(APARATO_COLUMN, ""), row.get(STATUS_COLUMN, ""),
+                     can_reactivate and identifier not in duplicates)
+        if signature not in cache:
+            apparatus, status, reactivable = signature
+            cache[signature] = [
+                display_selectbox_value(STATUS_COLUMN, option)
+                for option in (workbench_reactivation_statuses(apparatus, status) if reactivable
+                               else [normalize_status_alias(status)])
+            ]
+        stages[identifier] = cache[signature]
+    return build_grid_options(
+        grid, editable={STATUS_COLUMN} & set(grid.columns) if can_reactivate else set(),
+        automatic=WORKBENCH_AUTOMATIC_COLUMNS, stage_options=stages, select_options={},
+        date_values={}, datetime_columns=DATETIME_TEXT_COLUMNS,
+        palettes=workbench_grid_palettes(), time_zone=APP_TIMEZONE_NAME,
+    )
 
 
 def workbench_saved_column_order(current_user: str, available_columns: Any) -> list[str]:
@@ -5650,9 +5710,12 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
 
 def validate_workbench_changes(
     original: pd.DataFrame, fresh: pd.DataFrame, changes: list[tuple[str, dict[str, Any]]], current_user: str,
-    *, select_catalog: dict | None = None,
+    *, select_catalog: dict | None = None, reactivate: bool = False,
 ) -> list[str]:
-    """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión."""
+    """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión.
+
+    En modo ``reactivate`` (histórico de Enviados) sólo se cambia la etapa.
+    """
     errors = []
     allowed_columns = workbench_editable_columns(current_user, original.columns)
     if ID_COLUMN not in fresh:
@@ -5673,6 +5736,19 @@ def validate_workbench_changes(
         if conflicts:
             errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
             continue
+        if reactivate:
+            if set(delta) != {STATUS_COLUMN}:
+                errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
+                continue
+            if current_user not in UNRESTRICTED_STAGE_USERS:
+                errors.append(f"{identifier}: tu usuario no puede reactivar pedidos enviados.")
+                continue
+            previous_status = normalize_status_alias(row.get(STATUS_COLUMN, ""))
+            new_status = normalize_status_alias(delta[STATUS_COLUMN])
+            targets = workbench_reactivation_statuses(row.get(APARATO_COLUMN, ""), previous_status)[1:]
+            if new_status not in targets:
+                errors.append(f"{identifier}: {previous_status} → {new_status} no reactiva el pedido.")
+                continue
         multiple = dropdown_fields.multiple_columns(select_catalog or {}, original)
         for column, value in delta.items():
             if column == APARATO_COLUMN:
@@ -5720,7 +5796,9 @@ def validate_workbench_changes(
 
 
 def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current_user: str,
-                           *, select_catalog: dict | None = None) -> tuple[list[str], list[str]]:
+                           *, select_catalog: dict | None = None,
+                           reactivate: bool = False) -> tuple[list[str], list[str]]:
+    """Guarda por folio; ``reactivate`` saca pedidos del histórico de Enviados."""
     try:
         changes = workbench_changes(original, edited)
     except ValueError as exc:
@@ -5731,17 +5809,20 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
         dropdown_fields.multiple_columns(select_catalog or {}, original))
     clear_sheet_data_cache()
     fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
-    errors = validate_workbench_changes(original, fresh, changes, current_user, select_catalog=select_catalog)
+    errors = validate_workbench_changes(original, fresh, changes, current_user, select_catalog=select_catalog,
+                                        reactivate=reactivate)
     if errors:
         return [], errors
     saved = []
+    comment = ("Reactivado desde el histórico de Enviados." if reactivate
+               else "Actualización desde la tabla de trabajo")
     for identifier, delta in changes:
         row = fresh[fresh[ID_COLUMN] == identifier].iloc[0]
         expected = {column: row.get(column, "") for column in {STATUS_COLUMN, APARATO_COLUMN, *delta}}
         try:
             if STATUS_COLUMN in delta:
                 success = advance_case_status(identifier=identifier, row=row, new_status=delta[STATUS_COLUMN],
-                                              current_user=current_user, comment="Actualización desde la tabla de trabajo",
+                                              current_user=current_user, comment=comment,
                                               extra_changes={key: value for key, value in delta.items() if key != STATUS_COLUMN},
                                               expected_values=expected)
                 if not success:
@@ -5809,29 +5890,59 @@ def pause_workbench_cases(
 def reset_workbench() -> None:
     """Invalida la fotografía y la clave del editor después de una operación explícita."""
     st.session_state.pop("workbench_snapshot", None)
-    st.session_state.pop("workbench_editor_key", None)
-    st.session_state.pop("workbench_editor_baseline", None)
+    for prefix in ("workbench", "workbench_sent"):
+        st.session_state.pop(f"{prefix}_editor_key", None)
+        st.session_state.pop(f"{prefix}_editor_baseline", None)
     st.session_state.pop("workbench_save_errors", None)
     st.session_state["workbench_revision"] = st.session_state.get("workbench_revision", 0) + 1
 
 
+def discard_sent_workbench_changes() -> None:
+    """Descarta sólo el histórico de Enviados; la mesa activa conserva sus ediciones."""
+    st.session_state.pop("workbench_sent_editor_key", None)
+    st.session_state.pop("workbench_sent_editor_baseline", None)
+    st.session_state["workbench_sent_revision"] = st.session_state.get("workbench_sent_revision", 0) + 1
+
+
+def without_repeated_folios(
+    baseline: pd.DataFrame, edited: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Los folios repetidos se muestran en Enviados, pero no se pueden reactivar."""
+    if ID_COLUMN not in baseline or ID_COLUMN not in edited:
+        return baseline, edited
+    repeated = set(baseline.loc[baseline[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
+    return (
+        baseline[~baseline[ID_COLUMN].isin(repeated)],
+        edited[~edited[ID_COLUMN].isin(repeated)],
+    )
+
+
 def workbench_pending_count() -> int:
-    return workbench_grid_pending_count() + order_detail.pending_count("apparatus")
+    """Suma la mesa activa, el histórico de Enviados y las fichas: refrescar perdería todo."""
+    return (workbench_grid_pending_count() + workbench_sent_pending_count()
+            + order_detail.pending_count("apparatus"))
 
 
-def workbench_grid_pending_count() -> int:
-    key = st.session_state.get("workbench_editor_key", "")
+def workbench_grid_pending_count(prefix: str = "workbench", *, skip_repeated: bool = False) -> int:
+    key = st.session_state.get(f"{prefix}_editor_key", "")
     if not key:
         return 0
     state = st.session_state.get(key) or {}
-    baseline = st.session_state.get("workbench_editor_baseline")
+    baseline = st.session_state.get(f"{prefix}_editor_baseline")
     if baseline is None or not state:
         return 0
     try:
-        return len(workbench_changes(baseline, response_frame(baseline, state, ID_COLUMN)))
+        edited = response_frame(baseline, state, ID_COLUMN)
+        if skip_repeated:
+            baseline, edited = without_repeated_folios(baseline, edited)
+        return len(workbench_changes(baseline, edited))
     except ValueError:
         # Un resultado incompleto tampoco debe permitir refrescar y perder ediciones.
         return 1
+
+
+def workbench_sent_pending_count() -> int:
+    return workbench_grid_pending_count("workbench_sent", skip_repeated=True)
 
 
 def workbench_has_pending_edits() -> bool:
@@ -5990,6 +6101,30 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
                 st.dataframe(history[fields], hide_index=True, use_container_width=True)
 
 
+def workbench_apparatus_options(table: pd.DataFrame) -> list[str]:
+    """Componentes de aparato presentes, en el orden del catálogo."""
+    if APARATO_COLUMN not in table:
+        return []
+    return sorted(
+        {component for value in table[APARATO_COLUMN] for component in apparatus_components(value)},
+        key=lambda option: APARATO_OPTIONS.index(option) if option in APARATO_OPTIONS else len(APARATO_OPTIONS),
+    )
+
+
+def filter_workbench_cases(table: pd.DataFrame, *, search: str = "", apparatuses: Any = ()) -> pd.DataFrame:
+    """Buscador y filtro por aparato compartidos por la mesa activa y Enviados."""
+    filtered = table.copy()
+    if search and not filtered.empty:
+        search_columns = [column for column in [ID_COLUMN, APARATO_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"] if column in table]
+        filtered = filtered[filtered[search_columns].apply(lambda row: normalize_text(search) in normalize_text(" ".join(row)), axis=1)]
+    if apparatuses and APARATO_COLUMN in filtered and not filtered.empty:
+        selected = {normalize_text(value) for value in apparatuses}
+        filtered = filtered[filtered[APARATO_COLUMN].map(
+            lambda value: bool(selected & {normalize_text(component) for component in apparatus_components(value)})
+        )]
+    return filtered
+
+
 def set_workbench_signal_filter(signal: str) -> None:
     """Actualiza el semáforo desde las tarjetas superiores."""
 
@@ -6104,11 +6239,106 @@ def render_paused_workbench(
             "Guardar y reactivar",
             key="save_paused_workbench",
             type="primary",
-            disabled=not status_changes or bool(invalid) or bool(order_detail.pending_count("apparatus")),
+            disabled=(not status_changes or bool(invalid) or bool(order_detail.pending_count("apparatus"))
+                      or workbench_sent_pending_count() > 0),
         ):
             saved, errors = save_workbench_changes(grid, edited, current_user)
             st.session_state["workbench_feedback"] = (saved, errors)
             rerun_active_tab()
+
+
+def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
+    """Histórico de enviados; cambiar la etapa devuelve el pedido a la mesa activa."""
+    can_reactivate = current_user in UNRESTRICTED_STAGE_USERS
+    form_pending = order_detail.pending_count("apparatus") > 0
+    # Guardar reconstruye todas las tablas; no debe borrar ediciones de arriba.
+    other_pending = (workbench_grid_pending_count() > 0 or form_pending
+                     or bool(st.session_state.get("workbench_paused_pending")))
+    sent_pending = workbench_sent_pending_count() > 0
+    if "workbench_sent_feedback" in st.session_state:
+        saved, errors = st.session_state.pop("workbench_sent_feedback")
+        if saved:
+            st.toast(f"Reactivado: {', '.join(saved)} · ya aparece en los pedidos activos.", icon="✅")
+        for error in errors:
+            st.error(error)
+    expander_key = "workbench_sent_expanded"
+    if sent_pending and not st.session_state.get(expander_key):
+        # Cerrar el expander desmontaría la grilla y las etapas elegidas se
+        # perderían en silencio; se mantiene abierto hasta guardar o descartar.
+        st.session_state[expander_key] = True
+        st.toast("Guarda o descarta los cambios antes de cerrar Enviados.", icon="⚠️")
+    # on_change="rerun": la grilla se monta con el expander ya abierto, no con ancho cero.
+    with st.expander(
+        f"🚚 Enviados · {len(table)} pedido(s)",
+        expanded=False,
+        key=expander_key,
+        on_change="rerun",
+    ) as archive:
+        if not archive.open:
+            return
+        st.caption(
+            "Histórico de pedidos enviados (Enviado y Envío de encuesta). Cambia la etapa de un "
+            "pedido y pulsa Guardar y reactivar: regresará a los pedidos activos de arriba."
+            if can_reactivate
+            else "Histórico de pedidos enviados (Enviado y Envío de encuesta). "
+                 "Sólo Admin, Jime y Lesly pueden reactivarlos."
+        )
+        if table.empty:
+            st.info("Todavía no hay pedidos enviados.")
+            return
+        filters = st.columns([2.2, 1.5])
+        search = filters[0].text_input(
+            "Buscar pedido", placeholder="Folio, doctor, paciente o aparato",
+            disabled=sent_pending, key="workbench_sent_search",
+        )
+        apparatuses = filters[1].multiselect(
+            "Aparato", workbench_apparatus_options(table),
+            disabled=sent_pending, key="workbench_sent_apparatus",
+        )
+        filtered = filter_workbench_cases(table, search=search, apparatuses=apparatuses).reset_index(drop=True)
+        st.caption(
+            f"{len(filtered)} de {len(table)} pedidos enviados · Sólo se edita la etapa; se ofrece "
+            "cualquier etapa del flujo del aparato excepto Envío de encuesta y Cancelo."
+        )
+        if filtered.empty:
+            st.info("No hay pedidos enviados que coincidan con la búsqueda.")
+            return
+        grid = workbench_display_df(filtered)
+        signature = hashlib.sha256(json.dumps([
+            current_user, st.session_state.get("workbench_revision", 0),
+            st.session_state.get("workbench_sent_revision", 0), search, apparatuses,
+        ], sort_keys=True).encode()).hexdigest()[:16]
+        key = f"workbench_sent_grid_{signature}"
+        st.session_state["workbench_sent_editor_key"] = key
+        st.session_state["workbench_sent_editor_baseline"] = grid.copy()
+        options = workbench_sent_grid_options(grid, filtered, current_user)
+        order_detail.lock_grid(options, form_pending)
+        edited, _ = render_grid(grid, options, key)
+        baseline, reactivated = without_repeated_folios(grid, edited)
+        try:
+            changes = workbench_changes(baseline, reactivated)
+        except ValueError as exc:
+            st.error(str(exc))
+            changes = []
+        save_column, discard_column, count_column = st.columns([1.5, 1.3, 3.2])
+        if save_column.button(
+            "Guardar y reactivar", type="primary",
+            disabled=not changes or other_pending or not can_reactivate,
+            use_container_width=True, key="workbench_sent_save",
+        ):
+            saved, errors = save_workbench_changes(baseline, reactivated, current_user, reactivate=True)
+            st.session_state["workbench_sent_feedback"] = (saved, errors)
+            rerun_active_tab()
+        if discard_column.button(
+            "Descartar cambios", disabled=not changes and not sent_pending,
+            use_container_width=True, key="workbench_sent_discard",
+        ):
+            discard_sent_workbench_changes()
+            rerun_active_tab()
+        if other_pending:
+            count_column.caption("Guarda o descarta primero los cambios de la tabla de pedidos activos.")
+        else:
+            count_column.caption(f"{len(changes)} pedidos por reactivar")
 
 
 def render_workbench(current_user: str) -> None:
@@ -6117,20 +6347,22 @@ def render_workbench(current_user: str) -> None:
     if snapshot is not None and snapshot.get("user") != current_user:
         order_detail.clear_drafts("apparatus")
     # Las sesiones que ya estaban abiertas antes de incorporar el archivo de
-    # pausados conservan una fotografía con el formato anterior. Obliga a
-    # reconstruirla para que esos casos no sigan apareciendo en la principal
-    # mientras el contador muestra cero.
+    # pausados (o el histórico de Enviados) conservan una fotografía con el
+    # formato anterior. Obliga a reconstruirla para que esos casos no sigan
+    # apareciendo en la principal mientras el contador muestra cero.
     if (
         snapshot is None
         or snapshot.get("user") != current_user
         or "paused_table" not in snapshot
+        or "sent_table" not in snapshot
         or "times" not in snapshot
     ):
         estatus = read_sheet_df(SHEET_ESTATUS)
         tiempos = read_sheet_df(SHEET_TIEMPOS)
         table = build_workbench_table(estatus, tiempos)
         paused_table = build_workbench_table(estatus, tiempos, paused_only=True)
-        snapshot = {"user": current_user, "table": table, "paused_table": paused_table, "times": tiempos, "at": app_now()}
+        snapshot = {"user": current_user, "table": table, "paused_table": paused_table,
+                    "sent_table": sent_workbench_cases(estatus), "times": tiempos, "at": app_now()}
         st.session_state["workbench_snapshot"] = snapshot
     table = snapshot["table"]
     paused_table = snapshot.get("paused_table", table.iloc[0:0])
@@ -6179,23 +6411,9 @@ def render_workbench(current_user: str) -> None:
     st.markdown(f'<div class="lab-edit-bar {bar_class}" role="status">{bar_text}</div>', unsafe_allow_html=True)
     filters = st.columns([2.2, 1.6, 1.2, 1.2])
     search = filters[0].text_input("Buscar pedido", placeholder="Folio, doctor, paciente o aparato", disabled=pending, key="workbench_search")
-    apparatus_options = (
-        sorted(
-            {
-                component
-                for value in table[APARATO_COLUMN]
-                for component in apparatus_components(value)
-            },
-            key=lambda option: APARATO_OPTIONS.index(option)
-            if option in APARATO_OPTIONS
-            else len(APARATO_OPTIONS),
-        )
-        if APARATO_COLUMN in table
-        else []
-    )
     apparatuses = filters[1].multiselect(
         "Aparato",
-        apparatus_options,
+        workbench_apparatus_options(table),
         disabled=pending,
         key=f"workbench_filter_{APARATO_COLUMN}",
         help="Puedes elegir uno o varios, por ejemplo TIGER + DISTALIZADOR.",
@@ -6216,10 +6434,7 @@ def render_workbench(current_user: str) -> None:
         chosen[column] = container.multiselect(column.title(), options, disabled=pending,
                                               format_func=lambda value, name=column: display_selectbox_value(name, value),
                                               key=f"workbench_filter_{column}")
-    filtered = table.copy()
-    if search:
-        search_columns = [column for column in [ID_COLUMN, APARATO_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"] if column in table]
-        filtered = filtered[filtered[search_columns].apply(lambda row: normalize_text(search) in normalize_text(" ".join(row)), axis=1)]
+    filtered = filter_workbench_cases(table, search=search)
     if signal not in {"Todos", "🚫 Confección en pausa"}:
         filtered = filtered[filtered["SEMÁFORO"] == signal]
     elif signal == "🚫 Confección en pausa":
@@ -6229,18 +6444,7 @@ def render_workbench(current_user: str) -> None:
     for column, values in chosen.items():
         if values:
             if column == APARATO_COLUMN:
-                selected_apparatuses = {normalize_text(value) for value in values}
-                filtered = filtered[
-                    filtered[column].map(
-                        lambda value: bool(
-                            selected_apparatuses
-                            & {
-                                normalize_text(component)
-                                for component in apparatus_components(value)
-                            }
-                        )
-                    )
-                ]
+                filtered = filter_workbench_cases(filtered, apparatuses=values)
             else:
                 filtered = filtered[filtered[column].str.strip().isin(values)]
     if priority != "Orden de la hoja":
@@ -6299,8 +6503,12 @@ def render_workbench(current_user: str) -> None:
         except ValueError as exc:
             st.error(str(exc))
             changes = []
+        # Guardar reconstruye todas las tablas; no debe borrar lo elegido en Enviados.
+        sent_pending = workbench_sent_pending_count() > 0
         save_col, discard_col, count_col, pause_col, order_col = st.columns([1.2, 1.2, 1.5, 1.7, 1.2])
-        if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending, use_container_width=True):
+        if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending or sent_pending,
+                           use_container_width=True,
+                           help="Primero guarda o descarta los cambios del histórico de Enviados." if sent_pending else None):
             st.session_state.pop("workbench_save_errors", None)
             changed_ids = [identifier for identifier, _ in changes]
             saved, errors = save_workbench_changes(grid, edited, current_user, select_catalog=catalog)
@@ -6331,7 +6539,7 @@ def render_workbench(current_user: str) -> None:
                 st.error(message)
         if pause_col.button(
             "Confección en pausa",
-            disabled=bool(changes) or form_pending or selected.empty,
+            disabled=bool(changes) or form_pending or sent_pending or selected.empty,
             use_container_width=True,
             help="Archiva temporalmente todos los pedidos marcados en la columna Abrir.",
         ):
@@ -6350,6 +6558,7 @@ def render_workbench(current_user: str) -> None:
         current_user,
         scroll_into_view=signal == "🚫 Confección en pausa",
     )
+    render_sent_workbench(snapshot["sent_table"], current_user)
 
 
 def workbench_tab_options(current_user: str) -> list[str]:
