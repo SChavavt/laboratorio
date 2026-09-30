@@ -193,9 +193,95 @@ def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
     assert at.session_state['demo_rows'][1]['VENDEDOR'] == 'JIMENA'
 
 
+def test_card_shows_stage_and_signal_once_without_fixed_texts():
+    at = apparatus_app()
+    assert not at.exception
+    texts = [item.value for item in [*at.markdown, *at.caption]]
+    assert not any(phrase in text for text in texts for phrase in (
+        'Pedidos seleccionados', 'Editar este pedido', 'Completa los campos', 'Datos principales',
+        'Paciente:', 'Tu usuario puede mover'))
+    [header] = [text for text in texts if 'class="order-chip"' in text]
+    assert '🔵 REVISIÓN DE ARCHIVOS' in header and '⚪ Sin medición' in header
+    assert 'Sin registro de inicio de esta etapa' in header
+    assert 'cualquier etapa de su flujo' in field(at, 'STATUS').help
+    # El color de Sheets pinta el propio campo; no hay un chip repetido debajo.
+    css = ''.join(item.proto.body for item in at.get('html'))
+    assert detail.widget_class(field(at, 'STATUS').key) + ' [role="group"] {background: #C9E6EC' in css
+
+
+def test_signal_detail_drops_only_the_part_that_repeats_the_signal():
+    assert lab.workbench_signal_detail('🟢 En tiempo', 'En tiempo') == ''
+    assert lab.workbench_signal_detail('🟡 Por vencer', 'Próximo a vencer') == ''
+    assert lab.workbench_signal_detail('⚪ Sin medición', 'Sin registro de inicio de esta etapa') == \
+        'Sin registro de inicio de esta etapa'
+    special = 'Atrasado - Pago planeación > 10 días hábiles sin GUÍA PSM + PSM ENVIADA'
+    assert lab.workbench_signal_detail('🔴 Atrasado', f'Atrasado · {special}') == special
+    assert lab.workbench_signal_detail('🔴 Atrasado', f'En tiempo · {special}') == f'En tiempo · {special}'
+
+
+def test_fields_fill_rows_and_colors_target_the_widget_streamlit_draws():
+    assert [detail.grid_width(count) for count in range(1, 9)] == [3, 3, 3, 4, 3, 3, 4, 4]
+    # Como el navegador: cada unidad UTF-16 fuera de [a-zA-Z0-9_-] se vuelve guion.
+    assert detail.widget_class(' order_field_1_FECHA/HORA ENVÍO 🦷') == 'st-key-order_field_1_FECHA-HORA-ENV-O---'
+    tags = detail.value_css('k', 'APARATO', ['MSE', 'TIGER'], lab.SHEET_STYLE_COLORS, True)
+    assert '.st-key-k [data-tag-index="1"] {background: #C99A2E !important; color: #FFFFFF' in tags
+    single = detail.value_css('k', 'STATUS', ['EN PLANEACIÓN'], lab.SHEET_STYLE_COLORS, False)
+    assert single.startswith('.st-key-k [role="group"] {background: #FFE86A !important; color: #000000')
+
+
+def test_aligner_card_header_keeps_signal_progress_and_stage_color():
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import alineadores_pg as app
+definitions = app.parse_process_matrix([['GRAPHY', ''], ['Fases', 'Tiempo'],
+    ['REVISIÓN DE ARCHIVOS', '1 día'], ['EN PLANEACIÓN', '1 día']])
+app.get_order_form_catalog = lambda: {{'VENDEDOR': ['JIMENA', 'MICHELLE']}}
+app.render_case_actions(pd.DataFrame([{{app.ID_COLUMN: '0001', app.STATUS_COLUMN: 'EN PLANEACIÓN',
+    app.PRODUCT_COLUMN: 'GRAPHY', 'NOMBRE DOCTOR': 'Cliente demo', 'VENDEDOR': 'JIMENA',
+    'SEMÁFORO': '🟢 En tiempo', 'DETALLE SEMÁFORO': '3.20 de 8 h hábiles consumidas (40%).'}}]),
+    pd.DataFrame(), 'Jime', definitions, False)
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    [header] = [item.value for item in at.markdown if 'class="order-chip"' in item.value]
+    assert '🟢 En tiempo' in header and '3.20 de 8 h hábiles consumidas (40%).' in header
+    assert not any('Opciones permitidas' in item.value or 'Paciente:' in item.value for item in at.caption)
+    # STATUS usa el color de la etapa, igual que la tabla y el encabezado.
+    background = align.status_palette_value('EN PLANEACIÓN')[0]
+    css = ''.join(item.proto.body for item in at.get('html'))
+    assert detail.widget_class(field(at, 'STATUS').key) + f' [role="group"] {{background: {background}' in css
+
+
+def test_aligner_paused_card_names_the_pause_once_and_keeps_its_guidance():
+    assert align.signal_detail('Pausa: BORRADOR TITAN · 2.00 h hábiles') == '2.00 h hábiles'
+    assert align.signal_detail('Sin registro de inicio para la etapa actual.') == \
+        'Sin registro de inicio para la etapa actual.'
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import alineadores_pg as app
+definitions = app.parse_process_matrix([['GRAPHY', ''], ['Fases', 'Tiempo'],
+    ['REVISIÓN DE ARCHIVOS', '1 día'], ['BORRADOR TITAN', '']])
+app.get_order_form_catalog = lambda: {{'VENDEDOR': ['JIMENA', 'MICHELLE']}}
+app.render_case_actions(pd.DataFrame([{{app.ID_COLUMN: '0001', app.STATUS_COLUMN: 'BORRADOR TITAN',
+    app.PRODUCT_COLUMN: 'GRAPHY', 'NOMBRE DOCTOR': 'Cliente demo', 'VENDEDOR': 'JIMENA',
+    'SEMÁFORO': '🟣 En pausa', 'DETALLE SEMÁFORO': 'Pausa: BORRADOR TITAN · 2.00 h hábiles'}}]),
+    pd.DataFrame(), 'Jime', definitions, False)
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception and not at.warning
+    [header] = [item.value for item in at.markdown if 'class="order-chip"' in item.value]
+    assert header.count('BORRADOR TITAN') == 1 and '🟣 En pausa' in header and '2.00 h hábiles' in header
+    assert 'en pausa por **BORRADOR TITAN**' in field(at, 'STATUS').help
+
+
 def test_multi_selection_can_choose_one_form_without_clearing_other_checks():
     at = apparatus_app(('001', '002'))
     assert not at.exception
+    assert any(item.value == '### Pedidos seleccionados · 2' for item in at.markdown)
     chooser = field(at, 'Pedido para editar')
     chooser.select('001').run()
     assert any(item.value == 'Pedido · Cliente A' for item in at.subheader)
