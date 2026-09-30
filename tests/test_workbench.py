@@ -263,6 +263,197 @@ def test_paused_cases_are_archived_and_can_return_to_any_stage_in_their_flow():
     )
 
 
+def test_sent_cases_are_listed_apart_from_the_active_table():
+    source = pd.DataFrame([
+        case("1", "ENVIADO"), case("2", "ENVIO DE ENCUESTA"), case("3", "CANCELO"),
+        case("4", "PRODUCTO ENVIADO"), case("5"), {app.ID_COLUMN: "", app.STATUS_COLUMN: "ENVIADO"},
+    ])
+    sent = app.sent_workbench_cases(source)
+    assert list(sent[app.ID_COLUMN]) == ["1", "2"]
+    assert list(sent[app.STATUS_COLUMN]) == ["ENVIADO", "ENVÍO DE ENCUESTA"]
+    assert set(app.active_workbench_cases(source)[app.ID_COLUMN]).isdisjoint(sent[app.ID_COLUMN])
+
+
+def test_sent_cases_return_to_any_open_stage_of_their_flow():
+    for status in app.WORKBENCH_SENT_STATUSES:
+        options = app.workbench_reactivation_statuses("HYRAX", status)
+        assert options[0] == status
+        assert {"ORDEN RECIBIDA", "LISTO P/CONFECCIÓN", "PRODUCTO ENVIADO"} <= set(options)
+        assert not {"CANCELO", app.PAUSED_STATUS} & set(options)
+        assert "ENVÍO DE ENCUESTA" not in options[1:]
+    assert "EN DISEÑO" in app.workbench_reactivation_statuses("TIGER", "ENVIADO")
+    # Sólo los enviados usan esta ruta; los demás conservan su flujo normal.
+    assert app.workbench_reactivation_statuses("MSE", "EN PLANEACIÓN") == ["EN PLANEACIÓN"]
+
+
+def test_sent_reactivation_only_changes_the_stage_for_unrestricted_users():
+    original = pd.DataFrame([case("1", "ENVIADO")])
+    reactivate = [("1", {app.STATUS_COLUMN: "EN PLANEACIÓN"})]
+    for user in ("Admin", "Jime", "Lesly"):
+        assert not app.validate_workbench_changes(original, original, reactivate, user, reactivate=True)
+    assert "no puede reactivar" in app.validate_workbench_changes(
+        original, original, reactivate, "Vero", reactivate=True)[0]
+    assert "no reactiva" in app.validate_workbench_changes(
+        original, original, [("1", {app.STATUS_COLUMN: "CANCELO"})], "Admin", reactivate=True)[0]
+    assert "sólo se puede cambiar la etapa" in app.validate_workbench_changes(
+        original, original, [("1", {app.STATUS_COLUMN: "EN PLANEACIÓN", "NOMBRE DOCTOR": "Otro"})],
+        "Admin", reactivate=True)[0]
+    # Si otro usuario ya lo reactivó, no se vuelve a mover desde el histórico.
+    fresh = pd.DataFrame([case("1", "EN PLANEACIÓN")])
+    assert "otro usuario" in app.validate_workbench_changes(
+        original, fresh, reactivate, "Admin", reactivate=True)[0]
+
+
+def test_sent_grid_only_edits_stage_with_reactivation_options():
+    source = pd.DataFrame([case("1", "ENVIADO"), case("2", "ENVIADO"), case("2", "ENVIADO")])
+    grid = app.workbench_display_df(source)
+    options = app.workbench_sent_grid_options(grid, source, "Jime")
+    columns = {item["field"]: item for item in options["columnDefs"]}
+    assert columns["NOMBRE DOCTOR"]["editable"] is False
+    assert columns["PAGO"]["editable"] is False
+    assert columns[app.STATUS_COLUMN]["editable"] is not False
+    stages = options["context"]["stageOptions"]
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "EN PLANEACIÓN") in stages["1"]
+    assert app.display_selectbox_value(app.STATUS_COLUMN, "CANCELO") not in stages["1"]
+    # Un folio repetido se ve, pero no se puede reactivar.
+    assert stages["2"] == ["ENVIADO"]
+    vero = {item["field"]: item for item in app.workbench_sent_grid_options(grid, source, "Vero")["columnDefs"]}
+    assert vero[app.STATUS_COLUMN]["editable"] is False
+
+
+def test_sent_reactivation_saves_the_stage_with_its_own_comment(monkeypatch):
+    original = app.workbench_display_df(pd.DataFrame([case("1", "ENVIADO")]))
+    edited = original.copy()
+    edited.loc[0, app.STATUS_COLUMN] = app.display_selectbox_value(app.STATUS_COLUMN, "EN PLANEACIÓN")
+    calls = []
+    monkeypatch.setattr(app, "clear_sheet_data_cache", lambda: None)
+    monkeypatch.setattr(app, "reset_workbench", lambda: None)
+    monkeypatch.setattr(app, "read_sheet_df", lambda _: pd.DataFrame([case("1", "ENVIADO")]))
+    monkeypatch.setattr(app, "advance_case_status", lambda **kwargs: calls.append(kwargs) or True)
+    assert app.save_workbench_changes(original, edited, "Admin", reactivate=True) == (["1"], [])
+    assert calls[0]["new_status"] == "EN PLANEACIÓN"
+    assert calls[0]["comment"] == "Reactivado desde el histórico de Enviados."
+    assert calls[0]["extra_changes"] == {}
+
+
+def test_repeated_sent_folios_do_not_block_other_reactivations(monkeypatch):
+    baseline = app.workbench_display_df(
+        pd.DataFrame([case("1", "ENVIADO"), case("2", "ENVIADO"), case("2", "ENVIADO")])
+    )
+    edited = baseline.copy()
+    edited.loc[0, app.STATUS_COLUMN] = app.display_selectbox_value(app.STATUS_COLUMN, "EN PLANEACIÓN")
+    with pytest.raises(ValueError):
+        app.workbench_changes(baseline, edited)
+    assert app.workbench_changes(*app.without_repeated_folios(baseline, edited)) == [
+        ("1", {app.STATUS_COLUMN: "EN PLANEACIÓN"})
+    ]
+
+    monkeypatch.setattr(app.st, "session_state", {
+        "workbench_sent_editor_key": "sent_grid",
+        "workbench_sent_editor_baseline": baseline,
+        "sent_grid": {"rows": edited.to_dict("records")},
+    })
+    assert app.workbench_sent_pending_count() == 1
+    assert app.workbench_pending_count() == 1
+    app.discard_sent_workbench_changes()
+    assert app.workbench_pending_count() == 0
+
+
+@pytest.mark.parametrize("user", ["Admin", "Vero"])
+def test_sent_archive_opens_with_search_and_apparatus_filters(user):
+    from streamlit.testing.v1 import AppTest
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import pandas as pd
+import streamlit as st
+from unittest.mock import patch
+rows = [{case()!r}, {case("900", "ENVIADO", "TIGER")!r}, {case("901", "ENVÍO DE ENCUESTA", "HYRAX")!r}]
+if st.session_state.get("test_open"):
+    st.session_state["workbench_sent_expanded"] = True
+with patch.multiple(
+    app,
+    require_authenticated_user=lambda: {user!r},
+    workbench_tab_options=lambda _: ["📋 Seguimiento"],
+    ensure_tiempos_headers=lambda: None,
+    read_sheet_df=lambda name: pd.DataFrame(rows) if name == app.SHEET_ESTATUS else pd.DataFrame(),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert any(item.label == "🚚 Enviados · 2 pedido(s)" for item in at.expander)
+    assert all(item.key != "workbench_sent_search" for item in at.text_input)
+    assert at.button(key="workbench_signal_card_total").label.endswith("**1**")
+
+    at.session_state["test_open"] = True
+    at.run()
+    assert not at.exception
+    search = at.text_input(key="workbench_sent_search")
+    assert search.placeholder == "Folio, doctor, paciente o aparato"
+    assert at.multiselect(key="workbench_sent_apparatus").options == ["TIGER", "HYRAX"]
+    assert at.button(key="workbench_sent_save").disabled
+    assert any("Sólo Admin, Jime y Lesly" in item.value for item in at.caption) == (user == "Vero")
+    search.set_value("900").run()
+    assert not at.exception
+    assert app.ID_COLUMN in at.session_state["workbench_sent_editor_baseline"]
+    assert list(at.session_state["workbench_sent_editor_baseline"][app.ID_COLUMN]) == ["900"]
+
+
+def test_sent_reactivation_blocks_refresh_and_returns_the_order_to_the_active_table():
+    from streamlit.testing.v1 import AppTest
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import pandas as pd
+import streamlit as st
+if "demo_rows" not in st.session_state:
+    st.session_state.demo_rows = [{case()!r}, {case("900", "ENVIADO", "TIGER")!r}]
+    st.session_state.demo_logs = []
+    st.session_state.workbench_sent_expanded = True
+def update(identifier, changes, **kwargs):
+    for row in st.session_state.demo_rows:
+        if row[app.ID_COLUMN] == identifier:
+            row.update(changes)
+    return {{"success":True,"updated_columns":list(changes),"skipped_columns":[],"error":""}}
+from unittest.mock import patch
+with patch.multiple(
+    app,
+    require_authenticated_user=lambda: "Jime",
+    workbench_tab_options=lambda _: ["📋 Seguimiento"],
+    ensure_tiempos_headers=lambda: None,
+    clear_sheet_data_cache=lambda: None,
+    read_sheet_df=lambda name: pd.DataFrame(st.session_state.demo_rows) if name == app.SHEET_ESTATUS else pd.DataFrame(),
+    register_status_change=lambda **kwargs: st.session_state.demo_logs.append(kwargs),
+    update_row_by_columna_1=update,
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    key = at.session_state["workbench_sent_editor_key"]
+    rows = at.session_state["workbench_sent_editor_baseline"].to_dict("records")
+    rows[0][app.STATUS_COLUMN] = app.display_selectbox_value(app.STATUS_COLUMN, "EN DISEÑO")
+    at.session_state[key] = {"rows": rows}
+    at.run()
+    assert not at.exception
+    assert next(button for button in at.button if button.label == "Actualizar datos").disabled
+    assert next(button for button in at.button if button.label == "Guardar cambios").disabled
+    assert at.text_input(key="workbench_sent_search").disabled
+    save = at.button(key="workbench_sent_save")
+    assert not save.disabled
+    save.click()
+    at.session_state[key] = {"rows": rows}
+    at.run()
+    assert not at.exception
+    assert at.session_state["demo_rows"][1][app.STATUS_COLUMN] == "EN DISEÑO"
+    assert at.session_state["demo_logs"][0]["change_comment"] == "Reactivado desde el histórico de Enviados."
+    assert at.button(key="workbench_signal_card_total").label.endswith("**2**")
+    assert any(item.label == "🚚 Enviados · 0 pedido(s)" for item in at.expander)
+
+
 def test_workbench_rebuilds_a_snapshot_created_before_paused_archive(monkeypatch):
     legacy_table = pd.DataFrame([case("paused", status=app.PAUSED_STATUS)])
     app.st.session_state["workbench_snapshot"] = {
