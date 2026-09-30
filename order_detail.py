@@ -11,10 +11,56 @@ import streamlit as st
 from dropdown_fields import join_values, option_colors, split_values
 
 
+HEADER_CSS = """<style>
+[class*="st-key-order_head_"] h3 {padding: 0; line-height: 1.25;}
+[class*="st-key-order_head_"] p, [class*="st-key-order_head_"] [data-testid="stMarkdownContainer"] {margin: 0;}
+.order-chip {display: inline-block; border-radius: 999px; padding: 4px 12px; margin: 2px 6px 2px 0;
+    font-size: .8rem; font-weight: 750; white-space: nowrap;}
+.order-chip-detail {font-size: .85rem; opacity: .72;}
+</style>"""
+# Las secciones plegadas se leen como un solo bloque.
+SECTIONS_CSS = '[class*="st-key-order_sections_"] {gap: .5rem;}'
+
+
 def order_title(row) -> str:
     customer = str(row.get("NOMBRE DOCTOR", "") or "").strip()
     patient = str(row.get("NOMBRE PACIENTE", "") or "").strip()
     return "Pedido · " + (customer or patient or "Sin nombre de cliente")
+
+
+def render_header(namespace, title, chips, detail=""):
+    """Título, etapa y semáforo en una sola línea; el resto de datos ya están en los campos."""
+    st.html(HEADER_CSS)
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", key=f"order_head_{namespace}"):
+        st.subheader(title, anchor=False, width="content")
+        badges = "".join(f'<span class="order-chip" style="background:{background};color:{foreground}">'
+                         f'{html.escape(label)}</span>' for label, (background, foreground) in chips if label)
+        if detail:
+            badges += f'<span class="order-chip-detail">{html.escape(detail)}</span>'
+        st.markdown(badges, unsafe_allow_html=True, width="content")
+
+
+def grid_width(count):
+    """Tres o cuatro columnas, las que dejen menos huecos en la última fila."""
+    return min((4, 3), key=lambda width: -count % width)
+
+
+def widget_class(key):
+    """Clase st-key-… que el navegador de Streamlit asigna al contenedor del widget."""
+    return "st-key-" + "".join(char if re.fullmatch(r"[a-zA-Z0-9_-]", char)
+                               else "-" * (len(char.encode("utf-16-le")) // 2) for char in key.strip())
+
+
+def value_css(key, column, values, palettes, multiple):
+    """Pinta cada opción elegida dentro del propio campo con el color de su chip en Sheets."""
+    rules = []
+    for index, value in enumerate(values):
+        background, foreground = option_colors(column, value, palettes)
+        target = (f'.{widget_class(key)} [data-tag-index="{index}"]' if multiple
+                  else f'.{widget_class(key)} [role="group"]')
+        rules.append(f"{target} {{background: {background} !important; color: {foreground} !important;}}"
+                     f"{target} * {{color: {foreground} !important; -webkit-text-fill-color: {foreground};}}")
+    return "".join(rules)
 
 
 def detail_columns(columns, editable, pinned) -> list[str]:
@@ -193,11 +239,12 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   option_label, palettes, equivalent, parse_date, format_date,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
-                  multi_codecs=None, required=(), constrained=(), extra=None):
+                  multi_codecs=None, required=(), constrained=(), extra=None, hints=None):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
     del botón Guardar, para que un solo guardado incluya todos los campos.
+    ``hints`` pone la ayuda de un campo en su ícono (?) en vez de un texto fijo.
     """
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -208,8 +255,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     baseline_values = json.dumps({column: draft["baseline"].get(column, "") for column in columns},
                                  sort_keys=True, default=str, ensure_ascii=False)
     token = hashlib.sha256(f"{namespace}:{identifier}:{version}:{baseline_values}".encode()).hexdigest()[:16]
-    primary_group = "📌 Datos principales"
-    groups = {primary_group: [column for column in primary if column in columns]}
+    primary_fields = [column for column in primary if column in columns]
+    groups = {}
     for column in columns:
         if column in primary:
             continue
@@ -219,19 +266,18 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                  else "📋 Servicio y archivos" if column in catalog
                  else "📦 Otros datos")
         groups.setdefault(group, []).append(column)
-    st.markdown("#### ✏️ Editar este pedido")
-    st.caption("Completa los campos y pulsa Guardar este pedido. Los cambios se aplican únicamente a esta ficha.")
-    for group, fields in groups.items():
-        if not fields:
-            continue
-        section = st.container() if group == primary_group else st.expander(
-            group, expanded=False, key=f"detail_group_{token}_{group}")
+    # Los datos principales quedan a la vista; las demás secciones se pliegan juntas.
+    sections = [(st.container(), primary_fields)] if primary_fields else []
+    folded = st.container(key=f"order_sections_{token}") if groups or extra is not None else None
+    sections += [(folded.expander(group, expanded=False, key=f"detail_group_{token}_{group}"), fields)
+                 for group, fields in groups.items()]
+    styles = []
+    for section, fields in sections:
         with section:
-            if group == primary_group:
-                st.markdown(f"**{group}**")
             regular = [column for column in fields if "COMENTARIO" not in column]
-            field_containers = [pair for start in range(0, len(regular), 3)
-                                for pair in zip(st.columns(3), regular[start:start + 3])]
+            width = grid_width(len(regular))
+            field_containers = [pair for start in range(0, len(regular), width)
+                                for pair in zip(st.columns(width), regular[start:start + width])]
             field_containers.extend((st.container(), column) for column in fields if "COMENTARIO" in column)
             for container, column in field_containers:
                 with container:
@@ -240,14 +286,15 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                     key = f"order_field_{token}_{column}"
                     label = labels.get(column, column.replace("_", " · ").title())
                     args = (namespace, identifier, column, key, equivalent, lambda value: value or "")
-                    common = dict(key=key, disabled=blocked, on_change=_remember, args=args)
+                    common = dict(key=key, disabled=blocked, on_change=_remember, args=args,
+                                  help=(hints or {}).get(column))
                     if column in catalog and catalog[column]:
                         if column in multiple:
                             decode, encode = (multi_codecs or {}).get(column, (split_values, join_values))
                             values = decode(text, catalog[column])
                             choices = list(dict.fromkeys([*catalog[column], *values]))
                             common["args"] = (namespace, identifier, column, key, equivalent, encode)
-                            st.multiselect(label, choices, default=values,
+                            shown = st.multiselect(label, choices, default=values,
                                 format_func=lambda value, col=column: option_label(col, value),
                                 placeholder="Elige una o varias opciones", **common)
                         else:
@@ -264,24 +311,25 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                                     choices.append(text)
                             if column in constrained and len(choices) < 2:
                                 common["disabled"] = True
-                            st.selectbox(label, choices, index=choices.index(text),
+                            shown = [st.selectbox(label, choices, index=choices.index(text),
                                          format_func=lambda value, col=column: option_label(col, value) if value else "— Sin dato —",
-                                         **common)
-                            values = [text] if text else []
-                        for selected_value in values:
-                            colors = option_colors(column, selected_value, palettes)
-                            st.markdown(f'<span style="display:inline-block;border-radius:8px;padding:3px 9px;'
-                                        f'background:{colors[0]};color:{colors[1]};font-size:.8rem">'
-                                        f'{html.escape(option_label(column, selected_value))}</span>', unsafe_allow_html=True)
+                                         **common)]
+                        # El color del chip va dentro del campo, sin repetir el valor debajo.
+                        styles.append(value_css(key, column, [item for item in shown if item],
+                                                palettes, column in multiple))
                     elif column in datetime_columns and (not text or parse_datetime(text) is not None):
                         parsed = parse_datetime(text) if text else None
                         dt_args = (namespace, identifier, column, key, equivalent, format_datetime)
                         st.date_input(label, value=parsed.date() if parsed else None, key=key + "_date",
-                                      format="DD/MM/YYYY", disabled=blocked, on_change=_remember_datetime, args=dt_args)
-                        st.time_input("🕒 Hora", value=(parsed or now()).time().replace(second=0, microsecond=0),
-                                      key=key + "_time", disabled=blocked, on_change=_remember_datetime, args=dt_args)
-                        st.button("Ahora", key=key + "_now", disabled=blocked,
-                                  on_click=_now, args=(*dt_args, now))
+                                      format="DD/MM/YYYY", disabled=blocked, on_change=_remember_datetime,
+                                      args=dt_args, help=common["help"])
+                        # Hora y Ahora comparten fila bajo la fecha, sin otra etiqueta.
+                        clock, instant = st.columns([3, 2], gap="small")
+                        clock.time_input("🕒 Hora", value=(parsed or now()).time().replace(second=0, microsecond=0),
+                                         key=key + "_time", disabled=blocked, on_change=_remember_datetime,
+                                         args=dt_args, label_visibility="collapsed")
+                        instant.button("Ahora", key=key + "_now", disabled=blocked, use_container_width=True,
+                                       on_click=_now, args=(*dt_args, now))
                     elif "FECHA" in column and column not in datetime_columns and (not text or parse_date(text) is not None):
                         common["args"] = (namespace, identifier, column, key, equivalent,
                                           lambda value: format_date(value) if value else "")
@@ -293,8 +341,10 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                         if "FECHA" in column and text:
                             st.caption("Se conserva el texto de esta fecha; puedes corregirlo aquí.")
     if extra is not None:
-        extra()
-    save, discard, count = st.columns([1.4, 1.4, 2])
+        with folded:
+            extra()
+    st.html("<style>" + SECTIONS_CSS + "".join(styles) + "</style>")
+    save, discard, count = st.columns([1.4, 1.4, 2], vertical_alignment="center")
     changed = bool(draft["changes"])
     submitted = save.button("💾 Guardar este pedido", key=f"detail_save_{token}", type="primary",
                             disabled=blocked or not changed, use_container_width=True)

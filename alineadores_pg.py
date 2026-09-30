@@ -704,6 +704,12 @@ def signal_for_elapsed(elapsed: float, maximum: float) -> str:
     return "🟢 En tiempo"
 
 
+def signal_detail(detail: Any) -> str:
+    """Motivo del semáforo para la ficha: la pausa ya se ve en el chip de la etapa."""
+    return " · ".join(part for part in clean_cell(detail).strip().split(" · ")
+                      if part.strip() and not part.startswith("Pausa: "))
+
+
 def signal_rank(signal: str) -> int:
     return {
         "🔴 Atrasado": 0,
@@ -3135,19 +3141,25 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
     in_shipments = set(block_columns(plan, shipments))
     fields = [column for column in fields if column not in in_shipments]
     identifier = str(row[ID_COLUMN])
+    status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
     labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
     labels.update({STATUS_COLUMN: "🚦 STATUS", "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
                    "NOMBRE PACIENTE": "🙂 NOMBRE PACIENTE", "DETALLE COMENTARIOS": "📝 DETALLE COMENTARIOS"})
     labels.update({column: "📅 " + column.replace("_", " · ") for column in fields if "FECHA" in column})
+    # La etapa se pinta como en la tabla y el encabezado de la ficha.
+    palettes = {**order_dropdown_palettes(catalog),
+                STATUS_COLUMN: {value: status_palette_value(value) for value in catalog[STATUS_COLUMN]}}
     result = order_detail.render_editor(row, namespace=namespace, id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=labels,
         option_label=lambda column, value: status_display_value(value, definitions) if column == STATUS_COLUMN else new_order_option_label(column, value),
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
-        palettes=order_dropdown_palettes(catalog), multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
+        palettes=palettes, multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
         equivalent=values_equivalent, parse_date=parse_simple_date,
         format_date=lambda value: value.isoformat(), now=app_now,
         extra=(lambda: render_shipments_section(namespace, identifier, plan, shipments))
-        if shipments and current_user in APP_USERS else None)
+        if shipments and current_user in APP_USERS else None,
+        hints={STATUS_COLUMN: f"El pedido está en pausa por **{status}**. Al resolverla podrás elegir la "
+                              "etapa real a la que debe regresar."} if is_pause_status(status) else None)
     if result:
         baseline, delta = result
         source = pd.DataFrame([baseline])
@@ -3179,7 +3191,8 @@ def render_case_actions(
     if pending:
         st.info("Guarda o descarta los cambios de la tabla antes de abrir acciones del pedido.")
         return
-    st.markdown(f"### Pedidos seleccionados · {len(selected)}")
+    if len(selected) > 1:
+        st.markdown(f"### Pedidos seleccionados · {len(selected)}")
     form_pending = bool(order_detail.pending_count(namespace))
     if len(selected) > 1 and not form_pending:
         with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
@@ -3201,34 +3214,12 @@ def render_case_actions(
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
     status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
     product = clean_cell(row.get(PRODUCT_COLUMN, "")).strip()
-    background, foreground = status_palette_value(status)
+    signal = clean_cell(row.get("SEMÁFORO", "")).strip()
     with st.container(border=True):
-        st.subheader(order_detail.order_title(row))
-        st.markdown(
-            f'<span class="align-stage-chip" style="background:{background};color:{foreground}">'
-            f'{html.escape(status_display_value(status, definitions))}</span>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Paciente: {clean_cell(row.get('NOMBRE PACIENTE', '')).strip()} · {product}"
-        )
-        st.write(f"{row.get('SEMÁFORO', '')} — {row.get('DETALLE SEMÁFORO', '')}")
-        if is_pause_status(status):
-            st.warning(
-                f"El pedido está en pausa por **{status}**. Al resolverla podrás elegir la "
-                "etapa real a la que debe regresar."
-            )
-        targets = [
-            item
-            for item in get_allowed_next_statuses(product, status, definitions)
-            if status_key(item) != status_key(status)
-        ]
-        if targets:
-            st.caption(
-                "Opciones permitidas: "
-                + " · ".join(status_display_value(item, definitions) for item in targets)
-            )
-
+        order_detail.render_header(namespace, order_detail.order_title(row), [
+            (status_display_value(status, definitions), status_palette_value(status)),
+            (signal, ALERT_COLORS.get(signal, ALERT_COLORS["⚪ Sin medición"])),
+        ], signal_detail(row.get("DETALLE SEMÁFORO", "")))
         render_aligner_order_editor(row, current_user, definitions)
         with st.expander("🛠️ Historial y opciones avanzadas", expanded=False):
             detail_text = clean_cell(row.get("DETALLE SEMÁFORO", ""))
@@ -4391,7 +4382,6 @@ def apply_custom_css() -> None:
         .align-column-legend .readonly {background:#52667D;}
         .align-column-legend .automatic {background:#147C84;}
         .align-column-legend .auto-editable {background:linear-gradient(100deg,#147C84 0 48%,#12875E 52% 100%);}
-        .align-stage-chip {display:inline-block;border-radius:9px;padding:8px 13px;font-size:.85rem;font-weight:750;margin-bottom:10px;}
         [data-testid="stWidgetLabel"] p {color:#265C42;font-weight:650;}
         button[kind="primary"], [data-testid="stBaseButton-primary"] {
             background:linear-gradient(110deg,#17A06B,#0C6E4A);border-color:#0E8358;color:#FFF;

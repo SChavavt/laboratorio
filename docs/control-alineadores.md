@@ -75,6 +75,14 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
 - Mientras haya etapas elegidas sin guardar en Enviados no se puede refrescar,
   cambiar de pestaña ni guardar la tabla principal; lo mismo al revés.
 
+## Ficha del pedido
+
+Al marcar un pedido se abre su ficha. Arriba, en una sola línea, están el doctor,
+la etapa y el semáforo con su avance (`3.20 de 8 h hábiles consumidas`). Debajo
+quedan los campos principales y el resto en desplegables juntos (**Servicio y
+archivos**, **Fechas y entrega**…). Cada selector se pinta con el color de su
+opción; la etapa usa el mismo color que en la tabla.
+
 ## Envíos y alineadores (ficha del pedido)
 
 Las columnas del plan de tratamiento (`TEMPLATE SUP` … `Total`, R:V) y de los

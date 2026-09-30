@@ -4793,8 +4793,8 @@ def render_estefano_shipping_tab(
 ) -> None:
     """Subtab operativo de Jime para enviar documentos de planeación y diseño."""
 
-    st.markdown("### 📤 Envío de documentos")
-    if selected_row is None:
+    if selected_row is None:  # En la ficha, el desplegable ya nombra la sección.
+        st.markdown("### 📤 Envío de documentos")
         render_status_change_feedback()
         cases_df = filter_estatus_by_status(PLANNING_STATUSES)
         selected_id, row = render_case_selector(cases_df, "estefano_case_selector")
@@ -5000,7 +5000,8 @@ def build_payment_authorization_changes(
 
 
 def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -> None:
-    st.subheader("💳 Control de Pagos")
+    if selected_row is None:  # En la ficha, el desplegable ya nombra la sección.
+        st.subheader("💳 Control de Pagos")
     can_edit = user_can_edit_tab(current_user, "Pagos")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -5120,7 +5121,8 @@ def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -
 
 
 def render_lesly_tab(current_user: str, selected_cases: pd.DataFrame | None = None) -> None:
-    st.subheader("🖨️ Impresión y Sinterizado")
+    if selected_cases is None:  # En la ficha, el desplegable ya nombra la sección.
+        st.subheader("🖨️ Impresión y Sinterizado")
     can_edit = user_can_edit_tab(current_user, "Lesly")
     if not can_edit:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
@@ -5470,6 +5472,12 @@ def workbench_signal(state: str) -> str:
     if state == "En tiempo":
         return "🟢 En tiempo"
     return "⚪ Sin medición"
+
+
+def workbench_signal_detail(signal: str, detail: Any) -> str:
+    """Motivo del semáforo sin la parte que sólo repite el estado ("🟢 En tiempo — En tiempo")."""
+    return " · ".join(part for part in str(detail or "").split(" · ") if part.strip() and not (
+        part in {"En tiempo", "Atrasado", "Próximo a vencer"} and workbench_signal(part) == signal))
 
 
 def workbench_signal_rank(signal: str) -> int:
@@ -5991,6 +5999,18 @@ def workbench_form_option_label(column: str, value: str) -> str:
     return label
 
 
+def workbench_stage_hint(row: pd.Series, current_user: str) -> str:
+    """Ayuda del campo STATUS: hasta dónde puede mover el usuario la etapa guardada."""
+    apparatus, status = row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN]
+    targets = [target for target in get_allowed_next_statuses(apparatus, status, current_user)
+               if target != status and is_transition_allowed_for_user(current_user, status, target, apparatus)]
+    if targets and current_user in UNRESTRICTED_STAGE_USERS:
+        return "Tu usuario puede mover este pedido a cualquier etapa de su flujo, aunque el pago siga pendiente."
+    if targets:
+        return "Etapas permitidas para tu usuario: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets)
+    return "Tu usuario no puede mover este pedido desde su etapa actual."
+
+
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     catalog = dict(get_workbench_form_catalog())
     candidate = order_detail.stage_source(row, "apparatus", ID_COLUMN, STATUS_COLUMN)
@@ -6008,7 +6028,8 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
                                       lambda values: canonical_apparatus_value(" + ".join(values)))},
         equivalent=values_equivalent_for_column, parse_date=parse_simple_date, format_date=format_sheet_date,
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
-        format_datetime=format_sheet_datetime, now=app_now)
+        format_datetime=format_sheet_datetime, now=app_now,
+        hints={STATUS_COLUMN: workbench_stage_hint(row, current_user)})
     if result:
         baseline, delta = result
         original = pd.DataFrame([baseline])
@@ -6033,7 +6054,8 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
     if pending:
         st.info("Guarda o descarta los cambios de la tabla antes de usar las acciones del pedido.")
         return
-    st.markdown(f"### Pedidos seleccionados · {len(selected)}")
+    if len(selected) > 1:
+        st.markdown(f"### Pedidos seleccionados · {len(selected)}")
     form_pending = bool(order_detail.pending_count("apparatus"))
     if len(selected) > 1 and not form_pending:
         with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
@@ -6057,23 +6079,12 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
         return
     identifier = row[ID_COLUMN]
     with st.container(border=True):
-        stage = display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])
-        background, foreground = SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))
-        st.subheader(order_detail.order_title(row))
-        st.markdown(
-            f'<span class="lab-stage-chip" style="background:{background};color:{foreground}">{html.escape(stage)}</span>',
-            unsafe_allow_html=True,
-        )
-        st.caption(f"Paciente: {row.get('NOMBRE PACIENTE', '')} · {row.get(APARATO_COLUMN, '')}")
-        st.write(f"{row['SEMÁFORO']} — {row['DETALLE SEMÁFORO']}")
-        targets = [target for target in get_allowed_next_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)
-                   if target != row[STATUS_COLUMN] and is_transition_allowed_for_user(current_user, row[STATUS_COLUMN], target, row.get(APARATO_COLUMN, ""))]
-        if targets and current_user in UNRESTRICTED_STAGE_USERS:
-            st.caption("Tu usuario puede mover este pedido a cualquier etapa de su flujo, aunque el pago siga pendiente.")
-        elif targets:
-            st.caption("Etapas permitidas para tu usuario: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets))
-        else:
-            st.caption("Este pedido es de consulta para tu usuario en su etapa actual.")
+        signal = row.get("SEMÁFORO", "")
+        order_detail.render_header("apparatus", order_detail.order_title(row), [
+            (display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN]),
+             SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))),
+            (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
+        ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
         render_workbench_order_editor(row, current_user)
         times = st.session_state.get("workbench_snapshot", {}).get("times", pd.DataFrame())
         latest_files = latest_estefano_files_from_frame(identifier, times)
@@ -6944,7 +6955,6 @@ def apply_app_shell_css(selected_view: str = LAB_VIEW_APPARATUS) -> None:
         button[kind="primary"]:disabled *, [data-testid="stBaseButton-primary"]:disabled * {
             color: @@BTN_DISABLED_COLOR@@ !important; -webkit-text-fill-color: @@BTN_DISABLED_COLOR@@; opacity: 1;
         }
-        .lab-stage-chip {display: inline-block; border-radius: 9px; padding: 8px 13px; font-size: .85rem; font-weight: 750; margin-bottom: 10px;}
         .st-key-lab_workspace_header {
             position: relative; overflow: hidden; padding: 22px 28px; margin: 0 0 20px;
             color: #FFF; background: @@HEADER_GRAD@@;

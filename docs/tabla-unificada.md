@@ -56,7 +56,11 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
 La interfaz usa acentos morados y turquesa, contadores con los colores del
 semáforo y las etiquetas originales con emojis en las etapas y desplegables.
 Los emojis son sólo presentación: Sheets recibe siempre el valor canónico.
-Las fichas de pedido también muestran la etapa con su color configurado.
+La ficha del pedido reúne en una sola línea el doctor, la etapa (con su color
+configurado) y el semáforo; el motivo del semáforo sólo aparece cuando agrega
+algo, así que no se repite «En tiempo». Cada selector de la ficha se pinta con el
+color de su opción, sin repetir el valor debajo, y lo que el usuario puede hacer
+con la etapa se consulta en el ícono (?) de STATUS.
 El menú de etapa pinta cada opción con el mismo color de su celda. Los encabezados
 distinguen las columnas manuales de las que la app llena o calcula
 automáticamente. Sólo **Folio** y **Semáforo** son columnas fijas de consulta (la
