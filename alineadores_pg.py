@@ -1807,6 +1807,21 @@ def update_order_row(
             result["error"] = f"Otro usuario cambió {column}. Actualiza antes de guardar."
             return result
 
+    formula_totals = [column for column in changes if shipment_field_kind(column) == "total"]
+    if formula_totals:
+        # La app calcula los Totales de envíos; si la hoja ya los calcula con
+        # fórmula, se conserva la fórmula en vez de escribir el número encima.
+        try:
+            formulas = run_gsheets_request(
+                lambda: worksheet.row_values(row_number, value_render_option="FORMULA")
+            )
+        except Exception:
+            formulas = []
+        for column in formula_totals:
+            position = get_header_position(headers, column)
+            if position and position <= len(formulas) and str(formulas[position - 1] or "").startswith("="):
+                changes = {key: value for key, value in changes.items() if key != column}
+
     updates: list[Cell] = []
     for column, value in changes.items():
         position = get_header_position(headers, column)
@@ -1834,6 +1849,138 @@ def update_order_row(
             apply_status_style(worksheet, row_number, status_position, str(changes[STATUS_COLUMN]))
     result["success"] = True
     return result
+
+
+# ==============================
+# Envíos y alineadores
+# ==============================
+# La hoja trae el plan de tratamiento (TEMPLATE SUP … Total) y ocho envíos
+# repetidos (TEMP. SUP … FECHA ENVÍO). Los encabezados repetidos llegan como
+# "NO. ALIN SUP_2", "Total_3"…, así que los bloques se arman por su orden.
+SHIPMENT_QUANTITY_KINDS = ("temp_sup", "temp_inf", "alin_sup", "alin_inf")
+SHIPMENT_FIELD_LABELS = {
+    "temp_sup": "🧩 Template sup.",
+    "temp_inf": "🧩 Template inf.",
+    "alin_sup": "🦷 Alineadores sup.",
+    "alin_inf": "🦷 Alineadores inf.",
+    "total": "Σ Total",
+    "pago": "💳 Pago impresión",
+    "envio": "🚚 Fecha envío",
+}
+# Valores de texto que Sheets ya usa en las fechas de pago.
+PAYMENT_TEXT_VALUES = {"CORTESIA": "🎁 Cortesía", "PENDIENTE": "⏳ Pendiente"}
+
+
+@dataclass(frozen=True)
+class ShipmentBlock:
+    """Plan de tratamiento (``number`` 0) o un envío, con su columna por tipo."""
+
+    number: int
+    columns: dict[str, str]
+
+    @property
+    def title(self) -> str:
+        return f"Envío {self.number}" if self.number else "Plan de tratamiento"
+
+
+def shipment_field_kind(column: Any) -> str:
+    base = re.sub(r"_\d+$", "", clean_cell(column)).strip()
+    words = re.sub(r"[^A-Z0-9]+", " ", normalize_text(base)).split()
+    side = "sup" if "SUP" in words else "inf" if "INF" in words else ""
+    if words and words[0].startswith("TEMP") and side:
+        return f"temp_{side}"
+    if side and any(word.startswith("ALIN") for word in words):
+        return f"alin_{side}"
+    if words == ["TOTAL"]:
+        return "total"
+    if words[:3] == ["FECHA", "PAGO", "IMPRESION"]:
+        return "pago"
+    if words == ["FECHA", "ENVIO"]:
+        return "envio"
+    return ""
+
+
+def shipment_layout(columns: Iterable[Any]) -> tuple[ShipmentBlock | None, list[ShipmentBlock]]:
+    """Plan de tratamiento y envíos, en el orden de las columnas de la hoja."""
+    groups: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for column in columns:
+        kind = shipment_field_kind(column)
+        if not kind:
+            continue
+        # Cada bloque abre con su template superior; un tipo repetido también lo cierra.
+        if current and (kind in current or kind == "temp_sup"):
+            groups.append(current)
+            current = {}
+        current[kind] = str(column)
+    if current:
+        groups.append(current)
+    groups = [group for group in groups if {"alin_sup", "alin_inf"} & set(group)]
+    plan = None
+    if groups and not {"pago", "envio"} & set(groups[0]):
+        plan = ShipmentBlock(0, groups.pop(0))
+    return plan, [ShipmentBlock(number, group) for number, group in enumerate(groups, start=1)]
+
+
+def block_columns(plan: ShipmentBlock | None, shipments: list[ShipmentBlock]) -> list[str]:
+    return [column for block in [plan, *shipments] if block for column in block.columns.values()]
+
+
+def parse_shipment_quantity(value: Any) -> int | None:
+    """Piezas de un campo: un número (7) o un rango de alineadores (1-7 son 7)."""
+    text = clean_cell(value).strip()
+    if not text:
+        return 0
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
+    if match:
+        return abs(int(match.group(2)) - int(match.group(1))) + 1
+    return None
+
+
+def shipment_total(values: dict[str, Any]) -> str | None:
+    """Templates + alineadores; vacío sin datos y ``None`` si hay texto no numérico."""
+    texts = [clean_cell(values.get(kind, "")).strip() for kind in SHIPMENT_QUANTITY_KINDS]
+    if not any(texts):
+        return ""
+    quantities = [parse_shipment_quantity(text) for text in texts]
+    if any(quantity is None for quantity in quantities):
+        return None
+    return str(sum(quantities))
+
+
+def shipment_pieces(block: ShipmentBlock, value_of: Callable[[str], Any]) -> int | None:
+    """Piezas del bloque; si hay texto libre se respeta el Total escrito en la hoja."""
+    total = shipment_total({kind: value_of(column) for kind, column in block.columns.items()})
+    if total is None:
+        total = clean_cell(value_of(block.columns.get("total", ""))).strip()
+    quantity = parse_shipment_quantity(total)
+    return quantity if total else None
+
+
+def shipment_has_data(block: ShipmentBlock, value_of: Callable[[str], Any]) -> bool:
+    return any(clean_cell(value_of(column)).strip() for column in block.columns.values())
+
+
+def last_registered_shipment(shipments: list[ShipmentBlock], value_of: Callable[[str], Any]) -> int:
+    return max((block.number for block in shipments if shipment_has_data(block, value_of)), default=0)
+
+
+def is_payment_text(column: str, value: Any) -> bool:
+    return "PAGO" in normalize_text(column) and normalize_text(value) in PAYMENT_TEXT_VALUES
+
+
+def shipment_value_errors(identifier: str, columns: Iterable[Any], delta: dict[str, Any]) -> list[str]:
+    plan, shipments = shipment_layout(columns)
+    return [
+        f"{identifier}: {block.title} · {SHIPMENT_FIELD_LABELS[kind].split(' ', 1)[1]} debe ser un número "
+        "o un rango como 1-7."
+        for block in [plan, *shipments] if block
+        for kind, column in block.columns.items()
+        if kind in SHIPMENT_QUANTITY_KINDS and column in delta
+        and parse_shipment_quantity(delta[column]) is None
+    ]
 
 
 # ==============================
@@ -2090,8 +2237,9 @@ def validate_delta(
         errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
     for column in {column for column in delta if column in DATE_COLUMNS or column.startswith("FECHA")}:
         value = clean_cell(delta[column]).strip()
-        if value and parse_simple_date(value) is None:
+        if value and parse_simple_date(value) is None and not is_payment_text(column, value):
             errors.append(f"{identifier}: la fecha de {column} no es válida.")
+    errors.extend(shipment_value_errors(identifier, row.index, delta))
     if STATUS_COLUMN in delta:
         previous = canonical_status(row.get(STATUS_COLUMN, ""), configured_statuses(definitions))
         product = delta.get(PRODUCT_COLUMN, row.get(PRODUCT_COLUMN, ""))
@@ -2728,6 +2876,246 @@ def aligners_batch_stages(selected: pd.DataFrame, definitions: dict) -> list[str
         STATUS_COLUMN, status_key)
 
 
+PAYMENT_MODES = {"📅 Fecha": "", "🎁 Cortesía": "CORTESIA", "⏳ Pendiente": "PENDIENTE"}
+
+
+def _order_draft(namespace: str, identifier: str) -> dict[str, Any]:
+    return st.session_state[order_detail.draft_key(namespace)][identifier]
+
+
+def shipment_state_key(kind: str, namespace: str, identifier: str) -> str:
+    return f"shipment_{kind}_{namespace}_{identifier}"
+
+
+def refresh_shipment_total(namespace: str, identifier: str, block: ShipmentBlock) -> None:
+    """El Total sólo se reescribe cuando cambian las cantidades de su bloque."""
+    column = block.columns.get("total")
+    if not column:
+        return
+    draft = _order_draft(namespace, identifier)
+    total = shipment_total({kind: order_detail.draft_value(draft, item) for kind, item in block.columns.items()})
+    changed = any(block.columns.get(kind) in draft["changes"] for kind in SHIPMENT_QUANTITY_KINDS)
+    if not changed or total is None:
+        draft["changes"].pop(column, None)
+    else:
+        order_detail.set_draft_value(namespace, identifier, column, total, values_equivalent)
+
+
+def remember_shipment_field(namespace: str, identifier: str, block: ShipmentBlock,
+                            column: str, key: str, convert: Callable[[Any], str]) -> None:
+    order_detail.set_draft_value(namespace, identifier, column, convert(st.session_state.get(key)),
+                                 values_equivalent)
+    refresh_shipment_total(namespace, identifier, block)
+
+
+def remember_payment_mode(namespace: str, identifier: str, column: str, key: str) -> None:
+    value = PAYMENT_MODES.get(st.session_state.get(key), "")
+    if not value:
+        # Volver a "Fecha" recupera la fecha original, si la había.
+        original = _order_draft(namespace, identifier)["baseline"].get(column, "")
+        value = clean_cell(original).strip() if parse_simple_date(original) else ""
+    order_detail.set_draft_value(namespace, identifier, column, value, values_equivalent)
+
+
+def start_new_shipment(namespace: str, identifier: str, number: int) -> None:
+    st.session_state[shipment_state_key("target", namespace, identifier)] = number
+
+
+def cancel_new_shipment(namespace: str, identifier: str, block: ShipmentBlock) -> None:
+    draft = _order_draft(namespace, identifier)
+    for column in block.columns.values():
+        draft["changes"].pop(column, None)
+    st.session_state[shipment_state_key("target", namespace, identifier)] = block.number - 1
+
+
+def copy_shipment_quantities(namespace: str, identifier: str,
+                             previous: ShipmentBlock, block: ShipmentBlock) -> None:
+    draft = _order_draft(namespace, identifier)
+    for kind in SHIPMENT_QUANTITY_KINDS:
+        if kind in previous.columns and kind in block.columns:
+            value = clean_cell(order_detail.draft_value(draft, previous.columns[kind])).strip()
+            order_detail.set_draft_value(namespace, identifier, block.columns[kind], value, values_equivalent)
+    refresh_shipment_total(namespace, identifier, block)
+    # Claves nuevas: los campos ya dibujados deben mostrar lo copiado.
+    nonce = shipment_state_key("nonce", namespace, identifier)
+    st.session_state[nonce] = st.session_state.get(nonce, 0) + 1
+
+
+def shipment_display_value(kind: str, value: Any) -> str:
+    text = clean_cell(value).strip()
+    if kind in {"pago", "envio"} and text:
+        parsed = parse_simple_date(text)
+        if parsed is not None:
+            return f"{parsed:%d/%m/%Y}"
+        return PAYMENT_TEXT_VALUES.get(normalize_text(text), text)
+    return text or "—"
+
+
+def payment_mode(value: Any) -> str | None:
+    key = normalize_text(value)
+    if key.startswith("CORTES"):
+        return "🎁 Cortesía"
+    if key.startswith(("PEND", "PEDN")):
+        return "⏳ Pendiente"
+    if not key or parse_simple_date(value) is not None:
+        return "📅 Fecha"
+    return None
+
+
+def render_shipment_field(namespace: str, identifier: str, block: ShipmentBlock, kind: str,
+                          token: str, *, allow_range: bool) -> None:
+    """Un campo del bloque; conserva textos que no encajan en el control numérico."""
+    draft = _order_draft(namespace, identifier)
+    column = block.columns[kind]
+    text = clean_cell(order_detail.draft_value(draft, column)).strip()
+    key = f"shipment_{token}_{column}"
+    label = SHIPMENT_FIELD_LABELS[kind]
+    field_args = (namespace, identifier, block, column, key)
+    text_value = lambda value: clean_cell(value).strip()
+    if kind == "total":
+        total = shipment_total({item: order_detail.draft_value(draft, name) for item, name in block.columns.items()})
+        value = text if total is None else total
+        st.markdown(
+            f'<div style="font-size:.875rem;margin-bottom:.35rem">{label}</div>'
+            '<div style="border:1px solid rgba(128,128,128,.35);border-radius:.5rem;padding:.42rem .75rem;'
+            f'font-weight:700;background:rgba(34,160,90,.10)">{html.escape(value or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Se calcula solo")
+    elif kind in SHIPMENT_QUANTITY_KINDS and allow_range and kind.startswith("alin"):
+        st.text_input(label, value=text, placeholder="Ej. 7 ó 1-7", key=key,
+                      help="Cantidad de alineadores (7) o del alineador al alineador (1-7).",
+                      on_change=remember_shipment_field, args=(*field_args, text_value))
+        if parse_shipment_quantity(text) is None:
+            st.caption(":red[Usa un número (7) o un rango (1-7).]")
+    elif kind in SHIPMENT_QUANTITY_KINDS and re.fullmatch(r"\d*", text):
+        st.number_input(label, min_value=0, step=1, value=int(text) if text else None, placeholder="0",
+                        key=key, on_change=remember_shipment_field,
+                        args=(*field_args, lambda value: "" if value is None else str(int(value))))
+    elif kind == "pago" and payment_mode(text) is not None:
+        mode = payment_mode(text)
+        st.radio(label, list(PAYMENT_MODES), index=list(PAYMENT_MODES).index(mode), horizontal=True,
+                 key=key + "_mode", on_change=remember_payment_mode,
+                 args=(namespace, identifier, column, key + "_mode"))
+        if mode == "📅 Fecha":
+            st.date_input("Fecha de pago", value=parse_simple_date(text) if text else None,
+                          format="DD/MM/YYYY", key=key, label_visibility="collapsed",
+                          on_change=remember_shipment_field,
+                          args=(*field_args, lambda value: value.isoformat() if value else ""))
+    elif kind == "envio" and (not text or parse_simple_date(text) is not None):
+        st.date_input(label, value=parse_simple_date(text) if text else None, format="DD/MM/YYYY",
+                      key=key, on_change=remember_shipment_field,
+                      args=(*field_args, lambda value: value.isoformat() if value else ""))
+    else:
+        st.text_input(label, value=text, key=key, on_change=remember_shipment_field,
+                      args=(*field_args, text_value))
+        st.caption("Se conserva el texto de la hoja; puedes corregirlo aquí.")
+
+
+def render_shipment_fields(namespace: str, identifier: str, block: ShipmentBlock, token: str,
+                           previous: ShipmentBlock | None, *, allow_range: bool) -> None:
+    draft = _order_draft(namespace, identifier)
+    rows = [kinds for kinds in ((*SHIPMENT_QUANTITY_KINDS, "total"), ("pago", "envio"))
+            if any(kind in block.columns for kind in kinds)]
+    for kinds in rows:
+        for container, kind in zip(st.columns(5 if len(kinds) > 2 else 2), kinds):
+            if kind not in block.columns:
+                continue
+            with container:
+                render_shipment_field(namespace, identifier, block, kind, token, allow_range=allow_range)
+                if previous is not None and kind in previous.columns:
+                    if kind == "total":
+                        pieces = shipment_pieces(previous, lambda column: order_detail.draft_value(draft, column))
+                        shown = "—" if pieces is None else str(pieces)
+                    else:
+                        shown = shipment_display_value(kind, order_detail.draft_value(draft, previous.columns[kind]))
+                    st.caption(f"↳ {previous.title}: **{shown}**")
+
+
+def render_shipments_section(namespace: str, identifier: str, plan: ShipmentBlock | None,
+                             shipments: list[ShipmentBlock]) -> None:
+    """Plan de tratamiento y un envío a la vez; el envío anterior queda como referencia."""
+    draft = _order_draft(namespace, identifier)
+    baseline = draft["baseline"]
+    current = lambda column: order_detail.draft_value(draft, column)
+    last = last_registered_shipment(shipments, lambda column: baseline.get(column, ""))
+    target_key = shipment_state_key("target", namespace, identifier)
+    target = st.session_state.get(target_key)
+    new_block = shipments[last] if 1 <= last < len(shipments) else None
+    if new_block is not None and any(column in draft["changes"] for column in new_block.columns.values()):
+        target = new_block.number  # un envío nuevo con datos capturados no se esconde
+    if target not in {max(last, 1), *([new_block.number] if new_block else [])}:
+        target = max(last, 1)
+    st.session_state[target_key] = target
+    block = shipments[target - 1]
+    previous = shipments[target - 2] if target >= 2 else None
+    is_new = target > last
+
+    version = st.session_state.get(f"order_detail_version_{namespace}", 0)
+    nonce = st.session_state.get(shipment_state_key("nonce", namespace, identifier), 0)
+    watched = block_columns(plan, shipments)
+    token = hashlib.sha256(json.dumps(
+        [namespace, identifier, version, nonce, target, [baseline.get(column, "") for column in watched]],
+        default=str, ensure_ascii=False).encode()).hexdigest()[:16]
+
+    summary = (f"{last} envío registrado" if last == 1 else f"{last} envíos registrados" if last
+               else "sin envíos registrados")
+    with st.expander(f"🚚 Envíos y alineadores · {summary}", expanded=False,
+                     key=shipment_state_key("expander", namespace, identifier)):
+        if plan is not None:
+            st.markdown("**🦷 Plan de tratamiento**")
+            st.caption("Piezas de todo el caso. El total se calcula solo.")
+            render_shipment_fields(namespace, identifier, plan, token, None, allow_range=False)
+
+        sent = [pieces for item in shipments if shipment_has_data(item, current)
+                and (pieces := shipment_pieces(item, current)) is not None]
+        planned = shipment_pieces(plan, current) if plan is not None else None
+        if sent:
+            progress = f"📦 Enviado: **{sum(sent)}**"
+            if planned:
+                remaining = planned - sum(sent)
+                progress += f" de {planned} piezas del plan · " + (
+                    f"faltan {remaining}" if remaining > 0 else "plan completo ✅" if remaining == 0
+                    else f"{-remaining} de más ⚠️")
+            else:
+                progress += " piezas"
+            st.markdown(progress)
+
+        heading, action = st.columns([3, 2], vertical_alignment="center")
+        heading.markdown(f"##### 📦 {block.title}" + (" · 🆕 nuevo" if is_new and last else ""))
+        if new_block is not None and target == last:
+            action.button(f"➕ Registrar Envío {new_block.number}", use_container_width=True,
+                          key=f"shipment_new_{token}", on_click=start_new_shipment,
+                          args=(namespace, identifier, new_block.number))
+        elif is_new and last:
+            action.button("✖️ Cancelar nuevo envío", use_container_width=True,
+                          key=f"shipment_cancel_{token}", on_click=cancel_new_shipment,
+                          args=(namespace, identifier, block))
+        elif last and last >= len(shipments):
+            action.caption(f"Ya se usaron los {len(shipments)} envíos de la hoja.")
+
+        if not last:
+            st.caption("Captura el primer envío. Cuando ya exista uno podrás registrar el siguiente.")
+        elif is_new:
+            st.caption(f"Debajo de cada campo ves lo del {previous.title}: escribe lo nuevo o lo mismo.")
+        else:
+            st.caption(f"Último envío registrado; corrígelo aquí o pulsa Registrar Envío {last + 1} "
+                       "para capturar el siguiente." if new_block else "Último envío registrado.")
+        earlier = [item for item in shipments[: target - 1] if shipment_has_data(item, current)]
+        if len(earlier) > 1:
+            st.caption("🗂️ Anteriores: " + " · ".join(
+                f"{item.title}: {shipment_pieces(item, current) or '—'} pzas"
+                + (f" ({shipment_display_value('envio', current(item.columns['envio']))})"
+                   if clean_cell(current(item.columns.get("envio", ""))).strip() else "")
+                for item in earlier))
+        if is_new and previous is not None and any(
+                clean_cell(current(previous.columns[kind])).strip()
+                for kind in SHIPMENT_QUANTITY_KINDS if kind in previous.columns):
+            st.button(f"📋 Usar las mismas cantidades del {previous.title}", key=f"shipment_copy_{token}",
+                      on_click=copy_shipment_quantities, args=(namespace, identifier, previous, block))
+        render_shipment_fields(namespace, identifier, block, token, previous, allow_range=True)
+
+
 def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: dict) -> None:
     from aligners_grid import BUSINESS_ORDER
 
@@ -2742,6 +3130,11 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         *get_allowed_next_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""), definitions)]))
     fields = order_detail.detail_columns(tracking_columns(row.index),
         aligners_editable_columns(row.index) if current_user in APP_USERS else set(), BUSINESS_ORDER)
+    # Plan y envíos no van en la tabla ni como campos sueltos: tienen su desplegable.
+    plan, shipments = shipment_layout(row.index)
+    in_shipments = set(block_columns(plan, shipments))
+    fields = [column for column in fields if column not in in_shipments]
+    identifier = str(row[ID_COLUMN])
     labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
     labels.update({STATUS_COLUMN: "🚦 STATUS", "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
                    "NOMBRE PACIENTE": "🙂 NOMBRE PACIENTE", "DETALLE COMENTARIOS": "📝 DETALLE COMENTARIOS"})
@@ -2752,7 +3145,9 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
         palettes=order_dropdown_palettes(catalog), multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
         equivalent=values_equivalent, parse_date=parse_simple_date,
-        format_date=lambda value: value.isoformat(), now=app_now)
+        format_date=lambda value: value.isoformat(), now=app_now,
+        extra=(lambda: render_shipments_section(namespace, identifier, plan, shipments))
+        if shipments and current_user in APP_USERS else None)
     if result:
         baseline, delta = result
         source = pd.DataFrame([baseline])
