@@ -44,6 +44,13 @@ def test_thresholds(hours, signal):
     assert table.iloc[0]["SEMÁFORO"] == signal
 
 
+def test_legacy_numeric_log_matches_folio_with_zero():
+    result = app.build_workbench_table(pd.DataFrame([case(identifier='012345')]),
+                                      pd.DataFrame([log(identifier='12345')]))
+    assert result.iloc[0]['SEMÁFORO'] == '🟢 En tiempo'
+    assert result.iloc[0]['HORAS EN ETAPA'] == 2
+
+
 def test_weekend_boundary_uses_exact_minutes():
     assert app.business_hours_elapsed(datetime(2026,9,4,23,30), datetime(2026,9,7,0,30)) == 1
     assert app.business_hours_elapsed(datetime(2026,9,5,12), datetime(2026,9,6,12)) == 0
@@ -730,9 +737,12 @@ def test_new_log_respects_actual_header_order(monkeypatch):
     headers = ["ID_LOG",app.ID_COLUMN,"STATUS","FECHA_FIN","FECHA_INICIO","TIEMPO_MAXIMO_HORAS",
                "USUARIO","PUEDE_AVANZAR","PUEDE_AVANZAR"]
     saved=[]
+    options=[]
     class Sheet:
         def row_values(self, _): return headers
-        def append_row(self, row, **kwargs): saved.append(row)
+        def append_row(self, row, **kwargs):
+            saved.append(row)
+            options.append(kwargs)
     monkeypatch.setattr(app,"ensure_tiempos_headers",lambda: None)
     monkeypatch.setattr(app,"close_previous_active_time",lambda _: True)
     monkeypatch.setattr(app,"clear_sheet_data_cache",lambda: None)
@@ -745,6 +755,8 @@ def test_new_log_respects_actual_header_order(monkeypatch):
     assert saved[0][5] == "5"
     assert saved[0][6] == "Jime"
     assert saved[0][7] == saved[0][8]
+    assert saved[0][1] == '001'
+    assert options == [{'value_input_option': 'RAW', 'insert_data_option': 'INSERT_ROWS'}]
 
 
 @pytest.mark.parametrize("user",["Admin","Jime","Lesly","Vero"])

@@ -85,6 +85,19 @@ def definitions():
     return app.parse_process_matrix(PROCESS_VALUES)
 
 
+def test_legacy_log_missing_leading_zero_keeps_original_start(definitions):
+    result = app.build_tracking_table(pd.DataFrame([order(identifier='00012345')]),
+        pd.DataFrame([log(identifier='12345')]), definitions, now=NOW)
+    assert result.iloc[0]['SEMÁFORO'] == '🟢 En tiempo'
+    assert result.iloc[0]['HORAS EN ETAPA'] == 2
+
+
+def test_ambiguous_numeric_folios_are_not_merged(definitions):
+    result = app.build_tracking_table(pd.DataFrame([order(identifier='001'), order(identifier='01')]),
+        pd.DataFrame([log(identifier='1')]), definitions, now=NOW)
+    assert set(result['SEMÁFORO']) == {'⚪ Sin medición'}
+
+
 def order(identifier="001", status="REVISIÓN DE ARCHIVOS", product="CONVENC.", **extra):
     return {
         app.ID_COLUMN: identifier,

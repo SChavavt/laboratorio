@@ -121,6 +121,69 @@ def test_create_without_folio_and_log_failure_does_not_claim_order_failed(sheets
     assert len(sheets[app.SHEET_POLANCO].values) == 3
 
 
+@pytest.mark.parametrize('sheet_name', [app.SHEET_ORDERS, app.SHEET_POLANCO])
+def test_sparse_table_two_cases_same_doctor_preserves_both(sheets, sheet_name):
+    class SparseSheet(Sheet):
+        def append_row(self, row, **kwargs):
+            # Sheets can locate the end of a logical table before later rows.
+            if kwargs.get('insert_data_option') == 'INSERT_ROWS':
+                self.values.insert(3, row)
+            elif len(self.values) > 3:
+                self.values[3] = row
+            else:
+                self.values.append(row)
+            self.appends.append(kwargs)
+
+    app.st.session_state['aligners_order_sheet'] = sheet_name
+    sheet = SparseSheet(sheets[sheet_name].values)
+    sheets[sheet_name] = sheet
+    before = copy.deepcopy(sheet.values)
+    identifiers = []
+    for patient in ['Paciente primero', 'Paciente segundo']:
+        identifier, warning = app.create_order({app.PRODUCT_COLUMN: 'Graphy',
+            'NOMBRE DOCTOR': 'Misma doctora', 'NOMBRE PACIENTE': patient}, 'Jime', definitions())
+        identifiers.append(identifier)
+        assert not warning
+    assert identifiers[0] != identifiers[1]
+    assert sheet.values[:3] == before
+    assert {row[4] for row in sheet.values[3:]} == {'Paciente primero', 'Paciente segundo'}
+    table = app.build_tracking_table(app.read_orders_df(), app.read_times_df(), definitions())
+    new_cases = table[table[app.ID_COLUMN].isin(identifiers)]
+    assert len(new_cases) == 2
+    assert set(new_cases['SEMÁFORO']) == {'🟢 En tiempo'}
+
+
+def test_create_reserves_folios_from_orphan_history(sheets):
+    reserved = f'{app.app_today():%d%m%Y}-001'
+    sheets[app.SHEET_TIMES].values.append(['1', reserved])
+    identifier, warning = app.create_order({app.PRODUCT_COLUMN: 'Graphy',
+        'NOMBRE DOCTOR': 'Doctor demo', 'NOMBRE PACIENTE': 'Paciente nuevo'}, 'Jime', definitions())
+    assert identifier == f'{app.app_today():%d%m%Y}-002'
+    assert not warning
+
+
+def test_create_does_not_report_success_when_readback_is_missing(sheets, monkeypatch):
+    monkeypatch.setattr(sheets[app.SHEET_ORDERS], 'append_row', lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match='No se pudo verificar'):
+        app.create_order({app.PRODUCT_COLUMN: 'Graphy', 'NOMBRE DOCTOR': 'Doctor demo',
+                          'NOMBRE PACIENTE': 'Paciente nuevo'}, 'Jime', definitions())
+    assert len(sheets[app.SHEET_TIMES].values) == 1
+
+
+def test_legacy_numeric_log_is_closed_and_new_folio_stays_text(sheets):
+    times = sheets[app.SHEET_TIMES]
+    old = {app.ID_COLUMN: '1', 'ID_LOG': '1', app.PRODUCT_COLUMN: 'Graphy',
+           app.STATUS_COLUMN: 'REVISIÓN DE ARCHIVOS', 'FECHA_INICIO': '2026-09-23',
+           'HORA_INICIO': '10:00:00'}
+    times.values.append([old.get(header, '') for header in app.TIMES_HEADERS])
+    app.register_status_change(identifier='001', product='Graphy', previous_status='REVISIÓN DE ARCHIVOS',
+        new_status='REVISIÓN DE ARCHIVOS', current_user='Jime', definitions=definitions())
+    assert times.values[1][app.TIMES_HEADERS.index('FECHA_FIN')]
+    assert times.values[2][app.TIMES_HEADERS.index(app.ID_COLUMN)] == '001'
+    assert times.appends[-1]['value_input_option'] == 'RAW'
+    assert times.appends[-1]['insert_data_option'] == 'INSERT_ROWS'
+
+
 def test_pending_polanco_changes_block_tab_switch(sheets):
     app.st.session_state.update({'aligners_order_sheet': app.SHEET_POLANCO,
         'aligners_active_tab': '📋 Seguimiento Polanco',

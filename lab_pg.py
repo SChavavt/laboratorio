@@ -16,6 +16,7 @@ from typing import Any, Callable
 import boto3
 import gspread
 import pandas as pd
+from order_identifiers import identifier_resolver
 import streamlit as st
 import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
@@ -1938,10 +1939,11 @@ def get_active_tiempo_row(identifier: str) -> tuple[int | None, dict[str, Any]]:
     fecha_fin_position = get_header_position(headers, "FECHA_FIN")
     if id_position is None or fecha_fin_position is None:
         return None, {}
+    resolve_id = apparatus_log_identifier_resolver()
     for row_number, row in enumerate(values[1:], start=2):
         row_identifier = row[id_position - 1] if id_position - 1 < len(row) else ""
         fecha_fin = row[fecha_fin_position - 1] if fecha_fin_position - 1 < len(row) else ""
-        if clean_cell(row_identifier).strip() == clean_cell(identifier).strip() and not clean_cell(fecha_fin).strip():
+        if resolve_id(row_identifier) == clean_cell(identifier).strip() and not clean_cell(fecha_fin).strip():
             return row_number, {
                 header: row[index] if index < len(row) else ""
                 for index, header in enumerate(headers)
@@ -2503,6 +2505,8 @@ def read_sheet_df(sheet_name: str) -> pd.DataFrame:
             df = df[has_identifier]
         df = df.reset_index(drop=True)
 
+    if sheet_name == SHEET_TIEMPOS and ID_COLUMN in df:
+        df[ID_COLUMN] = df[ID_COLUMN].map(apparatus_log_identifier_resolver())
     return df
 
 
@@ -2511,6 +2515,13 @@ def read_sheet_values(sheet_name: str) -> list[list[str]]:
     """Lee valores crudos para cálculos que dependen de estructura horizontal."""
 
     return run_gsheets_request(lambda: get_worksheet(sheet_name).get_all_values())
+
+
+def apparatus_log_identifier_resolver():
+    values = read_sheet_values(SHEET_ESTATUS)
+    position = get_header_position(values[1], ID_COLUMN) if len(values) > 1 else None
+    return identifier_resolver(row[position - 1] for row in values[2:]
+                               if position and len(row) >= position)
 
 
 def get_forms_secret_value(key: str, default: Any = "") -> Any:
@@ -2984,11 +2995,12 @@ def close_previous_active_time(identifier: str) -> bool:
     fecha_fin_index = headers.index("FECHA_FIN")
     target_row_number: int | None = None
     target_row: list[str] | None = None
+    resolve_id = apparatus_log_identifier_resolver()
 
     for row_number, row in enumerate(values[1:], start=2):
         row_identifier = row[id_index] if id_index < len(row) else ""
         fecha_fin = row[fecha_fin_index] if fecha_fin_index < len(row) else ""
-        if clean_cell(row_identifier).strip() == clean_cell(identifier).strip() and not clean_cell(fecha_fin).strip():
+        if resolve_id(row_identifier) == clean_cell(identifier).strip() and not clean_cell(fecha_fin).strip():
             target_row_number = row_number
             target_row = row
             break
@@ -3076,11 +3088,10 @@ def register_status_change(
     tiempos_worksheet = get_worksheet(SHEET_TIEMPOS)
     # Las hojas existentes pueden tener los mismos encabezados en otro orden.
     current_headers = run_gsheets_request(lambda: tiempos_worksheet.row_values(1))
-    run_gsheets_request(
-        lambda: tiempos_worksheet.append_row(
-            [prepare_sheet_value(row.get(column, "")) for column in current_headers],
-            value_input_option="USER_ENTERED",
-        )
+    # Preserve numeric-looking folios and avoid duplicate timers on a timeout.
+    tiempos_worksheet.append_row(
+        [prepare_sheet_value(row.get(column, "")) for column in current_headers],
+        value_input_option="RAW", insert_data_option="INSERT_ROWS",
     )
 
 
@@ -5507,6 +5518,8 @@ def build_workbench_table(
     """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas."""
     cases = paused_workbench_cases(estatus_df) if paused_only else active_workbench_cases(estatus_df)
     logs = canonical_workbench_df(tiempos_df)
+    if ID_COLUMN in logs:
+        logs[ID_COLUMN] = logs[ID_COLUMN].map(identifier_resolver(estatus_df.get(ID_COLUMN, [])))
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
         active_logs = dict(tuple(logs[logs["FECHA_FIN"].str.strip().eq("")].groupby(ID_COLUMN)))

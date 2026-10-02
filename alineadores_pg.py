@@ -28,6 +28,7 @@ import streamlit as st
 import order_detail
 from grid_interactions import response_frame
 import dropdown_fields
+from order_identifiers import identifier_resolver
 from copy import deepcopy
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
@@ -1540,7 +1541,9 @@ def read_times_df(sheet_name: str | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=TIMES_HEADERS)
     headers = [canonical_column_name(item) for item in ensure_unique_column_names(values[0])]
     rows = normalize_rows(values[1:], headers)
-    return pd.DataFrame(rows, columns=headers)
+    frame = pd.DataFrame(rows, columns=headers)
+    order_sheet = SHEET_POLANCO if (sheet_name or current_times_sheet()) == SHEET_POLANCO_TIMES else SHEET_ORDERS
+    return canonical_times_df(frame, read_orders_df(order_sheet).get(ID_COLUMN, []))
 
 
 def read_process_definitions() -> dict[str, ProcessDefinition]:
@@ -1613,12 +1616,13 @@ def close_active_times(identifier: str, next_status: str) -> str:
     now = app_now()
     updates: list[Cell] = []
     resume_status = ""
+    resolve_id = identifier_resolver(read_orders_df().get(ID_COLUMN, []))
     for row_number, row in enumerate(values[1:], start=2):
         id_position = positions[ID_COLUMN]
         end_position = positions["FECHA_FIN"]
         row_identifier = row[id_position - 1] if id_position and id_position <= len(row) else ""
         date_finished = row[end_position - 1] if end_position and end_position <= len(row) else ""
-        if clean_cell(row_identifier).strip() != clean_cell(identifier).strip() or clean_cell(date_finished).strip():
+        if resolve_id(row_identifier) != clean_cell(identifier).strip() or clean_cell(date_finished).strip():
             continue
 
         start_date_position = positions["FECHA_INICIO"]
@@ -1730,11 +1734,10 @@ def register_status_change(
         "ES_PAUSA": "Sí" if paused else "No",
         "FECHA_REGISTRO_LOG": now.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    run_gsheets_request(
-        lambda: worksheet.append_row(
-            [prepare_sheet_value(row.get(canonical_column_name(header), "")) for header in headers],
-            value_input_option="USER_ENTERED",
-        )
+    # Do not retry an ambiguous append: it could create two active timers.
+    worksheet.append_row(
+        [prepare_sheet_value(row.get(canonical_column_name(header), "")) for header in headers],
+        value_input_option="RAW", insert_data_option="INSERT_ROWS",
     )
     clear_sheet_data_cache()
 
@@ -2050,12 +2053,14 @@ def sent_orders(
     return orders_with_status(frame, definitions, is_sent_status)
 
 
-def canonical_times_df(frame: pd.DataFrame) -> pd.DataFrame:
+def canonical_times_df(frame: pd.DataFrame, order_ids: Iterable[Any] = ()) -> pd.DataFrame:
     result = frame.copy()
     result.columns = [canonical_column_name(column) for column in result.columns]
     result = result.loc[:, ~result.columns.duplicated()].copy()
     for column in result:
         result[column] = result[column].map(clean_cell)
+    if ID_COLUMN in result:
+        result[ID_COLUMN] = result[ID_COLUMN].map(identifier_resolver(order_ids))
     return result
 
 
@@ -2073,7 +2078,7 @@ def build_tracking_table(
         for column in COMPUTED_COLUMNS:
             cases[column] = pd.Series(dtype="object")
         return cases
-    logs = canonical_times_df(times_df)
+    logs = canonical_times_df(times_df, orders_df.get(ID_COLUMN, []))
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN"}.issubset(logs.columns):
         open_logs = logs[logs["FECHA_FIN"].astype(str).str.strip().eq("")]
@@ -2545,11 +2550,13 @@ def new_order_option_label(column: str, value: str) -> str:
     return f"{icon} {text}"
 
 
-def generate_order_identifier(values: list[list[Any]], headers: list[str]) -> str:
+def generate_order_identifier(values: list[list[Any]], headers: list[str],
+                              reserved_ids: Iterable[Any] = ()) -> str:
     """Mismo folio diario DDMMAAAA-NNN de Aparatos, dentro de la hoja activa."""
     position = headers.index(ID_COLUMN)
     existing = {clean_cell(row[position]).strip() for row in values[ORDER_HEADER_ROW:]
                 if len(row) > position}
+    existing.update(clean_cell(value).strip() for value in reserved_ids)
     prefix = app_today().strftime("%d%m%Y")
     sequence = 1
     while f"{prefix}-{sequence:03d}" in existing:
@@ -2600,15 +2607,33 @@ def _create_order(values: dict[str, Any], current_user: str,
     for column in (ID_COLUMN, STATUS_COLUMN, PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
         if column not in headers:
             raise ValueError(f"Falta la columna {column} en {sheet_name}.")
-    identifier = generate_order_identifier(existing, headers)
+    # A missing order may still have history. Never recycle its folio.
+    log_values = run_gsheets_request(lambda: get_worksheet(current_times_sheet()).get_all_values())
+    log_id_position = get_header_position(log_values[0], ID_COLUMN) if log_values else None
+    reserved = [item[log_id_position - 1] for item in log_values[1:]
+                if log_id_position and len(item) >= log_id_position]
+    identifier = generate_order_identifier(existing, headers, reserved)
     row.update({ID_COLUMN: identifier, STATUS_COLUMN: definition.normal_statuses[0],
                 "FECHA DE RECEPCIÓN": app_today().isoformat()})
-    # Un append no pisa renglones existentes ni sus fórmulas; RAW conserva folios
-    # con ceros iniciales y evita interpretar nombres/comentarios como fórmulas.
+    # INSERT_ROWS is essential: Sheets may detect a table ending before sparse
+    # rows. Its overwrite mode can replace the previously submitted case.
+    # Search the full table, not only its header. RAW preserves literal text.
     # No se reintenta una inserción: un timeout ambiguo podría duplicar la orden.
     worksheet.append_row([row.get(header, "") for header in headers],
-                         value_input_option="RAW",
-                         table_range=f"A{ORDER_HEADER_ROW}:{rowcol_to_a1(ORDER_HEADER_ROW, len(headers))}")
+                         value_input_option="RAW", insert_data_option="INSERT_ROWS",
+                         table_range=f"A{ORDER_HEADER_ROW}:{rowcol_to_a1(1, len(headers))[:-1]}")
+    clear_sheet_data_cache()
+    reset_workbench()
+    confirmed = run_gsheets_request(lambda: worksheet.get_all_values())
+    id_index = headers.index(ID_COLUMN)
+    matches = [item for item in confirmed[ORDER_HEADER_ROW:]
+               if len(item) > id_index and clean_cell(item[id_index]).strip() == identifier]
+    if len(matches) != 1 or any(
+        len(matches[0]) <= headers.index(column)
+        or clean_cell(matches[0][headers.index(column)]).strip() != row[column]
+        for column in (PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE")
+    ):
+        raise ValueError(f"No se pudo verificar la orden {identifier}. Actualiza la tabla antes de reintentar.")
     warning = ""
     try:
         register_status_change(identifier=identifier, product=row[PRODUCT_COLUMN],
