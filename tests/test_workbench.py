@@ -235,6 +235,7 @@ def test_jime_and_lesly_have_full_editing_permissions_like_admin():
     assert not app.is_transition_allowed_for_user("Vero", "ORDEN RECIBIDA", "REVISIÓN DE ARCHIVOS", "MSE")
     assert app.user_can_edit_tab("Lesly", "Jime") is True
     assert app.user_can_edit_tab("Vero", "Jime") is False
+    assert all(app.get_user_operational_statuses(user) == [] for user in app.ADMIN_ACCESS_USERS)
 
 
 def test_printing_mark_still_gates_lesly_despite_full_permissions():
@@ -622,14 +623,14 @@ def test_every_user_can_correct_sheet_columns_including_automatic_fields(user):
     assert not app.validate_workbench_changes(original, original, changes, user)
 
 
-def test_jime_owns_planning_and_is_default_responsible_filter():
+def test_admin_access_users_see_every_responsible_by_default():
     for status in app.PLANNING_STATUSES:
         assert app.get_process_responsible(status) == "JIME"
         assert app.get_status_tab_owner(status) == "Jime"
     owners = ["JIME", "LESLY", "VERO"]
-    assert app.workbench_default_owner("Jime", owners) == "JIME"
-    assert app.workbench_default_owner("Lesly", owners) == "LESLY"
-    assert app.workbench_default_owner("Admin", owners) == "Todos"
+    for user in app.ADMIN_ACCESS_USERS:
+        assert app.workbench_default_owner(user, owners) == "Todos"
+    assert app.workbench_default_owner("Vero", owners) == "VERO"
 
 
 def test_skip_stage_and_foreign_role_rejected():
@@ -777,7 +778,7 @@ app.main()
     assert not at.get("segmented_control")
     assert len(at.tabs[0].get("component_instance")) == 1
     assert at.checkbox(key="workbench_hide_automatic").label == "Ocultar automáticas"
-    assert at.selectbox(key="workbench_owner").value == ("JIME" if user == "Jime" else "Todos")
+    assert at.selectbox(key="workbench_owner").value == "Todos"
     assert any("Fijas: Folio, Semáforo y columnas principales" in item.value for item in at.tabs[0].markdown)
     assert any("Editable automática" in item.value for item in at.tabs[0].markdown)
     assert all(item.key != "workbench_signal" for item in at.selectbox)

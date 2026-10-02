@@ -130,7 +130,10 @@ USER_VISIBLE_TABS = {
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
 # Pueden elegir cualquier etapa del flujo y avanzar aunque el pago esté pendiente.
-UNRESTRICTED_STAGE_USERS = frozenset({"Admin", "Jime", "Lesly"})
+# Perfiles con acceso global: ven todos los pedidos y tienen los mismos permisos
+# operativos que Admin. Una sola fuente de verdad evita restricciones accidentales.
+ADMIN_ACCESS_USERS = frozenset({"Admin", "Jime", "Lesly"})
+UNRESTRICTED_STAGE_USERS = ADMIN_ACCESS_USERS
 PLANNING_STATUSES = ["EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "STL PSM ENVIADO", "EN DISEÑO"]
 USER_TAB_STATUSES = {
     "Jime": [
@@ -1804,13 +1807,13 @@ def get_current_user() -> str:
 def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
     """Admin, Jime y Lesly pueden editar todo; el resto solo su pestaña."""
 
-    return current_user in {"Admin", "Jime", "Lesly"} or current_user == tab_owner
+    return current_user in ADMIN_ACCESS_USERS or current_user == tab_owner
 
 
 def get_user_operational_statuses(current_user: str) -> list[str]:
     """Devuelve los STATUS que pertenecen a las alertas/pestañas del usuario."""
 
-    if current_user == "Admin":
+    if current_user in ADMIN_ACCESS_USERS:
         return []
     return USER_TAB_STATUSES.get(current_user, [])
 
@@ -1860,7 +1863,7 @@ def is_transition_allowed_for_user(
 
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
-    if (current_user in {"Admin", "Jime", "Lesly"} or previous_status == new_status
+    if (current_user in ADMIN_ACCESS_USERS or previous_status == new_status
             or (current_user in APP_USERS and (
                 previous_status == PAUSED_STATUS or new_status == PAUSED_STATUS
             ))):
@@ -3525,7 +3528,7 @@ def render_nuevo_pedido_tab() -> None:
     form_key = f"form_nuevo_pedido_{form_version}"
 
     with st.form(form_key):
-        is_admin_user = get_current_user() == "Admin"
+        is_admin_user = get_current_user() in ADMIN_ACCESS_USERS
         fecha_recepcion = app_today()
 
         if is_admin_user:
@@ -5485,7 +5488,9 @@ def workbench_signal_rank(signal: str) -> int:
 
 
 def workbench_default_owner(current_user: str, owners: Any) -> str:
-    """Selecciona al usuario activo cuando aparece entre los responsables."""
+    """Los perfiles globales ven todos los responsables desde el primer render."""
+    if current_user in ADMIN_ACCESS_USERS:
+        return "Todos"
     current_key = normalize_text(current_user)
     return next(
         (owner for owner in owners if normalize_text(owner) == current_key),
