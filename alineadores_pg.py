@@ -2615,13 +2615,18 @@ def _create_order(values: dict[str, Any], current_user: str,
     identifier = generate_order_identifier(existing, headers, reserved)
     row.update({ID_COLUMN: identifier, STATUS_COLUMN: definition.normal_statuses[0],
                 "FECHA DE RECEPCIÓN": app_today().isoformat()})
-    # INSERT_ROWS is essential: Sheets may detect a table ending before sparse
-    # rows. Its overwrite mode can replace the previously submitted case.
-    # Search the full table, not only its header. RAW preserves literal text.
+    # values.append detects logical tables and can insert above later cases.
+    # appendCells uses the last populated row of the whole sheet, atomically.
+    # Explicit string values preserve folios and literal user-entered text.
     # No se reintenta una inserción: un timeout ambiguo podría duplicar la orden.
-    worksheet.append_row([row.get(header, "") for header in headers],
-                         value_input_option="RAW", insert_data_option="INSERT_ROWS",
-                         table_range=f"A{ORDER_HEADER_ROW}:{rowcol_to_a1(1, len(headers))[:-1]}")
+    worksheet.spreadsheet.batch_update({"requests": [{"appendCells": {
+        "sheetId": worksheet.id,
+        "rows": [{"values": [
+            {"userEnteredValue": {"stringValue": row.get(header, "")}}
+            for header in headers
+        ]}],
+        "fields": "userEnteredValue",
+    }}]})
     clear_sheet_data_cache()
     reset_workbench()
     confirmed = run_gsheets_request(lambda: worksheet.get_all_values())

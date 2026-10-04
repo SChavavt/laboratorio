@@ -24,6 +24,9 @@ class Sheet:
     def __init__(self, values):
         self.values = copy.deepcopy(values)
         self.appends = []
+        self.batches = []
+        self.id = id(self)
+        self.spreadsheet = self
 
     def get_all_values(self):
         return copy.deepcopy(self.values)
@@ -34,6 +37,15 @@ class Sheet:
     def append_row(self, row, **kwargs):
         self.values.append(row)
         self.appends.append(kwargs)
+
+    def batch_update(self, body):
+        self.batches.append(body)
+        for request in body['requests']:
+            append = request['appendCells']
+            assert append['sheetId'] == self.id
+            assert append['fields'] == 'userEnteredValue'
+            for row in append['rows']:
+                self.values.append([cell['userEnteredValue']['stringValue'] for cell in row['values']])
 
     def update_cells(self, cells, **kwargs):
         for cell in cells:
@@ -85,7 +97,7 @@ def test_polanco_edit_and_create_never_write_other_sheet(sheets):
     assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
     assert len(sheets[app.SHEET_TIMES].values) == 1
     assert sheets[app.SHEET_ORDERS].values == before
-    assert sheets[app.SHEET_POLANCO].appends[0]['value_input_option'] == 'RAW'
+    assert sheets[app.SHEET_POLANCO].batches[0]['requests'][0]['appendCells']['fields'] == 'userEnteredValue'
     second, _ = app.create_order({app.ID_COLUMN: '002', app.PRODUCT_COLUMN: 'Graphy',
         'NOMBRE DOCTOR': 'Doctor ejemplo', 'NOMBRE PACIENTE': 'Paciente ejemplo'}, 'Jime', definitions())
     assert second == f'{app.app_today():%d%m%Y}-002'
@@ -122,7 +134,7 @@ def test_create_without_folio_and_log_failure_does_not_claim_order_failed(sheets
 
 
 @pytest.mark.parametrize('sheet_name', [app.SHEET_ORDERS, app.SHEET_POLANCO])
-def test_sparse_table_two_cases_same_doctor_preserves_both(sheets, sheet_name):
+def test_sparse_table_two_cases_same_doctor_append_in_creation_order(sheets, sheet_name):
     class SparseSheet(Sheet):
         def append_row(self, row, **kwargs):
             # Sheets can locate the end of a logical table before later rows.
@@ -137,6 +149,9 @@ def test_sparse_table_two_cases_same_doctor_preserves_both(sheets, sheet_name):
     app.st.session_state['aligners_order_sheet'] = sheet_name
     sheet = SparseSheet(sheets[sheet_name].values)
     sheets[sheet_name] = sheet
+    # A blank row, a preassigned folio, then an existing case after the gap.
+    sheet.values.extend([[], ['002'], ['003', 'REVISIÓN DE ARCHIVOS', 'Graphy',
+                                     'Doctor anterior', 'Paciente anterior']])
     before = copy.deepcopy(sheet.values)
     identifiers = []
     for patient in ['Paciente primero', 'Paciente segundo']:
@@ -145,8 +160,9 @@ def test_sparse_table_two_cases_same_doctor_preserves_both(sheets, sheet_name):
         identifiers.append(identifier)
         assert not warning
     assert identifiers[0] != identifiers[1]
-    assert sheet.values[:3] == before
-    assert {row[4] for row in sheet.values[3:]} == {'Paciente primero', 'Paciente segundo'}
+    assert sheet.values[:len(before)] == before
+    assert [row[4] for row in sheet.values[len(before):]] == ['Paciente primero', 'Paciente segundo']
+    assert [row[0] for row in sheet.values[len(before):]] == identifiers
     table = app.build_tracking_table(app.read_orders_df(), app.read_times_df(), definitions())
     new_cases = table[table[app.ID_COLUMN].isin(identifiers)]
     assert len(new_cases) == 2
@@ -163,7 +179,7 @@ def test_create_reserves_folios_from_orphan_history(sheets):
 
 
 def test_create_does_not_report_success_when_readback_is_missing(sheets, monkeypatch):
-    monkeypatch.setattr(sheets[app.SHEET_ORDERS], 'append_row', lambda *args, **kwargs: None)
+    monkeypatch.setattr(sheets[app.SHEET_ORDERS], 'batch_update', lambda *args, **kwargs: None)
     with pytest.raises(ValueError, match='No se pudo verificar'):
         app.create_order({app.PRODUCT_COLUMN: 'Graphy', 'NOMBRE DOCTOR': 'Doctor demo',
                           'NOMBRE PACIENTE': 'Paciente nuevo'}, 'Jime', definitions())
@@ -322,6 +338,7 @@ def test_invalid_dropdown_value_is_rejected_before_writing(sheets):
                           'NOMBRE PACIENTE': 'Demo', 'VENDEDOR': 'NO CONFIGURADO'},
                          'Jime', definitions(), catalog=FORM_CATALOG)
     assert not sheets[app.SHEET_ORDERS].appends
+    assert not sheets[app.SHEET_ORDERS].batches
 
 
 def test_dropdown_raw_values_written_without_visual_prefixes(sheets):
