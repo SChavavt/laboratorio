@@ -162,10 +162,35 @@ estructura actual de su Google Form con Google Forms API.
   cambiar con `[google_forms_alineadores.<td|marca_blanca|otros_productos>]`
   `form_id = "..."` (igual que `sheet_id` y `worksheet`).
 
+## Avisos de respuestas nuevas de Forms
+
+Con la app abierta, cada usuario recibe un aviso cuando llega una respuesta
+nueva a un formulario que puede abrir: Admin, Jime y Lesly los 4 (Aparatos
+sinterizados y los 3 de alineadores); Vero los 3 de alineadores.
+
+- La app revisa los Sheets de respuestas cada minuto (`forms_notices.py`). Cada
+  respuesta nueva sale como toast y en el botón **🔔 N respuestas nuevas de
+  Forms** debajo del encabezado. La pestaña del navegador muestra `(N)` para
+  notarlo aunque la app esté en segundo plano.
+- **Ver** abre la vista, la pestaña 📥 Recibidos de Forms, la subpestaña del
+  formulario y deja seleccionada esa respuesta. Si hay cambios sin guardar, avisa
+  y no cambia de vista, igual que el selector de vista.
+- Una respuesta deja de ser nueva al abrirla (desde el aviso o eligiéndola en la
+  pestaña de Forms, donde las nuevas llevan 🆕) o con **Marcar todas como
+  vistas**.
+- Lo visto se guarda por usuario en la hoja `AVISOS FORMS` de CONTROL APARATOS
+  (se crea sola). Sirve en cualquier dispositivo. La primera vez que un usuario
+  entra, lo que ya existía cuenta como visto: sólo avisa lo que llega después.
+- Las respuestas se identifican por su “Marca temporal”, no por el número de
+  fila, para que borrar filas del Sheet no oculte avisos.
+- En el modo pantalla del Tablero no se muestra la campana. Fuera de la app no
+  llegan avisos (correo, celular): eso requeriría un Apps Script en cada
+  formulario.
+
 ## Pruebas
 
 ```bash
-python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py tests/test_shipments.py
+python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py tests/test_shipments.py tests/test_forms_notices.py
 ```
 
 

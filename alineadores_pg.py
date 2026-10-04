@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+import forms_notices
 import order_detail
 from grid_interactions import response_frame
 import dropdown_fields
@@ -137,6 +138,9 @@ FORMS_METADATA_HEADERS = {
     "SCORE",
 }
 FORMS_FIRST_SECTION_TITLE = "Datos capturados"
+FORMS_TAB_LABEL = "📥 Recibidos de Forms"
+# Con key, la campana de avisos puede abrir la subpestaña del formulario.
+FORMS_SUB_TABS_KEY = "aligners_forms_sub_tabs"
 FORMS_OTHER_ANSWERS_TITLE = "Otras respuestas (preguntas que ya no están en el formulario)"
 
 # Cada formulario apunta al Google Sheet de respuestas ya compartido con la
@@ -1585,6 +1589,11 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
     column_positions = map_forms_columns(list(review_df.columns), form_sections)
     display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
     display_df = display_df[order_forms_columns(list(display_df.columns), column_positions)]
+    table_key = f"aligners_forms_table_{form['key']}"
+    selector_key = f"aligners_forms_selector_{form['key']}"
+    display_df = forms_notices.focus_response(
+        review_df, display_df, form["key"], table_key, selector_key
+    )
     if form_error:
         st.caption(
             "ℹ️ No pude leer el formulario actual en Google Forms, así que el PDF y la "
@@ -1592,9 +1601,6 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
             f"editor con `{get_service_account_email()}` y habilita Google Forms API "
             f"en su proyecto de Google Cloud. Detalle: {form_error}"
         )
-
-    table_key = f"aligners_forms_table_{form['key']}"
-    selector_key = f"aligners_forms_selector_{form['key']}"
 
     table_event = st.dataframe(
         display_df,
@@ -1614,16 +1620,23 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
     response_options = display_df["Respuesta #"].tolist()
     if st.session_state.get(selector_key) not in response_options:
         st.session_state[selector_key] = response_options[0]
+    new_numbers = forms_notices.new_response_numbers(display_df, form["key"])
     selected_response = st.selectbox(
         "📌 Selecciona una respuesta",
         options=response_options,
+        format_func=lambda number: f"{number} 🆕" if number in new_numbers else str(number),
         key=selector_key,
     )
+    if new_numbers:
+        st.caption("🆕 = respuesta nueva que todavía no habías abierto.")
     selected_rows = display_df[display_df["Respuesta #"] == selected_response]
     if selected_rows.empty:
         return
 
     selected_row = selected_rows.iloc[0]
+    forms_notices.record_viewed(
+        form["key"], selected_row.get(forms_notices.timestamp_column(display_df.columns), "")
+    )
     selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
     selected_links = get_forms_file_links(selected_link)
     visible_details = []
@@ -1704,16 +1717,23 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
 def render_aligners_forms_tab() -> None:
     """Agrupa los 3 formularios de prescripción en subpestañas de solo lectura."""
 
-    st.subheader("📥 Recibidos de Forms")
+    st.subheader(FORMS_TAB_LABEL)
     st.caption(
         "Respuestas y archivos de los 3 formularios de prescripción, leídos "
         "directamente de sus Google Sheets con la cuenta de servicio compartida."
     )
     forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
-    sub_tabs = st.tabs([form["label"] for form in forms])
+    sub_tabs = st.tabs(
+        [form["label"] for form in forms], key=FORMS_SUB_TABS_KEY, on_change="rerun"
+    )
+    # Sólo se lee y muestra la subpestaña abierta: abrir las 3 marcaba como
+    # vista la respuesta más nueva de formularios que nadie estaba mirando.
     for form, tab in zip(forms, sub_tabs):
+        if not tab.open:
+            continue
         with tab:
             render_aligners_form_review(form)
+        break
 
 
 def rerun_active_tab() -> None:
@@ -4468,7 +4488,7 @@ def render_board(current_user: str) -> None:
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📋 Seguimiento Polanco",
-    "📥 Recibidos de Forms",
+    FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
 )
 
