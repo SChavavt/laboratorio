@@ -48,6 +48,8 @@ SHEET_USER_PREFERENCES = "PREFERENCIAS APP"
 SHEET_FORMS_NOTICES = "AVISOS FORMS"
 FORMS_NOTICE_HEADERS = ["USUARIO", "FORMULARIOS_VISTOS", "ACTUALIZADO"]
 FORMS_NOTICE_APPARATUS_KEY = "aparatos"
+# Un poco menos que el ciclo de la campana (60 s): una lectura por ciclo como mucho.
+FORMS_NOTICE_READ_TTL_SECONDS = 55
 SHEET_PROCESOS = "PROCESOS POR APARATO"
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
@@ -2488,6 +2490,43 @@ def forms_notice_row(values: list[list[str]], current_user: str) -> tuple[int | 
     return None, ""
 
 
+@st.cache_resource(show_spinner=False)
+def get_forms_notice_response_worksheet(sheet_id: str, worksheet_name: str):
+    """Pestaña de respuestas que lee la campana; se busca una sola vez."""
+    spreadsheet = get_spreadsheet_by_id(sheet_id)
+    for name in dict.fromkeys([worksheet_name, *FORMS_WORKSHEET_FALLBACKS]):
+        try:
+            return run_gsheets_request(lambda: spreadsheet.worksheet(name), retries=0)
+        except gspread.WorksheetNotFound:
+            continue
+    return run_gsheets_request(lambda: spreadsheet.worksheets(), retries=0)[0]
+
+
+@st.cache_data(ttl=FORMS_NOTICE_READ_TTL_SECONDS, show_spinner=False)
+def read_forms_notice_responses(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    """Respuestas de un Form para la campana, con caché propio.
+
+    No usa read_forms_responses_df: su caché dura 30 s (la campana fallaría casi
+    cada minuto) y clear_sheet_data_cache lo vacía tras cada guardado. Tampoco
+    reintenta un límite de cuota: la campana conserva su última lectura y vuelve
+    a probar en el siguiente ciclo.
+    """
+    worksheet = get_forms_notice_response_worksheet(sheet_id, worksheet_name)
+    try:
+        values = run_gsheets_request(lambda: worksheet.get_all_values(), retries=0)
+    except gspread.exceptions.APIError:
+        # Si la pestaña cambió o se borró, la próxima vez se vuelve a buscar.
+        get_forms_notice_response_worksheet.clear(sheet_id, worksheet_name)
+        raise
+    if not values:
+        return pd.DataFrame()
+    headers = ensure_unique_column_names(values[0])
+    width = len(headers)
+    return pd.DataFrame(
+        [row[:width] + [""] * max(width - len(row), 0) for row in values[1:]], columns=headers
+    )
+
+
 def load_forms_notice_states(current_user: str) -> dict[str, dict[str, Any]]:
     _, raw = forms_notice_row(read_forms_notice_rows(), current_user)
     return forms_notices.load_states(raw)
@@ -4765,7 +4804,7 @@ def render_estefano_forms_review(can_edit: bool) -> None:
         ),
         on_select="rerun",
         selection_mode="single-row",
-        key="forms_response_table_estefano",
+        key=forms_notices.table_widget_key("forms_response_table_estefano"),
     )
     apply_single_row_selection_to_selectbox(
         table_event, display_df, "Respuesta #", "forms_response_selector_estefano"
@@ -4775,15 +4814,18 @@ def render_estefano_forms_review(can_edit: bool) -> None:
     if st.session_state.get("forms_response_selector_estefano") not in response_options:
         st.session_state["forms_response_selector_estefano"] = response_options[0]
     new_numbers = forms_notices.new_response_numbers(display_df, FORMS_NOTICE_APPARATUS_KEY)
+    if new_numbers:
+        # Fuera del selector: si su texto cambia entre reruns, Streamlit pierde la opción elegida.
+        st.caption("🆕 Respuestas nuevas que todavía no abres: " + ", ".join(
+            f"#{number}" for number in sorted(new_numbers, reverse=True)
+        ))
     selected_response = st.selectbox(
         "📌 Selecciona una respuesta para usar su link de Drive",
         options=response_options,
-        format_func=lambda number: f"{number} 🆕" if number in new_numbers else str(number),
         disabled=not can_edit,
         key="forms_response_selector_estefano",
     )
-    if new_numbers:
-        st.caption("🆕 = respuesta nueva que todavía no habías abierto.")
+    forms_notices.remember_selection("forms_response_selector_estefano", selected_response)
     selected_rows = display_df[display_df["Respuesta #"] == selected_response]
     if selected_rows.empty:
         return
@@ -7139,7 +7181,7 @@ def forms_notice_sources(current_user: str) -> list[dict[str, Any]]:
             sources.append({
                 "key": FORMS_NOTICE_APPARATUS_KEY,
                 "label": "⚙️ Aparatos sinterizados",
-                "read": lambda: read_forms_responses_df(config["sheet_id"], config["worksheet"]),
+                "read": lambda: read_forms_notice_responses(config["sheet_id"], config["worksheet"]),
             })
     for form in alineadores_pg.ALIGNERS_FORMS:
         config = alineadores_pg.get_aligners_form_config(form)
@@ -7147,7 +7189,7 @@ def forms_notice_sources(current_user: str) -> list[dict[str, Any]]:
             sources.append({
                 "key": config["key"],
                 "label": config["label"],
-                "read": lambda config=config: alineadores_pg.read_forms_responses_df(
+                "read": lambda config=config: read_forms_notice_responses(
                     config["sheet_id"], config["worksheet"]
                 ),
             })
@@ -7188,11 +7230,20 @@ def apply_forms_notice_navigation() -> None:
     st.query_params["vista"] = LAB_WORKSPACE_URL_VALUES[view]
 
 
-def render_forms_notices(slot: Any, selected_view: str, current_user: str) -> None:
-    """Campana de respuestas nuevas, arriba de la vista; se calcula al final del run."""
+def forms_notice_hidden() -> bool:
+    """Modo pantalla del Tablero: es una TV, nadie toca los avisos ni hace falta leer Forms."""
 
-    if selected_view == LAB_VIEW_ALIGNERS and st.session_state.get(alineadores_pg.BOARD_SCREEN_KEY):
-        return  # Modo pantalla del tablero: es una TV, nadie toca los avisos.
+    view = normalize_workspace_view(st.session_state.get(LAB_WORKSPACE_STATE_KEY, LAB_VIEW_APPARATUS))
+    return view == LAB_VIEW_ALIGNERS and bool(st.session_state.get(alineadores_pg.BOARD_SCREEN_KEY))
+
+
+def render_forms_notices(slot: Any, current_user: str) -> None:
+    """Campana de respuestas nuevas, arriba de la vista; se calcula al final del run.
+
+    Se registra aunque esté en modo pantalla: el interruptor del Tablero no hace
+    un rerun completo, así que la campana revisa forms_notice_hidden en cada ciclo.
+    """
+
     try:
         sources = forms_notice_sources(current_user)
     except Exception:
@@ -7207,6 +7258,7 @@ def render_forms_notices(slot: Any, selected_view: str, current_user: str) -> No
             load_forms_notice_states,
             save_forms_notice_states,
             forms_notice_blocker,
+            forms_notice_hidden,
         )
 
 
@@ -7240,7 +7292,7 @@ def main() -> None:
         # para que leer los Sheets de Forms no retrase la carga de la pantalla.
         notices_slot = st.container()
         render_selected_workspace(selected_view, current_user)
-        render_forms_notices(notices_slot, selected_view, current_user)
+        render_forms_notices(notices_slot, current_user)
     except Exception as exc:
         if is_google_sheets_rate_limit_error(exc):
             st.error(

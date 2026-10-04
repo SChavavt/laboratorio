@@ -1613,7 +1613,7 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         ),
         on_select="rerun",
         selection_mode="single-row",
-        key=table_key,
+        key=forms_notices.table_widget_key(table_key),
     )
     apply_single_row_selection_to_selectbox(table_event, display_df, "Respuesta #", selector_key)
 
@@ -1621,14 +1621,17 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
     if st.session_state.get(selector_key) not in response_options:
         st.session_state[selector_key] = response_options[0]
     new_numbers = forms_notices.new_response_numbers(display_df, form["key"])
+    if new_numbers:
+        # Fuera del selector: si su texto cambia entre reruns, Streamlit pierde la opción elegida.
+        st.caption("🆕 Respuestas nuevas que todavía no abres: " + ", ".join(
+            f"#{number}" for number in sorted(new_numbers, reverse=True)
+        ))
     selected_response = st.selectbox(
         "📌 Selecciona una respuesta",
         options=response_options,
-        format_func=lambda number: f"{number} 🆕" if number in new_numbers else str(number),
         key=selector_key,
     )
-    if new_numbers:
-        st.caption("🆕 = respuesta nueva que todavía no habías abierto.")
+    forms_notices.remember_selection(selector_key, selected_response)
     selected_rows = display_df[display_df["Respuesta #"] == selected_response]
     if selected_rows.empty:
         return

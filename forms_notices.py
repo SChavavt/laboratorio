@@ -101,14 +101,6 @@ def mark_seen(
     return {"base": base, "vistas": sorted(key for key in vistas if key > base)}
 
 
-def mark_all_seen(state: dict[str, Any] | None, keys: Iterable[str]) -> dict[str, Any]:
-    """Marca como vistas todas las respuestas actuales."""
-
-    known = [key for key in keys if key]
-    base = max([*known, (state or {}).get("base", "")], default="")
-    return {"base": base, "vistas": []}
-
-
 def load_states(raw: Any) -> dict[str, dict[str, Any]]:
     """Lee el JSON guardado por usuario; un valor dañado equivale a no tener estado."""
 
@@ -166,14 +158,16 @@ FOCUS_KEY = "forms_notices_focus"
 GOTO_KEY = "forms_notices_goto"
 ANNOUNCED_KEY = "forms_notices_announced"
 FRAMES_KEY = "forms_notices_frames"
-DIRTY_KEY = "forms_notices_dirty"
 MARK_ALL_KEY = "forms_notices_mark_all_requested"
 OWNER_KEY = "forms_notices_owner"
+SELECTIONS_KEY = "forms_notices_selections"
 SESSION_KEYS = (
     STATES_KEY, PENDING_KEY, VIEWED_KEY, FOCUS_KEY, GOTO_KEY, ANNOUNCED_KEY,
-    FRAMES_KEY, DIRTY_KEY, MARK_ALL_KEY,
+    FRAMES_KEY, MARK_ALL_KEY, SELECTIONS_KEY,
 )
 TITLE_RUN_KEY = "forms_notices_title_run"
+TABLE_VERSIONS_KEY = "forms_notices_table_versions"
+FLASH_SECONDS = 12
 
 
 def _normalize(value: Any) -> str:
@@ -223,16 +217,14 @@ def build_notices(
     sources: list[dict[str, Any]],
     frames: dict[str, pd.DataFrame],
     states: dict[str, dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Calcula las respuestas pendientes de un usuario.
 
-    Devuelve ``(avisos de la más nueva a la más vieja, estados, cambió)``. Un
-    formulario sin estado recibe su línea base; uno que no se pudo leer conserva
-    su estado intacto.
+    Devuelve ``(avisos de la más nueva a la más vieja, estados)``. Un formulario
+    sin estado recibe su línea base; uno que no se pudo leer conserva su estado.
     """
 
     updated = dict(states)
-    changed = False
     notices: list[dict[str, Any]] = []
     for source in sources:
         frame = frames.get(source["key"])
@@ -241,18 +233,12 @@ def build_notices(
         summaries = response_summaries(frame)
         keys = list(summaries)
         state = updated.get(source["key"])
-        if state is None:
-            state = baseline_state(keys)
-            changed = True
-        compacted = mark_seen(state, [], keys)
-        if compacted != state:
-            state = compacted
-            changed = True
+        state = mark_seen(state, [], keys) if state is not None else baseline_state(keys)
         updated[source["key"]] = state
         for key in pending_keys(keys, state):
             notices.append({"form": source["key"], "label": source["label"], "key": key, **summaries[key]})
     notices.sort(key=lambda notice: notice["key"], reverse=True)
-    return notices, updated, changed
+    return notices, updated
 
 
 def notice_text(notice: dict[str, Any]) -> str:
@@ -274,8 +260,9 @@ def pending_for(form_key: str) -> set[str]:
 def record_viewed(form_key: str, timestamp: Any) -> None:
     """La pestaña de Forms avisa que el usuario ya tiene abierta esta respuesta.
 
-    La campana la guarda como vista en su siguiente ciclo; aquí sólo se deja de
-    contar en la sesión para que el número baje de inmediato.
+    Aquí deja de contar como nueva en la pestaña. La campana la guarda como vista
+    y baja su número en su siguiente ciclo (a más tardar en un minuto), porque la
+    pestaña corre en su propio fragmento.
     """
 
     key = response_key(timestamp)
@@ -302,6 +289,28 @@ def new_response_numbers(display_df: pd.DataFrame, form_key: str) -> set[int]:
     }
 
 
+def table_widget_key(table_key: str) -> str:
+    """Key real de la tabla de respuestas; cambia cada vez que un aviso abre una.
+
+    Con una key nueva el navegador olvida la fila que tenía marcada: si no, la
+    reenvía en el siguiente rerun y vuelve a imponerse sobre el selector.
+    """
+
+    version = st.session_state.get(TABLE_VERSIONS_KEY, {}).get(table_key, 0)
+    return f"{table_key}_{version}" if version else table_key
+
+
+def remember_selection(selector_key: str, number: Any) -> None:
+    """Guarda la respuesta elegida fuera del widget.
+
+    Streamlit borra el estado de un selector que deja de dibujarse (por ejemplo,
+    al cambiar de subpestaña); sin esto, al volver se abriría la más nueva y
+    quedaría marcada como vista sin que nadie la eligiera.
+    """
+
+    st.session_state.setdefault(SELECTIONS_KEY, {})[selector_key] = number
+
+
 def focus_response(
     review_df: pd.DataFrame,
     display_df: pd.DataFrame,
@@ -309,26 +318,38 @@ def focus_response(
     table_key: str,
     selector_key: str,
 ) -> pd.DataFrame:
-    """Si un aviso pidió abrir una respuesta, la deja seleccionada.
+    """Prepara la tabla y el selector de respuestas de un formulario.
 
-    Se busca por marca temporal y no por número de fila. Si la respuesta ya no
-    está entre las que muestra la tabla, se agrega al final para poder abrirla.
+    - Recupera la respuesta que el usuario tenía elegida antes de cambiar de
+      subpestaña o de pestaña.
+    - Deja seleccionada la que pidió un aviso, buscándola por marca temporal y
+      no por número de fila.
+    - Agrega al final la elegida y las nuevas que no estén entre las 25 más
+      recientes, en cada run: así siempre se pueden abrir y el selector no salta
+      a la más nueva en el siguiente rerun.
     """
 
+    remembered = st.session_state.get(SELECTIONS_KEY, {}).get(selector_key)
+    if selector_key not in st.session_state and remembered is not None:
+        st.session_state[selector_key] = remembered
     focus = st.session_state.get(FOCUS_KEY, {})
     key = focus.pop(form_key, "") if isinstance(focus, dict) else ""
     stamp = timestamp_column(review_df.columns)
-    if not key or not stamp:
-        return display_df
-    matches = review_df[review_df[stamp].map(response_key) == key]
-    if matches.empty:
-        return display_df
-    number = int(matches.iloc[-1]["Respuesta #"])
-    if number not in display_df["Respuesta #"].tolist():
-        display_df = pd.concat([display_df, matches.tail(1)], ignore_index=True)
-    # La fila elegida antes en la tabla volvería a imponerse sobre el selector.
-    st.session_state.pop(table_key, None)
-    st.session_state[selector_key] = number
+    if key and stamp:
+        matches = review_df[review_df[stamp].map(response_key) == key]
+        if not matches.empty:
+            st.session_state[selector_key] = int(matches.iloc[-1]["Respuesta #"])
+            versions = st.session_state.setdefault(TABLE_VERSIONS_KEY, {})
+            versions[table_key] = versions.get(table_key, 0) + 1
+    wanted = set(new_response_numbers(review_df, form_key))
+    if st.session_state.get(selector_key) is not None:
+        wanted.add(st.session_state[selector_key])
+    missing = wanted - set(display_df["Respuesta #"].tolist())
+    if missing:
+        extra = review_df[review_df["Respuesta #"].isin(missing)]
+        display_df = pd.concat(
+            [display_df, extra.sort_values("Respuesta #", ascending=False)], ignore_index=True
+        )
     return display_df
 
 
@@ -383,8 +404,39 @@ def _render_title_badge(count: int) -> None:
     )
 
 
-def _request_mark_all() -> None:
-    st.session_state[MARK_ALL_KEY] = True
+def _render_flash(fresh: list[dict[str, Any]]) -> None:
+    """Aviso flotante que se desvanece solo, como un toast.
+
+    No se usa st.toast: desde el rerun del fragmento escribe en el contenedor de
+    eventos y borra el CSS de sólo estilo que otros fragmentos dejaron ahí (por
+    ejemplo, el modo pantalla del Tablero). Este aviso vive en la campana.
+    """
+
+    plural = "s" if len(fresh) != 1 else ""
+    items = "".join(f"<li>{html.escape(notice_text(notice))}</li>" for notice in fresh[:3])
+    more = f"<div>Y {len(fresh) - 3} más.</div>" if len(fresh) > 3 else ""
+    st.markdown(
+        f"""<div class="forms-notices-flash" role="status">
+        <strong>🔔 Respuesta{plural} nueva{plural} de Forms</strong><ul>{items}</ul>{more}</div>
+        <style>
+        .forms-notices-flash {{position:fixed; top:4.25rem; right:1.25rem; z-index:999990;
+            max-width:min(26rem, calc(100vw - 2.5rem)); background:#FFFFFF; color:#1B4B36;
+            border:1px solid #BFE3CC; border-left:5px solid #12875E; border-radius:14px;
+            padding:.75rem 1rem; box-shadow:0 12px 30px rgba(15,63,42,.18); font-size:.92rem;
+            pointer-events:none; animation:forms-notices-flash {FLASH_SECONDS}s ease forwards;}}
+        .forms-notices-flash ul {{margin:.35rem 0 0; padding-left:1.1rem;}}
+        @keyframes forms-notices-flash {{
+            0% {{opacity:0; transform:translateY(-6px);}} 4% {{opacity:1; transform:none;}}
+            88% {{opacity:1;}} 100% {{opacity:0; visibility:hidden;}}
+        }}
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _request_mark_all(listed: list[list[str]]) -> None:
+    # Sólo lo que la campana mostró: una respuesta que llegó después sigue siendo nueva.
+    st.session_state[MARK_ALL_KEY] = listed
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
@@ -394,11 +446,13 @@ def render_bell(
     load_states: Callable[[str], dict[str, dict[str, Any]]],
     save_states: Callable[[str, dict[str, dict[str, Any]]], None],
     can_navigate: Callable[[], str],
+    is_hidden: Callable[[], bool] = lambda: False,
 ) -> None:
     """Campana con las respuestas nuevas del usuario; se revisa sola cada minuto.
 
     ``can_navigate`` devuelve "" si se puede saltar a otra vista o el motivo
-    por el que no (por ejemplo, cambios sin guardar).
+    por el que no (por ejemplo, cambios sin guardar). ``is_hidden`` se revisa en
+    cada ciclo: el modo pantalla del Tablero se activa sin rerun completo.
     """
 
     if st.session_state.get(OWNER_KEY) != current_user:
@@ -406,6 +460,8 @@ def render_bell(
         for key in SESSION_KEYS:
             st.session_state.pop(key, None)
         st.session_state[OWNER_KEY] = current_user
+    if is_hidden():
+        return
     try:
         stored = load_states(current_user)
     except Exception:
@@ -419,30 +475,27 @@ def render_bell(
     for form_key, key in viewed:
         if form_key in states:
             states[form_key] = mark_seen(states[form_key], [key], keys_by_form.get(form_key, [key]))
-    mark_all = bool(st.session_state.pop(MARK_ALL_KEY, False))
-    if mark_all:
-        for form_key, keys in keys_by_form.items():
-            states[form_key] = mark_all_seen(states.get(form_key), keys)
-    notices, states, changed = build_notices(sources, frames, states)
+    for form_key, key in st.session_state.pop(MARK_ALL_KEY, None) or []:
+        if form_key in states:
+            states[form_key] = mark_seen(states[form_key], [key], keys_by_form.get(form_key, [key]))
+    notices, states = build_notices(sources, frames, states)
     st.session_state[STATES_KEY] = states
     st.session_state[PENDING_KEY] = {
         source["key"]: [notice["key"] for notice in notices if notice["form"] == source["key"]]
         for source in sources
     }
-    if changed or viewed or mark_all or st.session_state.get(DIRTY_KEY):
+    # Se guarda siempre que la sesión sepa algo que el Sheet no tiene: así también
+    # se reintenta un guardado fallido o pisado por otro dispositivo del usuario.
+    if states != stored:
         try:
             save_states(current_user, states)
-            st.session_state[DIRTY_KEY] = False
         except Exception:
-            # Se reintenta en el siguiente ciclo; mientras, la sesión ya no los cuenta.
-            st.session_state[DIRTY_KEY] = True
+            pass
 
     announced = st.session_state.setdefault(ANNOUNCED_KEY, set())
     fresh = [notice for notice in notices if (notice["form"], notice["key"]) not in announced]
-    for notice in fresh[:3]:
-        st.toast(f"🔔 Respuesta nueva: {notice_text(notice)}", icon="📥", duration="long")
-    if len(fresh) > 3:
-        st.toast(f"🔔 Y {len(fresh) - 3} respuesta(s) nueva(s) más de Forms.", icon="📥", duration="long")
+    if fresh:
+        _render_flash(fresh)
     announced.update((notice["form"], notice["key"]) for notice in notices)
 
     _render_title_badge(len(notices))
@@ -468,4 +521,9 @@ def render_bell(
         if len(notices) > MAX_LISTED:
             st.caption(f"Y {len(notices) - MAX_LISTED} más en la pestaña 📥 Recibidos de Forms.")
         # El callback corre antes del siguiente ciclo de la campana, que ya las cuenta vistas.
-        st.button("✓ Marcar todas como vistas", key="forms_notices_mark_all", on_click=_request_mark_all)
+        st.button(
+            "✓ Marcar todas como vistas",
+            key="forms_notices_mark_all",
+            on_click=_request_mark_all,
+            args=([[notice["form"], notice["key"]] for notice in notices],),
+        )
