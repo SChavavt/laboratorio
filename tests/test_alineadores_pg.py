@@ -1,6 +1,8 @@
 """Pruebas puras de la app de alineadores; no acceden a Sheets."""
 
 from datetime import datetime, timedelta
+from itertools import zip_longest
+import re
 import sys
 from pathlib import Path
 
@@ -598,3 +600,242 @@ with patch.object(app, "get_snapshot", lambda _: snapshot):
     assert products.label == "Producto"
     assert products.options == ["GRAPHY"]
     assert at.button(key="aligners_sent_save").disabled
+
+
+FORM_JSON = {
+    "info": {"title": "Alineadores"},
+    "items": [
+        {"title": "Asesor:", "questionItem": {}},
+        {"title": "Prescripción", "pageBreakItem": {}},
+        {"title": "Relación Izquierda:", "questionItem": {}},
+        {"title": "Método para mejorar la relación izquierda:", "questionItem": {}},
+        {"title": "Foto de referencia", "imageItem": {}},
+        {"title": "Comentarios:", "questionItem": {}},
+        {"title": "Sólo texto", "pageBreakItem": {}},
+        {"title": "Cuadrícula", "pageBreakItem": {}},
+        {
+            "title": "Dientes",
+            "questionGroupItem": {
+                "questions": [
+                    {"rowQuestion": {"title": "Superior"}},
+                    {"rowQuestion": {"title": "Inferior"}},
+                ]
+            },
+        },
+    ],
+}
+
+
+def test_form_sections_follow_current_form_and_expand_grids():
+    assert app.parse_form_sections(FORM_JSON) == [
+        {"title": "Datos capturados", "questions": ["Asesor:"]},
+        {
+            "title": "Prescripción",
+            "questions": [
+                "Relación Izquierda:",
+                "Método para mejorar la relación izquierda:",
+                "Comentarios:",
+            ],
+        },
+        {"title": "Cuadrícula", "questions": ["Dientes [Superior]", "Dientes [Inferior]"]},
+    ]
+
+
+def test_form_details_follow_form_even_when_sheet_appends_new_questions():
+    sections = app.parse_form_sections(FORM_JSON)
+    # Google agrega al final del Sheet las preguntas nuevas y conserva las borradas.
+    columns = [
+        "Respuesta #",
+        "Marca temporal",
+        "Asesor:",
+        "Relación Izquierda:",
+        "Línea Media",
+        "Comentarios:",
+        "Método para mejorar la relación izquierda:",
+        "Dientes [Superior]",
+    ]
+    mapping = app.map_forms_columns(columns, sections)
+    assert app.order_forms_columns(columns, mapping) == [
+        "Respuesta #",
+        "Marca temporal",
+        "Asesor:",
+        "Relación Izquierda:",
+        "Método para mejorar la relación izquierda:",
+        "Comentarios:",
+        "Dientes [Superior]",
+        "Línea Media",
+    ]
+
+    details = [(column, f"valor {index}") for index, column in enumerate(columns[1:])]
+    assert app.group_forms_details(details, sections, mapping) == [
+        ("Datos capturados", [("Marca temporal", "valor 0"), ("Asesor:", "valor 1")]),
+        (
+            "Prescripción",
+            [
+                ("Relación Izquierda:", "valor 2"),
+                ("Método para mejorar la relación izquierda:", "valor 5"),
+                ("Comentarios:", "valor 4"),
+            ],
+        ),
+        ("Cuadrícula", [("Dientes [Superior]", "valor 6")]),
+        (app.FORMS_OTHER_ANSWERS_TITLE, [("Línea Media", "valor 3")]),
+    ]
+
+
+def test_repeated_sheet_titles_use_the_current_question_label():
+    sections = [
+        {
+            "title": "Datos capturados",
+            "questions": ["Nombre completo del paciente:", "Tipo de alineadores\n(Material):"],
+        }
+    ]
+    columns = [
+        "Nombre completo del paciente:",
+        "TIPO DE ALINEADORES (material):",
+        "Nombre completo del paciente:_2",
+    ]
+    mapping = app.map_forms_columns(columns, sections)
+    assert mapping == {
+        "Nombre completo del paciente:": (0, 0),
+        "TIPO DE ALINEADORES (material):": (0, 1),
+        "Nombre completo del paciente:_2": (0, 0),
+    }
+    details = [("Nombre completo del paciente:_2", "Regina"), ("TIPO DE ALINEADORES (material):", "Graphy")]
+    assert app.group_forms_details(details, sections, mapping) == [
+        (
+            "Datos capturados",
+            [("Nombre completo del paciente:", "Regina"), ("Tipo de alineadores\n(Material):", "Graphy")],
+        )
+    ]
+
+
+def test_without_form_structure_details_keep_sheet_order():
+    details = [("Comentarios:", "na"), ("Relación Izquierda:", "Mantener")]
+    assert app.group_forms_details(details, [], {}) == [("Datos capturados", details)]
+    assert app.group_forms_details([], [], {}) == []
+
+
+class FakeFormsResponse:
+    def __init__(self, ok, payload, status_code=200, reason="OK"):
+        self.ok = ok
+        self.payload = payload
+        self.status_code = status_code
+        self.reason = reason
+
+    def json(self):
+        return self.payload
+
+
+def fake_forms_session(response, calls):
+    class FakeSession:
+        def __init__(self, credentials):
+            pass
+
+        def get(self, url, timeout):
+            calls.append(url)
+            return response
+
+    return FakeSession
+
+
+def test_form_structure_is_read_from_forms_api(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, "_get_service_account_credentials", lambda: object())
+    monkeypatch.setattr(app, "AuthorizedSession", fake_forms_session(FakeFormsResponse(True, FORM_JSON), calls))
+    app.read_form_sections.clear()
+
+    assert app.read_form_sections("form-123") == (app.parse_form_sections(FORM_JSON), "")
+    assert calls == ["https://forms.googleapis.com/v1/forms/form-123"]
+
+
+def test_form_structure_error_keeps_forms_api_message(monkeypatch):
+    message = "Google Forms API has not been used in project 1 before or it is disabled."
+    response = FakeFormsResponse(False, {"error": {"message": message}}, 403, "Forbidden")
+    monkeypatch.setattr(app, "_get_service_account_credentials", lambda: object())
+    monkeypatch.setattr(app, "AuthorizedSession", fake_forms_session(response, []))
+    app.read_form_sections.clear()
+
+    assert app.read_form_sections("form-sin-permiso") == ([], f"403 {message}")
+    assert app.read_form_sections("") == ([], "No hay form_id configurado.")
+
+
+def test_each_aligner_form_points_to_its_google_form(monkeypatch):
+    monkeypatch.setattr(app.st, "secrets", {"google_forms_alineadores": {"td": {"form_id": "otro"}}})
+    configs = {form["key"]: app.get_aligners_form_config(form) for form in app.ALIGNERS_FORMS}
+    assert configs["td"]["form_id"] == "otro"
+    assert configs["marca_blanca"]["form_id"] == "1alX8OXw_iSvrBnYzPLI1Sy5CDg0XiMMIhm-bMJ0G_lI"
+    assert configs["otros_productos"]["form_id"] == "1iMRjp1eaHDEvqbUA165fax6_3wlJJVXwY3wDiq87ZFs"
+
+
+def test_form_pdf_builds_one_block_per_section():
+    pdf = app.build_form_response_pdf(
+        form_label="🦷 Prescripción Alineadores TD",
+        response_number=42,
+        sections=[
+            ("Datos capturados", [("Asesor:", "Jimena")]),
+            ("Prescripción", [("Relación Izquierda:", "Mantener")]),
+        ],
+        links=["https://drive.google.com/open?id=abc"],
+    )
+    assert pdf.startswith(b"%PDF")
+    empty_pdf = app.build_form_response_pdf(
+        form_label="📦 Otros Productos", response_number=3, sections=[], links=[]
+    )
+    assert empty_pdf.startswith(b"%PDF")
+
+
+def test_forms_review_cards_follow_current_form():
+    from streamlit.testing.v1 import AppTest
+
+    repository_root = str(Path(__file__).resolve().parents[1])
+    script = f'''
+import sys
+sys.path.insert(0, {repository_root!r})
+import pandas as pd
+import streamlit as st
+import alineadores_pg as app
+from unittest.mock import patch
+
+responses = pd.DataFrame([{{
+    "Marca temporal": "2/10/2026 12:52:50",
+    "Relación Izquierda:": "Mantener",
+    "Comentarios:": "na",
+    "Método para mejorar la relación izquierda:": "Otro",
+    "Favor de subir archivos en formato ZIP": "https://drive.google.com/open?id=abc",
+}}])
+structure = (app.parse_form_sections({FORM_JSON!r}), st.session_state.get("form_error", ""))
+form = {{"key": "td", "label": "TD", "sheet_id": "sheet", "worksheet": "Respuestas", "form_id": "form"}}
+with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
+        patch.object(app, "read_form_sections", lambda _: structure if not structure[1] else ([], structure[1])):
+    app.render_aligners_form_review(form)
+'''
+
+    def card_titles(at):
+        # Las fichas se reparten en dos columnas: 1ª, 3ª... a la izquierda.
+        left, right = (
+            [re.search(r"align-forms-label'>\S+ (.*?)</div>", item.value).group(1)
+             for item in column.markdown if "align-forms-label" in item.value]
+            for column in at.columns[:2]
+        )
+        return [title for pair in zip_longest(left, right) for title in pair if title]
+
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert card_titles(at) == [
+        "Marca temporal",
+        "Relación Izquierda:",
+        "Método para mejorar la relación izquierda:",
+        "Comentarios:",
+    ]
+    assert not [item for item in at.caption if "Google Forms API" in item.value]
+
+    at.session_state["form_error"] = "403 Forbidden"
+    at.run()
+    assert not at.exception
+    assert card_titles(at) == [
+        "Marca temporal",
+        "Relación Izquierda:",
+        "Comentarios:",
+        "Método para mejorar la relación izquierda:",
+    ]
+    assert [item for item in at.caption if "403 Forbidden" in item.value]

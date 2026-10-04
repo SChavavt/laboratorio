@@ -142,6 +142,26 @@ de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
   tablero en modo pantalla. Para salir, el interruptor de la esquina inferior
   derecha. Con F11 el navegador quita también su barra.
 
+## Recibidos de Forms (alineadores)
+
+Las subpestañas Prescripción Alineadores TD, Prescripción Marca Blanca y Otros
+Productos leen las respuestas de cada Google Sheet de respuestas y, además, la
+estructura actual de su Google Form con Google Forms API.
+
+- La tabla, la ficha y el PDF de cada respuesta siguen las secciones y el orden
+  de preguntas del formulario actual. Si se agrega, mueve o renombra una
+  pregunta en Forms, la app lo refleja sola en menos de 2 minutos; no hay que
+  tocar código. Google pone cada pregunta nueva al final del Sheet, por eso el
+  orden de columnas no sirve para esto.
+- Las respuestas a preguntas que ya no están en el formulario salen al final,
+  en “Otras respuestas”, para no perder datos de respuestas viejas.
+- Requisitos: Google Forms API habilitada en el proyecto de la cuenta de
+  servicio y cada formulario compartido como editor con su `client_email`. Si
+  falta alguno, la pestaña lo avisa y el PDF usa el orden de columnas del Sheet.
+- Los IDs de los formularios vienen por defecto en `ALIGNERS_FORMS`; se pueden
+  cambiar con `[google_forms_alineadores.<td|marca_blanca|otros_productos>]`
+  `form_id = "..."` (igual que `sheet_id` y `worksheet`).
+
 ## Pruebas
 
 ```bash
