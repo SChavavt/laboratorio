@@ -1362,15 +1362,22 @@ def merge_dynamic_process_flows(
 
 
 def get_single_process_flow(apparatus: str) -> list[tuple[str, str | None]]:
-    """Regresa el flujo individual configurado para un aparato."""
+    """Regresa el flujo individual configurado para un aparato.
 
-    apparatus_key = PROCESS_ALIASES.get(
-        normalize_text(apparatus), normalize_text(apparatus)
-    )
-    for configured_apparatus, flow in PROCESS_CONFIG.items():
-        if normalize_text(configured_apparatus) == apparatus_key:
-            return list(flow)
-    return []
+    Si el aparato tiene su propia columna en PROCESOS POR APARATO (p. ej.
+    Hyrax o Trampa Lingual) se usa esa; PROCESS_ALIASES sólo aplica cuando
+    el aparato no tiene flujo propio.
+    """
+
+    configured_by_key = {
+        normalize_text(configured_apparatus): flow
+        for configured_apparatus, flow in PROCESS_CONFIG.items()
+    }
+    apparatus_key = normalize_text(apparatus)
+    flow = configured_by_key.get(apparatus_key)
+    if flow is None:
+        flow = configured_by_key.get(PROCESS_ALIASES.get(apparatus_key, apparatus_key), [])
+    return list(flow)
 
 
 @lru_cache(maxsize=1)
