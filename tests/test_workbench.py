@@ -1178,6 +1178,30 @@ def test_merge_dynamic_process_flows_matches_existing_apparatus_regardless_of_ca
     assert "Hyrax" not in merged_config
 
 
+def test_apparatus_with_own_sheet_column_ignores_process_alias(monkeypatch):
+    # La hoja trae columna Hyrax (con EN PLANEACIÓN) y PIEZA SINTERIZADA (sin
+    # ella): HYRAX debe seguir su propia columna, no la del alias.
+    hyrax = [("REVISIÓN DE ARCHIVOS", "<5 hrs"), ("PAGO CONFECCIÓN", None),
+             ("EN PLANEACIÓN", "<3 dias"), ("ELABORACIÓN PLATINA", "<1 hr")]
+    pieza = [status for status in hyrax if status[0] != "EN PLANEACIÓN"]
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {"PIEZA SINTERIZADA": app.PIEZA_SINTERIZADA_FLOW})
+    monkeypatch.setattr(app, "APARATO_OPTIONS", ["HYRAX", "TRAMPA LINGUAL"])
+    merged_config, _, _ = app.merge_dynamic_process_flows(
+        {"Hyrax": hyrax, "PIEZA SINTERIZADA": pieza}
+    )
+    monkeypatch.setattr(app, "PROCESS_CONFIG", merged_config)
+    app._cached_process_flow.cache_clear()
+    try:
+        assert app.get_process_flow("HYRAX") == hyrax
+        assert "EN PLANEACIÓN" in app.get_allowed_next_statuses(
+            "HYRAX", "REVISIÓN DE ARCHIVOS", "Admin"
+        )
+        # Sin columna propia, TRAMPA LINGUAL sigue usando PIEZA SINTERIZADA.
+        assert app.get_process_flow("TRAMPA LINGUAL") == pieza
+    finally:
+        app._cached_process_flow.cache_clear()
+
+
 def test_merge_dynamic_process_flows_uppercases_genuinely_new_apparatus(monkeypatch):
     monkeypatch.setattr(app, "PROCESS_CONFIG", {})
     monkeypatch.setattr(app, "APARATO_OPTIONS", [])

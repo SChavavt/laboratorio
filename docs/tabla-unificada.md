@@ -109,7 +109,8 @@ Fases/Tiempo por aparato que usa `PROCESOS POR PRODUCTO` en alineadores) y se
 combinan sobre `PROCESS_CONFIG`: un aparato o tiempo que ya está programado en
 el código sigue funcionando si Sheets falla o todavía no lo tiene ahí; la hoja
 sólo agrega aparatos nuevos o actualiza sus tiempos, nunca elimina lo
-programado. Se relee cada hora (no en cada actualización de 30 s de los
+programado. Un aparato con columna propia (p. ej. Hyrax o Trampa Lingual) usa
+esa columna; sólo si no la tiene toma el flujo de `PIEZA SINTERIZADA`. Se relee cada hora (no en cada actualización de 30 s de los
 pedidos) o al pulsar **Actualizar datos**, para no afectar el rendimiento. La
 tabla usa la duración guardada en el registro activo de `TIEMPOS_APARATOS`. No
 se inventan fechas iniciales para pedidos antiguos ni se escribe una columna de
