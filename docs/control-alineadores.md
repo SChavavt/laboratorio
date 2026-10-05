@@ -142,10 +142,60 @@ de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
   tablero en modo pantalla. Para salir, el interruptor de la esquina inferior
   derecha. Con F11 el navegador quita también su barra.
 
+## Recibidos de Forms (alineadores)
+
+Las subpestañas Prescripción Alineadores TD, Prescripción Marca Blanca y Otros
+Productos leen las respuestas de cada Google Sheet de respuestas y, además, la
+estructura actual de su Google Form con Google Forms API.
+
+- La tabla, la ficha y el PDF de cada respuesta siguen las secciones y el orden
+  de preguntas del formulario actual. Si se agrega, mueve o renombra una
+  pregunta en Forms, la app lo refleja sola en menos de 2 minutos; no hay que
+  tocar código. Google pone cada pregunta nueva al final del Sheet, por eso el
+  orden de columnas no sirve para esto.
+- Las respuestas a preguntas que ya no están en el formulario salen al final,
+  en “Otras respuestas”, para no perder datos de respuestas viejas.
+- Requisitos: Google Forms API habilitada en el proyecto de la cuenta de
+  servicio y cada formulario compartido como editor con su `client_email`. Si
+  falta alguno, la pestaña lo avisa y el PDF usa el orden de columnas del Sheet.
+- Los IDs de los formularios vienen por defecto en `ALIGNERS_FORMS`; se pueden
+  cambiar con `[google_forms_alineadores.<td|marca_blanca|otros_productos>]`
+  `form_id = "..."` (igual que `sheet_id` y `worksheet`).
+
+## Avisos de respuestas nuevas de Forms
+
+Con la app abierta, cada usuario recibe un aviso cuando llega una respuesta
+nueva a un formulario que puede abrir: Admin, Jime y Lesly los 4 (Aparatos
+sinterizados y los 3 de alineadores); Vero los 3 de alineadores.
+
+- La app revisa los Sheets de respuestas cada minuto (`forms_notices.py`, con
+  su propio caché de 55 s que no se vacía al guardar). Cada respuesta nueva sale
+  en un aviso flotante que se desvanece solo y en el botón **🔔 N respuestas
+  nuevas de Forms** debajo del encabezado. La pestaña del navegador muestra
+  `(N)` para notarlo aunque la app esté en segundo plano.
+- **Ver** abre la vista, la pestaña 📥 Recibidos de Forms, la subpestaña del
+  formulario y deja seleccionada esa respuesta. Si hay cambios sin guardar, avisa
+  y no cambia de vista, igual que el selector de vista.
+- Una respuesta deja de ser nueva al abrirla (desde el aviso o eligiéndola en la
+  pestaña de Forms, que lista arriba del selector las nuevas con 🆕, aunque no
+  estén entre las 25 más recientes) o con **Marcar todas como vistas**, que sólo
+  marca las que la lista mostraba. Abrirla en la pestaña baja el número de la
+  campana en su siguiente ciclo.
+- Lo visto se guarda por usuario en la hoja `AVISOS FORMS` de CONTROL APARATOS
+  (se crea sola). Sirve en cualquier dispositivo. La primera vez que un usuario
+  entra, lo que ya existía cuenta como visto: sólo avisa lo que llega después.
+- Las respuestas se identifican por su “Marca temporal”, no por el número de
+  fila, para que borrar filas del Sheet no oculte avisos. Dos respuestas del
+  mismo formulario en el mismo segundo cuentan como un solo aviso.
+- En el modo pantalla del Tablero no se muestra la campana ni se leen los Forms
+  (se revisa en cada ciclo, también al activarlo con el interruptor). Fuera de la app no
+  llegan avisos (correo, celular): eso requeriría un Apps Script en cada
+  formulario.
+
 ## Pruebas
 
 ```bash
-python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py tests/test_shipments.py
+python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/test_polanco.py tests/test_board.py tests/test_shipments.py tests/test_forms_notices.py
 ```
 
 

@@ -25,11 +25,13 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+import forms_notices
 import order_detail
 from grid_interactions import response_frame
 import dropdown_fields
 from order_identifiers import identifier_resolver
 from copy import deepcopy
+from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
@@ -124,6 +126,22 @@ FORMS_EXCLUDED_COLUMN_HINTS = [
     "El resultado del tratamiento es responsabilidad",
     "Al aceptar el médico tratante ha comprendido",
 ]
+FORMS_API_URL = "https://forms.googleapis.com/v1/forms/{form_id}"
+FORMS_FORM_STRUCTURE_TTL_SECONDS = 120
+# Columnas que Google agrega al Sheet sin ser preguntas del formulario.
+FORMS_METADATA_HEADERS = {
+    "MARCA TEMPORAL",
+    "TIMESTAMP",
+    "DIRECCION DE CORREO ELECTRONICO",
+    "EMAIL ADDRESS",
+    "PUNTUACION",
+    "SCORE",
+}
+FORMS_FIRST_SECTION_TITLE = "Datos capturados"
+FORMS_TAB_LABEL = "📥 Recibidos de Forms"
+# Con key, la campana de avisos puede abrir la subpestaña del formulario.
+FORMS_SUB_TABS_KEY = "aligners_forms_sub_tabs"
+FORMS_OTHER_ANSWERS_TITLE = "Otras respuestas (preguntas que ya no están en el formulario)"
 
 # Cada formulario apunta al Google Sheet de respuestas ya compartido con la
 # misma cuenta de servicio de [gsheets].google_credentials. El sheet_id/worksheet
@@ -133,21 +151,30 @@ FORMS_EXCLUDED_COLUMN_HINTS = [
 # respuestas (metadata de Drive): "Alineadores (Respuestas)" es el formulario
 # TD, "MARCA BLANCA (Respuestas)" es marca blanca y "Otros Productos
 # (Respuestas)" es el formulario "Otros Productos" (antes iban cruzados).
+# form_id es el Google Form que llena esas respuestas ("Alineadores", "MARCA
+# BLANCA " y "Otros Productos" en Drive). Se lee con Google Forms API para que
+# el PDF siga el orden y las secciones actuales del formulario: Google agrega
+# al final del Sheet cada pregunta nueva, así que el orden de columnas deja de
+# coincidir con el formulario en cuanto se edita. También admite override en
+# [google_forms_alineadores.<key>].form_id.
 ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
     {
         "key": "td",
         "label": "🦷 Prescripción Alineadores TD",
         "default_sheet_id": "1_wBpRLzN9p87sJq9961J_qtHEdpLvYSDEPqNQrqqlZ0",
+        "default_form_id": "1-31c4NAll-3NqsOecSBmVOU-AM0OdckMnvtk84uSBzE",
     },
     {
         "key": "marca_blanca",
         "label": "⚪ Prescripción Marca Blanca",
         "default_sheet_id": "1OYwJI_IaqGYOXR4aTffYmLK_38hd0p51_3C7vAjFXEU",
+        "default_form_id": "1alX8OXw_iSvrBnYzPLI1Sy5CDg0XiMMIhm-bMJ0G_lI",
     },
     {
         "key": "otros_productos",
         "label": "📦 Otros Productos",
         "default_sheet_id": "1FFjO3RTMRZQ4OBfoL4thy_8GpIxgdlASkWggN_RMlRU",
+        "default_form_id": "1iMRjp1eaHDEvqbUA165fax6_3wlJJVXwY3wDiq87ZFs",
     },
 )
 
@@ -913,11 +940,25 @@ def require_authenticated_user() -> str | None:
     return None
 
 
-def _get_gs_client():
+def _get_service_account_credentials() -> Credentials:
     credentials_text = st.secrets["gsheets"]["google_credentials"]
     credentials_info = json.loads(credentials_text)
-    credentials = Credentials.from_service_account_info(credentials_info, scopes=SCOPE)
-    return gspread.authorize(credentials)
+    return Credentials.from_service_account_info(credentials_info, scopes=SCOPE)
+
+
+def _get_gs_client():
+    return gspread.authorize(_get_service_account_credentials())
+
+
+def get_service_account_email() -> str:
+    """Correo de la cuenta de servicio con la que se comparten Sheets y Forms."""
+
+    try:
+        return clean_cell(
+            json.loads(st.secrets["gsheets"]["google_credentials"]).get("client_email", "")
+        ).strip() or "la cuenta de servicio"
+    except Exception:
+        return "la cuenta de servicio"
 
 
 def configured_spreadsheet_id(secret_source: Any | None = None) -> str:
@@ -1047,6 +1088,7 @@ def clear_sheet_data_cache() -> None:
     read_process_values.clear()
     read_times_values.clear(current_times_sheet())
     read_forms_responses_df.clear()
+    read_form_sections.clear()
 
 
 def get_aligners_forms_secret_value(form_key: str, key: str, default: Any = "") -> Any:
@@ -1078,11 +1120,15 @@ def get_aligners_form_config(form: dict[str, str]) -> dict[str, str]:
     worksheet_name = clean_cell(
         get_aligners_forms_secret_value(form["key"], "worksheet", DEFAULT_FORMS_WORKSHEET)
     ).strip() or DEFAULT_FORMS_WORKSHEET
+    form_id = clean_cell(
+        get_aligners_forms_secret_value(form["key"], "form_id", form.get("default_form_id", ""))
+    ).strip()
     return {
         "key": form["key"],
         "label": form["label"],
         "sheet_id": sheet_id,
         "worksheet": worksheet_name,
+        "form_id": form_id,
     }
 
 
@@ -1131,6 +1177,153 @@ def read_forms_responses_df(sheet_id: str, worksheet_name: str) -> pd.DataFrame:
         axis=1,
     )
     return df[non_empty_rows].reset_index(drop=True)
+
+
+def forms_title_key(value: Any) -> str:
+    """Compara títulos de pregunta sin importar acentos, mayúsculas ni saltos de línea."""
+
+    return re.sub(r"\s+", " ", normalize_text(value)).strip()
+
+
+def parse_form_sections(form: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convierte la respuesta de Forms API en secciones con sus preguntas en orden.
+
+    Las cuadrículas llegan al Sheet como una columna por fila con el formato
+    ``Pregunta [Fila]``, así que se expanden igual.
+    """
+
+    sections: list[dict[str, Any]] = [{"title": FORMS_FIRST_SECTION_TITLE, "questions": []}]
+    for item in form.get("items", []) or []:
+        title = clean_cell(item.get("title", "")).strip()
+        if "pageBreakItem" in item:
+            sections.append({"title": title or f"Sección {len(sections) + 1}", "questions": []})
+        elif "questionItem" in item:
+            sections[-1]["questions"].append(title)
+        elif "questionGroupItem" in item:
+            for row in item["questionGroupItem"].get("questions", []) or []:
+                row_title = clean_cell(row.get("rowQuestion", {}).get("title", "")).strip()
+                sections[-1]["questions"].append(f"{title} [{row_title}]")
+    return [section for section in sections if section["questions"]]
+
+
+@st.cache_data(ttl=FORMS_FORM_STRUCTURE_TTL_SECONDS, show_spinner=False)
+def read_form_sections(form_id: str) -> tuple[list[dict[str, Any]], str]:
+    """Lee las secciones y preguntas actuales del Google Form.
+
+    Devuelve ``(secciones, error)``. El error también se cachea para no repetir
+    la llamada en cada rerun mientras el formulario no esté compartido.
+    """
+
+    if not form_id:
+        return [], "No hay form_id configurado."
+    try:
+        session = AuthorizedSession(_get_service_account_credentials())
+        response = session.get(FORMS_API_URL.format(form_id=form_id), timeout=20)
+    except Exception as exc:
+        return [], str(exc)
+    if not response.ok:
+        try:
+            message = response.json().get("error", {}).get("message", "")
+        except ValueError:
+            message = ""
+        return [], f"{response.status_code} {message or response.reason}".strip()
+    return parse_form_sections(response.json()), ""
+
+
+def map_forms_columns(
+    columns: list[str], sections: list[dict[str, Any]]
+) -> dict[str, tuple[int, int]]:
+    """Ubica cada columna del Sheet en la (sección, pregunta) actual del formulario.
+
+    Las columnas sin pregunta equivalente (preguntas borradas, metadatos) no
+    aparecen en el resultado. Si un título se repite, ``ensure_unique_column_names``
+    le agregó ``_2``, ``_3``...; esas columnas se reparten en orden entre las
+    preguntas con ese título y las sobrantes van a la última.
+    """
+
+    positions: dict[str, list[tuple[int, int]]] = {}
+    for section_index, section in enumerate(sections):
+        for question_index, title in enumerate(section["questions"]):
+            positions.setdefault(forms_title_key(title), []).append(
+                (section_index, question_index)
+            )
+
+    column_set = set(columns)
+    used: dict[str, int] = {}
+    mapping: dict[str, tuple[int, int]] = {}
+    for column in columns:
+        key = forms_title_key(column)
+        if key not in positions:
+            base = re.sub(r"_\d+$", "", column)
+            if base != column and base in column_set:
+                key = forms_title_key(base)
+        candidates = positions.get(key)
+        if not candidates:
+            continue
+        index = used.get(key, 0)
+        mapping[column] = candidates[min(index, len(candidates) - 1)]
+        used[key] = index + 1
+    return mapping
+
+
+def order_forms_columns(
+    columns: list[str], mapping: dict[str, tuple[int, int]]
+) -> list[str]:
+    """Ordena las columnas de la tabla como el formulario actual."""
+
+    leading = [
+        column
+        for column in columns
+        if column not in mapping
+        and (column == "Respuesta #" or forms_title_key(column) in FORMS_METADATA_HEADERS)
+    ]
+    placed = sorted((column for column in columns if column in mapping), key=mapping.__getitem__)
+    others = [column for column in columns if column not in mapping and column not in leading]
+    return leading + placed + others
+
+
+def group_forms_details(
+    details: list[tuple[str, str]],
+    sections: list[dict[str, Any]],
+    mapping: dict[str, tuple[int, int]],
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Agrupa las respuestas por sección con el título actual de cada pregunta.
+
+    Sin estructura del formulario se conserva el orden de columnas del Sheet.
+    """
+
+    if not details:
+        return []
+    if not sections:
+        return [(FORMS_FIRST_SECTION_TITLE, list(details))]
+
+    leading: list[tuple[str, str]] = []
+    others: list[tuple[str, str]] = []
+    placed: dict[int, list[tuple[int, int, tuple[str, str]]]] = {}
+    for order, (column, value) in enumerate(details):
+        position = mapping.get(column)
+        if position is not None:
+            section_index, question_index = position
+            label = sections[section_index]["questions"][question_index]
+            placed.setdefault(section_index, []).append((question_index, order, (label, value)))
+        elif forms_title_key(column) in FORMS_METADATA_HEADERS:
+            leading.append((column, value))
+        else:
+            others.append((column, value))
+
+    groups = [
+        (section["title"], [entry for _, _, entry in sorted(placed[section_index])])
+        for section_index, section in enumerate(sections)
+        if section_index in placed
+    ]
+    if leading:
+        if groups:
+            groups[0] = (groups[0][0], leading + groups[0][1])
+        else:
+            groups.append((FORMS_FIRST_SECTION_TITLE, leading))
+    if others:
+        groups.append((FORMS_OTHER_ANSWERS_TITLE, others))
+    return groups
 
 
 def should_hide_forms_column(column: str) -> bool:
@@ -1237,11 +1430,16 @@ def build_form_response_pdf(
     *,
     form_label: str,
     response_number: Any,
-    details: list[tuple[str, str]],
+    sections: list[tuple[str, list[tuple[str, str]]]],
     links: list[str],
 ) -> bytes:
-    """Genera un PDF legible con todos los datos de una respuesta de Forms."""
+    """Genera un PDF legible con todos los datos de una respuesta de Forms.
 
+    ``sections`` llega ya agrupado y ordenado como el formulario actual.
+    """
+
+    # Helvetica no tiene emojis: el del nombre de la pestaña salía como un cuadro.
+    form_label = strip_visual_prefix(form_label) or form_label
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -1310,10 +1508,10 @@ def build_form_response_pdf(
             subtitle_style,
         ),
         HRFlowable(width="100%", thickness=1, color=colors.HexColor("#BFE3CC"), spaceAfter=6),
-        Paragraph("Datos capturados", section_style),
     ]
 
-    if details:
+    for section_title, details in sections:
+        story.append(Paragraph(html.escape(str(section_title)), section_style))
         rows = [
             [
                 Paragraph(html.escape(str(field_label)), label_style),
@@ -1334,7 +1532,8 @@ def build_form_response_pdf(
             )
         )
         story.append(table)
-    else:
+    if not sections:
+        story.append(Paragraph(FORMS_FIRST_SECTION_TITLE, section_style))
         story.append(Paragraph("Esta respuesta no tiene datos adicionales visibles.", value_style))
 
     story.append(Paragraph("Archivos adjuntos", section_style))
@@ -1386,10 +1585,22 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         return
 
     file_column = get_forms_file_column(review_df)
+    form_sections, form_error = read_form_sections(form.get("form_id", ""))
+    column_positions = map_forms_columns(list(review_df.columns), form_sections)
     display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
-
+    display_df = display_df[order_forms_columns(list(display_df.columns), column_positions)]
     table_key = f"aligners_forms_table_{form['key']}"
     selector_key = f"aligners_forms_selector_{form['key']}"
+    display_df = forms_notices.focus_response(
+        review_df, display_df, form["key"], table_key, selector_key
+    )
+    if form_error:
+        st.caption(
+            "ℹ️ No pude leer el formulario actual en Google Forms, así que el PDF y la "
+            "ficha siguen el orden de columnas del Sheet. Comparte el formulario como "
+            f"editor con `{get_service_account_email()}` y habilita Google Forms API "
+            f"en su proyecto de Google Cloud. Detalle: {form_error}"
+        )
 
     table_event = st.dataframe(
         display_df,
@@ -1402,23 +1613,33 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         ),
         on_select="rerun",
         selection_mode="single-row",
-        key=table_key,
+        key=forms_notices.table_widget_key(table_key),
     )
     apply_single_row_selection_to_selectbox(table_event, display_df, "Respuesta #", selector_key)
 
     response_options = display_df["Respuesta #"].tolist()
     if st.session_state.get(selector_key) not in response_options:
         st.session_state[selector_key] = response_options[0]
+    new_numbers = forms_notices.new_response_numbers(display_df, form["key"])
+    if new_numbers:
+        # Fuera del selector: si su texto cambia entre reruns, Streamlit pierde la opción elegida.
+        st.caption("🆕 Respuestas nuevas que todavía no abres: " + ", ".join(
+            f"#{number}" for number in sorted(new_numbers, reverse=True)
+        ))
     selected_response = st.selectbox(
         "📌 Selecciona una respuesta",
         options=response_options,
         key=selector_key,
     )
+    forms_notices.remember_selection(selector_key, selected_response)
     selected_rows = display_df[display_df["Respuesta #"] == selected_response]
     if selected_rows.empty:
         return
 
     selected_row = selected_rows.iloc[0]
+    forms_notices.record_viewed(
+        form["key"], selected_row.get(forms_notices.timestamp_column(display_df.columns), "")
+    )
     selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
     selected_links = get_forms_file_links(selected_link)
     visible_details = []
@@ -1428,6 +1649,8 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         value = clean_cell(selected_row.get(column, "")).strip()
         if value:
             visible_details.append((column, value))
+    detail_groups = group_forms_details(visible_details, form_sections, column_positions)
+    visible_details = [detail for _, details in detail_groups for detail in details]
 
     link_pill_class = "align-forms-pill-link" if selected_links else "align-forms-pill-missing"
     link_pill_text = (
@@ -1449,7 +1672,7 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
     pdf_bytes = build_form_response_pdf(
         form_label=form["label"],
         response_number=selected_response,
-        details=visible_details,
+        sections=detail_groups,
         links=selected_links,
     )
     with st.container(key=f"align_forms_pdf_{form['key']}"):
@@ -1497,16 +1720,23 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
 def render_aligners_forms_tab() -> None:
     """Agrupa los 3 formularios de prescripción en subpestañas de solo lectura."""
 
-    st.subheader("📥 Recibidos de Forms")
+    st.subheader(FORMS_TAB_LABEL)
     st.caption(
         "Respuestas y archivos de los 3 formularios de prescripción, leídos "
         "directamente de sus Google Sheets con la cuenta de servicio compartida."
     )
     forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
-    sub_tabs = st.tabs([form["label"] for form in forms])
+    sub_tabs = st.tabs(
+        [form["label"] for form in forms], key=FORMS_SUB_TABS_KEY, on_change="rerun"
+    )
+    # Sólo se lee y muestra la subpestaña abierta: abrir las 3 marcaba como
+    # vista la respuesta más nueva de formularios que nadie estaba mirando.
     for form, tab in zip(forms, sub_tabs):
+        if not tab.open:
+            continue
         with tab:
             render_aligners_form_review(form)
+        break
 
 
 def rerun_active_tab() -> None:
@@ -4261,7 +4491,7 @@ def render_board(current_user: str) -> None:
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📋 Seguimiento Polanco",
-    "📥 Recibidos de Forms",
+    FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
 )
 
