@@ -1178,32 +1178,6 @@ def test_merge_dynamic_process_flows_matches_existing_apparatus_regardless_of_ca
     assert "Hyrax" not in merged_config
 
 
-def test_merge_dynamic_process_flows_keeps_programmed_stages_missing_from_sheet(monkeypatch):
-    # La columna PIEZA SINTERIZADA de la hoja omite EN PLANEACIÓN: HYRAX no
-    # debe perder esa etapa ni las demás programadas, y la hoja sí manda en
-    # los tiempos que trae.
-    monkeypatch.setattr(app, "PROCESS_CONFIG", {"PIEZA SINTERIZADA": app.PIEZA_SINTERIZADA_FLOW})
-    monkeypatch.setattr(app, "APARATO_OPTIONS", ["HYRAX"])
-
-    merged_config, _, changed = app.merge_dynamic_process_flows({"PIEZA SINTERIZADA": [
-        ("ORDEN RECIBIDA", None), ("REVISIÓN DE ARCHIVOS", "<8 hrs"),
-        ("PAGO CONFECCIÓN", None), ("ELABORACIÓN PLATINA", "<1 hr"),
-    ]})
-    monkeypatch.setattr(app, "PROCESS_CONFIG", merged_config)
-    app._cached_process_flow.cache_clear()
-    try:
-        flow = app.get_process_flow("HYRAX")
-        allowed = app.get_allowed_next_statuses("HYRAX", "REVISIÓN DE ARCHIVOS", "Admin")
-    finally:
-        app._cached_process_flow.cache_clear()
-
-    assert changed is True
-    assert [status for status, _ in flow] == [status for status, _ in app.PIEZA_SINTERIZADA_FLOW]
-    assert dict(flow)["REVISIÓN DE ARCHIVOS"] == "<8 hrs"
-    assert dict(flow)["EN PLANEACIÓN"] == "<3 dias"
-    assert "EN PLANEACIÓN" in allowed
-
-
 def test_merge_dynamic_process_flows_uppercases_genuinely_new_apparatus(monkeypatch):
     monkeypatch.setattr(app, "PROCESS_CONFIG", {})
     monkeypatch.setattr(app, "APARATO_OPTIONS", [])

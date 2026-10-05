@@ -1328,31 +1328,6 @@ def parse_aparato_process_matrix(values: list[list[Any]]) -> dict[str, list[tupl
     return flows
 
 
-def overlay_sheet_process_flow(
-    programmed: list[tuple[str, str | None]],
-    sheet: list[tuple[str, str | None]],
-) -> list[tuple[str, str | None]]:
-    """Aplica una columna de PROCESOS POR APARATO sobre el flujo programado.
-
-    La hoja agrega etapas y manda en los tiempos de las etapas que trae, pero
-    una etapa programada que la hoja no lista se conserva en su lugar: p. ej.
-    si la columna PIEZA SINTERIZADA omite EN PLANEACIÓN, HYRAX y TRAMPA
-    LINGUAL no deben perder esa etapa.
-    """
-
-    if not programmed:
-        return list(sheet)
-    sheet_limits = {normalize_text(status): limit for status, limit in sheet}
-    programmed_limits = {normalize_text(status): limit for status, limit in programmed}
-    combined: list[tuple[str, str | None]] = []
-    for status, _ in merge_process_flows([sheet, programmed]):
-        key = normalize_text(status)
-        combined.append(
-            (status, sheet_limits[key] if key in sheet_limits else programmed_limits.get(key))
-        )
-    return combined
-
-
 def merge_dynamic_process_flows(
     dynamic_flows: dict[str, list[tuple[str, str | None]]],
 ) -> tuple[dict[str, list[tuple[str, str | None]]], list[str], bool]:
@@ -1372,12 +1347,11 @@ def merge_dynamic_process_flows(
         canonical_by_key.setdefault(normalize_text(key), key)
 
     changed = False
-    for name, sheet_flow in dynamic_flows.items():
+    for name, flow in dynamic_flows.items():
         canonical_name = canonical_by_key.get(normalize_text(name))
         if canonical_name is None:
             canonical_name = name.upper()
             canonical_by_key[normalize_text(canonical_name)] = canonical_name
-        flow = overlay_sheet_process_flow(merged_config.get(canonical_name, []), sheet_flow)
         if merged_config.get(canonical_name) != flow:
             merged_config[canonical_name] = flow
             changed = True
