@@ -6320,8 +6320,8 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
              SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))),
             (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
         ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
-        render_workbench_order_editor(row, current_user)
         render_workbench_manual_stage(row, current_user, form_pending)
+        render_workbench_order_editor(row, current_user)
         if (len(selected) <= 1 and row[STATUS_COLUMN] == "LISTO P/SINTERIZADO"
                 and not is_case_marked_for_printing(row)
                 and user_can_edit_tab(current_user, "Lesly")):

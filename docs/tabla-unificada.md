@@ -45,7 +45,8 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    **En planeación** cuando esa etapa existe en el flujo del aparato, para
    iniciar la planeación de casos nuevos sin esperar las etapas de solicitud o pago.
    Para correcciones, esos tres usuarios disponen de **Cambiar etapa manualmente**
-   en la ficha. Abre una lista completa del flujo del aparato y se guarda con
+   debajo del encabezado del pedido, antes de los campos de la ficha.
+   Abre una lista completa del flujo del aparato y se guarda con
    **Aplicar cambio manual**. Sólo cambia la etapa, valida datos recientes y las
    reglas de impresión, y registra "Cambio manual de etapa desde la ficha del pedido."
    en la bitácora. Se bloquea mientras haya cambios pendientes en la ficha o
