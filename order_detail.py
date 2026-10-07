@@ -20,6 +20,8 @@ HEADER_CSS = """<style>
 </style>"""
 # Las secciones plegadas se leen como un solo bloque.
 SECTIONS_CSS = '[class*="st-key-order_sections_"] {gap: .5rem;}'
+MORE_STAGES = "__all_stages__"
+MORE_STAGES_LABEL = "Ver todas las etapas…"
 
 
 def order_title(row) -> str:
@@ -218,6 +220,34 @@ def _remember(namespace, identifier, column, key, equivalent, convert):
     set_draft_value(namespace, identifier, column, convert(st.session_state[key]), equivalent)
 
 
+def _remember_stage(namespace, identifier, column, key, equivalent):
+    draft = st.session_state[draft_key(namespace)][identifier]
+    value = st.session_state[key]
+    expanded = draft.setdefault("expanded_columns", {})
+    if value == MORE_STAGES:
+        expanded[column] = not expanded.get(column, False)
+        # La opción de navegación nunca pasa al borrador ni sustituye la etapa.
+        st.session_state[key] = draft_value(draft, column)
+        return
+    set_draft_value(namespace, identifier, column, value, equivalent)
+    draft.get("manual_targets", {}).pop(column, None)
+    expanded.pop(column, None)
+
+
+def _remember_expanded_stage(namespace, identifier, column, key, equivalent, normal_choices):
+    draft = st.session_state[draft_key(namespace)][identifier]
+    value = st.session_state[key + "_all"]
+    if value is None:
+        return
+    set_draft_value(namespace, identifier, column, value, equivalent)
+    manual = draft.setdefault("manual_targets", {})
+    if value not in normal_choices:
+        manual[column] = value
+    else:
+        manual.pop(column, None)
+    st.session_state[key] = value
+
+
 def _remember_datetime(namespace, identifier, column, key, equivalent, format_datetime):
     day, clock = st.session_state.get(key + "_date"), st.session_state.get(key + "_time")
     value = format_datetime(datetime.combine(day, clock)) if day else ""
@@ -245,12 +275,14 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
                   multi_codecs=None, required=(), constrained=(), extra=None, hints=None,
-                  automatic_time_columns=()):
+                  automatic_time_columns=(), expanded_catalog=None):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
     del botón Guardar, para que un solo guardado incluya todos los campos.
     ``hints`` pone la ayuda de un campo en su ícono (?) en vez de un texto fijo.
+    ``expanded_catalog`` ofrece un segundo selector dentro del campo; abrirlo
+    sólo navega y nunca añade una opción artificial a los cambios del pedido.
     """
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -305,21 +337,41 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                                 placeholder="Elige una o varias opciones", **common)
                         else:
                             choices = list(dict.fromkeys([*([] if column in required else [""]), *catalog[column]]))
+                            normal_choices = choices.copy()
+                            all_choices = (expanded_catalog or {}).get(column, [])
+                            manual_target = draft.get("manual_targets", {}).get(column)
+                            valid_manual = text == manual_target and text in all_choices
                             if text not in choices:
-                                if column in constrained:
+                                if column in constrained and not valid_manual:
                                     # Cambiar el aparato/producto puede invalidar una
                                     # etapa elegida en el borrador. No se ofrece un salto.
                                     draft["changes"].pop(column, None)
+                                    draft.get("manual_targets", {}).pop(column, None)
+                                    draft.get("expanded_columns", {}).pop(column, None)
                                     text = str(draft["baseline"].get(column, ""))
                                     st.session_state[key] = text
                                     st.caption("Se restableció la etapa; elige una opción del flujo actual.")
                                 else:
                                     choices.append(text)
+                            if any(value not in normal_choices for value in all_choices):
+                                choices.append(MORE_STAGES)
+                                common["on_change"] = _remember_stage
+                                common["args"] = (namespace, identifier, column, key, equivalent)
                             if column in constrained and len(choices) < 2:
                                 common["disabled"] = True
                             shown = [st.selectbox(label, choices, index=choices.index(text),
-                                         format_func=lambda value, col=column: option_label(col, value) if value else "— Sin dato —",
+                                         format_func=lambda value, col=column: (MORE_STAGES_LABEL if value == MORE_STAGES
+                                             else option_label(col, value) if value else "— Sin dato —"),
                                          **common)]
+                            if all_choices and draft.get("expanded_columns", {}).get(column):
+                                st.caption("Todas las etapas del aparato. Elige una y guarda el pedido.")
+                                selected = st.selectbox("Etapa del flujo", all_choices,
+                                    index=all_choices.index(text) if text in all_choices and manual_target == text else None,
+                                    placeholder="Selecciona una etapa", key=key + "_all", disabled=blocked,
+                                    format_func=lambda value, col=column: option_label(col, value),
+                                    on_change=_remember_expanded_stage,
+                                    args=(namespace, identifier, column, key, equivalent, normal_choices))
+                                styles.append(value_css(key + "_all", column, [selected] if selected else [], palettes, False))
                         # El color del chip va dentro del campo, sin repetir el valor debajo.
                         styles.append(value_css(key, column, [item for item in shown if item],
                                                 palettes, column in multiple))

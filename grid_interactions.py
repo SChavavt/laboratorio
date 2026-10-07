@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 from st_aggrid import JsCode
 
+MANUAL_STAGE_FIELD = "__manualStageTarget"
+
 
 @lru_cache(maxsize=1)
 def selection_renderer():
@@ -33,8 +35,13 @@ COLLECT_ROWS = JsCode("""function(params) {
 
 def response_frame(grid, response, id_column):
     """Reconstruye por ID; marcar una casilla no transfiere toda la tabla."""
+    returned_rows = response.get("rows") if response.get("rows") is not None else response.get("editedRows") or []
+    manual_targets = {str(row[id_column]): row[MANUAL_STAGE_FIELD] for row in returned_rows
+                      if row.get(id_column) is not None and row.get(MANUAL_STAGE_FIELD)}
     if response.get("rows") is not None:  # Eventos de sesiones anteriores.
-        return pd.DataFrame(response["rows"]).reindex(columns=grid.columns)
+        edited = pd.DataFrame(response["rows"]).reindex(columns=grid.columns)
+        edited.attrs["manualStageTargets"] = manual_targets
+        return edited
     edited = grid.copy()
     for row in response.get("editedRows") or []:
         matches = edited[id_column].astype(str).eq(str(row.get(id_column, "")))
@@ -47,6 +54,7 @@ def response_frame(grid, response, id_column):
     if response.get("selectedIds") is not None and "SELECCIONAR" in edited:
         edited["SELECCIONAR"] = edited[id_column].astype(str).isin(response["selectedIds"])
     edited.attrs["activeId"] = response.get("activeId")
+    edited.attrs["manualStageTargets"] = manual_targets
     return edited.reindex(columns=grid.columns)
 
 

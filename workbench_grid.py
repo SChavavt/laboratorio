@@ -61,6 +61,8 @@ GRID_CSS = {
         "font": "14px sans-serif", "box-sizing": "border-box",
     },
     ".lab-status-editor strong": {"color": "#392365", "padding": "3px 4px"},
+    ".lab-status-options": {"display": "grid", "gap": "8px"},
+    ".lab-status-navigation": {"background": "#E9DDF7", "color": "#392365", "border-color": "#9E7CC7 !important"},
     ".lab-status-editor button": {
         "border": "1px solid", "border-radius": "8px", "padding": "10px 12px",
         "text-align": "left", "font": "inherit", "font-weight": "650", "cursor": "pointer",
@@ -121,7 +123,8 @@ GRID_CSS = {
 def build_grid_options(grid, *, editable, automatic, stage_options, select_options, date_values,
                        datetime_columns, palettes, time_zone, preferred_order=None, hidden_columns=None,
                        apparatus_options=None, apparatus_stage_options=None,
-                       apparatus_flow_keys=None):
+                       apparatus_flow_keys=None, manual_stage_options=None,
+                       apparatus_manual_stage_options=None):
     """Mantiene opciones ligadas a la fotografía guardada, incluso tras editar STATUS."""
     labels = {"SELECCIONAR": "Abrir", "Columna 1": "Folio", "SEMÁFORO": "Semáforo",
               "APARATO": "Aparato", "STATUS": "🎨 Etapa / status", "NOMBRE DOCTOR": "Doctor",
@@ -246,6 +249,8 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
     return {
         "columnDefs": columns, "context": {"stageOptions": stage_options,
         "apparatusStageOptions": apparatus_stage_options or {},
+        "manualStageOptions": manual_stage_options or {},
+        "apparatusManualStageOptions": apparatus_manual_stage_options or {},
         "apparatusFlowKeys": apparatus_flow_keys or {},
         "apparatusOptions": apparatus_options or [], "apparatusColors": apparatus_palette,
         "palettes": palettes},

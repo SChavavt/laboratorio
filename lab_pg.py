@@ -1624,7 +1624,7 @@ def get_allowed_next_statuses(
 
 
 def get_manual_stage_statuses(apparatus: str, current_status: str, current_user: str) -> list[str]:
-    """Etapas del aparato para una corrección explícita desde la ficha activa."""
+    """Etapas del aparato para una corrección explícita de un pedido activo."""
     current = normalize_status_alias(current_status)
     if current_user not in ADMIN_ACCESS_USERS or current in WORKBENCH_CLOSED_STATUSES:
         return [current]
@@ -5753,6 +5753,13 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     return list(dict.fromkeys(display_selectbox_value(STATUS_COLUMN, value) for value in options))
 
 
+def workbench_manual_stage_options(row: pd.Series, current_user: str) -> list[str]:
+    """Lista completa para el segundo nivel de STATUS, con las reglas de impresión."""
+    return [display_selectbox_value(STATUS_COLUMN, value)
+            for value in get_manual_stage_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)
+            if not transition_requires_print_mark(current_user, row[STATUS_COLUMN], value, row)]
+
+
 def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_user: str,
                            *, preferred_order: list[str] | None = None,
                            hidden_columns: set[str] | None = None,
@@ -5763,13 +5770,18 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
               if row[ID_COLUMN] not in duplicates else [display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN])]
               for _, row in source.iterrows()}
     apparatus_stage_options: dict[str, dict[str, list[str]]] = {}
+    manual_stages = {row[ID_COLUMN]: workbench_manual_stage_options(row, current_user)
+                     for _, row in source.iterrows() if row[ID_COLUMN] not in duplicates}
+    apparatus_manual_stage_options: dict[str, dict[str, list[str]]] = {}
     apparatus_flow_keys, flow_variants = apparatus_flow_catalog()
     stage_cache: dict[tuple[str, str, str, bool], list[str]] = {}
+    manual_cache: dict[tuple[str, str, str, bool], list[str]] = {}
     for _, row in source.iterrows():
         identifier = row[ID_COLUMN]
         if identifier in duplicates:
             continue
         apparatus_stage_options[identifier] = {}
+        apparatus_manual_stage_options[identifier] = {}
         current_status = normalize_status_alias(row.get(STATUS_COLUMN, ""))
         has_print_mark = is_case_marked_for_printing(row)
         for signature, representative_combination in flow_variants:
@@ -5785,7 +5797,9 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                 stage_cache[cache_key] = workbench_stage_options(
                     candidate, current_user
                 )
+                manual_cache[cache_key] = workbench_manual_stage_options(candidate, current_user)
             apparatus_stage_options[identifier][signature] = stage_cache[cache_key]
+            apparatus_manual_stage_options[identifier][signature] = manual_cache[cache_key]
     catalog = {**SELECTBOX_OPTIONS_BY_COLUMN, **(select_catalog or {})}
     selections = {column: list(dict.fromkeys(
         display_selectbox_value(column, value) for value in catalog[column]
@@ -5803,7 +5817,9 @@ def workbench_grid_options(grid: pd.DataFrame, source: pd.DataFrame, current_use
                               preferred_order=preferred_order, hidden_columns=hidden_columns,
                               apparatus_options=APARATO_OPTIONS,
                               apparatus_stage_options=apparatus_stage_options,
-                              apparatus_flow_keys=apparatus_flow_keys)
+                              apparatus_flow_keys=apparatus_flow_keys,
+                              manual_stage_options=manual_stages,
+                              apparatus_manual_stage_options=apparatus_manual_stage_options)
     return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
         palettes=palettes, labeler=lambda column, value: display_selectbox_value(column, clean_display_value(value)))
 
@@ -5902,13 +5918,17 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
 def validate_workbench_changes(
     original: pd.DataFrame, fresh: pd.DataFrame, changes: list[tuple[str, dict[str, Any]]], current_user: str,
     *, select_catalog: dict | None = None, reactivate: bool = False, manual_stage: bool = False,
+    manual_stage_ids: set[str] | None = None,
 ) -> list[str]:
     """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión.
 
     En modo ``reactivate`` (histórico de Enviados) sólo se cambia la etapa.
+    ``manual_stage_ids`` identifica las filas elegidas desde la lista completa;
+    sus otros campos siguen las mismas validaciones que una edición normal.
     """
     errors = []
-    if manual_stage and reactivate:
+    manual_stage_ids = set(manual_stage_ids or ())
+    if (manual_stage or manual_stage_ids) and reactivate:
         return ["Usa el histórico de Enviados para reactivar este pedido."]
     allowed_columns = workbench_editable_columns(current_user, original.columns)
     if ID_COLUMN not in fresh:
@@ -5929,11 +5949,12 @@ def validate_workbench_changes(
         if conflicts:
             errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
             continue
-        if manual_stage:
+        row_manual = manual_stage or str(identifier) in manual_stage_ids
+        if row_manual:
             if current_user not in ADMIN_ACCESS_USERS:
                 errors.append(f"{identifier}: tu usuario no puede cambiar etapas manualmente.")
                 continue
-            if set(delta) != {STATUS_COLUMN}:
+            if manual_stage and set(delta) != {STATUS_COLUMN}:
                 errors.append(f"{identifier}: en el cambio manual sólo se puede cambiar la etapa.")
                 continue
         if reactivate:
@@ -5979,7 +6000,7 @@ def validate_workbench_changes(
         if STATUS_COLUMN not in delta:
             continue
         new_status = normalize_status_alias(delta[STATUS_COLUMN])
-        allowed = (get_manual_stage_statuses(apparatus, previous_status, current_user) if manual_stage
+        allowed = (get_manual_stage_statuses(apparatus, previous_status, current_user) if row_manual
                    else get_allowed_next_statuses(apparatus, previous_status, current_user))
         if not reactivate and new_status not in allowed:
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
@@ -6007,19 +6028,27 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
         return [], [str(exc)]
     if not changes:
         return [], []
+    manual_targets = edited.attrs.get("manualStageTargets", {})
+    manual_ids = {str(identifier) for identifier, delta in changes
+                  if STATUS_COLUMN in delta and str(identifier) in manual_targets
+                  and normalize_status_alias(manual_targets[str(identifier)]) == normalize_status_alias(delta[STATUS_COLUMN])}
     order_detail.restore_catalog_values(changes, select_catalog,
         dropdown_fields.multiple_columns(select_catalog or {}, original))
     clear_sheet_data_cache()
     fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
     errors = validate_workbench_changes(original, fresh, changes, current_user, select_catalog=select_catalog,
-                                        reactivate=reactivate, manual_stage=manual_stage)
+                                        reactivate=reactivate, manual_stage=manual_stage,
+                                        manual_stage_ids=manual_ids)
     if errors:
         return [], errors
     saved = []
     for identifier, delta in changes:
+        row_manual = manual_stage or str(identifier) in manual_ids
         comment = "Actualización desde la tabla de trabajo"
         if manual_stage:
             comment = "Cambio manual de etapa desde la ficha del pedido."
+        elif row_manual:
+            comment = "Cambio manual de etapa desde STATUS (todas las etapas)."
         if reactivate:
             comment = ("Etapa actualizada desde el histórico de Enviados."
                        if normalize_status_alias(delta[STATUS_COLUMN]) in WORKBENCH_SENT_STATUSES
@@ -6031,7 +6060,7 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
                 success = advance_case_status(identifier=identifier, row=row, new_status=delta[STATUS_COLUMN],
                                               current_user=current_user, comment=comment,
                                               from_sent_archive=reactivate,
-                                              manual_stage=manual_stage,
+                                              manual_stage=row_manual,
                                               extra_changes={key: value for key, value in delta.items() if key != STATUS_COLUMN},
                                               expected_values=expected)
                 if not success:
@@ -6211,17 +6240,23 @@ def workbench_stage_hint(row: pd.Series, current_user: str) -> str:
 
 
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
+    archive_pending = workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
+    if archive_pending:
+        st.caption("Guarda o descarta primero los cambios pendientes en Enviados o Pausados.")
     catalog = dict(get_workbench_form_catalog())
     candidate = order_detail.stage_source(row, "apparatus", ID_COLUMN, STATUS_COLUMN)
     catalog[APARATO_COLUMN] = list(APARATO_OPTIONS)
     catalog[STATUS_COLUMN] = list(dict.fromkeys([candidate.get(STATUS_COLUMN, ""),
         *[normalize_status_alias(value) for value in workbench_stage_options(candidate, current_user)]]))
+    manual_options = [normalize_status_alias(value) for value in workbench_manual_stage_options(candidate, current_user)]
     fields = order_detail.detail_columns(row.index,
         workbench_editable_columns(current_user, row.index), BUSINESS_ORDER)
     result = order_detail.render_editor(row, namespace="apparatus", id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
         option_label=workbench_form_option_label, palettes=SHEET_STYLE_COLORS,
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
+        expanded_catalog={STATUS_COLUMN: manual_options},
+        blocked=archive_pending,
         multiple={APARATO_COLUMN, *dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]))},
         multi_codecs={APARATO_COLUMN: (lambda value, _: apparatus_components(value),
                                       lambda values: canonical_apparatus_value(" + ".join(values)))},
@@ -6234,6 +6269,9 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
         baseline, delta = result
         original = pd.DataFrame([baseline])
         edited = pd.DataFrame([{**baseline, **delta}])
+        target = st.session_state.get(order_detail.draft_key("apparatus"), {}).get(str(row[ID_COLUMN]), {}).get("manual_targets", {}).get(STATUS_COLUMN)
+        if target and delta.get(STATUS_COLUMN) == target:
+            edited.attrs["manualStageTargets"] = {str(row[ID_COLUMN]): target}
         saved, errors = save_workbench_changes(original, edited, current_user, select_catalog=catalog)
         if saved:
             order_detail.clear_drafts("apparatus")
@@ -6244,41 +6282,6 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
             rerun_active_tab()
         for error in errors:
             st.error(error)
-
-
-def render_workbench_manual_stage(row: pd.Series, current_user: str, disabled: bool) -> None:
-    if current_user not in ADMIN_ACCESS_USERS:
-        return
-    identifier = row[ID_COLUMN]
-    options = [status for status in get_manual_stage_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)[1:]
-               if not transition_requires_print_mark(current_user, row[STATUS_COLUMN], status, row)]
-    if not options:
-        return
-    disabled = disabled or workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
-    with st.expander("Cambiar etapa manualmente", key=f"manual_stage_{identifier}",
-                     expanded=False, on_change="rerun") as manual:
-        if not manual.open:
-            return
-        st.caption("Para corregir este pedido, elige una etapa de su flujo y aplica el cambio.")
-        revision = st.session_state.get("workbench_revision", 0)
-        target = st.selectbox("Etapa del flujo", options, index=None, placeholder="Selecciona la etapa correcta",
-                              format_func=lambda value: display_selectbox_value(STATUS_COLUMN, value),
-                              key=f"manual_stage_target_{identifier}_{current_user}_{revision}", disabled=disabled)
-        if st.button("Aplicar cambio manual", key=f"manual_stage_save_{identifier}",
-                     disabled=disabled or not target, type="primary"):
-            original = pd.DataFrame([row])
-            edited = original.copy()
-            edited[STATUS_COLUMN] = target
-            saved, errors = save_workbench_changes(original, edited, current_user, manual_stage=True)
-            if saved:
-                order_detail.clear_drafts("apparatus")
-                st.session_state["workbench_scroll_to_id"] = identifier
-                st.session_state["workbench_feedback"] = (saved, errors)
-                rerun_active_tab()
-            for error in errors:
-                st.error(error)
-        if disabled:
-            st.caption("Guarda o descarta primero los cambios pendientes en la ficha o en las tablas.")
 
 
 def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pending: bool) -> None:
@@ -6320,7 +6323,6 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
              SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))),
             (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
         ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
-        render_workbench_manual_stage(row, current_user, form_pending)
         render_workbench_order_editor(row, current_user)
         if (len(selected) <= 1 and row[STATUS_COLUMN] == "LISTO P/SINTERIZADO"
                 and not is_case_marked_for_printing(row)
@@ -6768,10 +6770,11 @@ def render_workbench(current_user: str) -> None:
             changes = []
         # Guardar reconstruye todas las tablas; no debe borrar lo elegido en Enviados.
         sent_pending = workbench_sent_pending_count() > 0
+        paused_pending = bool(st.session_state.get("workbench_paused_pending"))
         save_col, discard_col, count_col, pause_col, order_col = st.columns([1.2, 1.2, 1.5, 1.7, 1.2])
-        if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending or sent_pending,
+        if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending or sent_pending or paused_pending,
                            use_container_width=True,
-                           help="Primero guarda o descarta los cambios del histórico de Enviados." if sent_pending else None):
+                           help="Primero guarda o descarta los cambios de Enviados o Pausados." if sent_pending or paused_pending else None):
             st.session_state.pop("workbench_save_errors", None)
             changed_ids = [identifier for identifier, _ in changes]
             saved, errors = save_workbench_changes(grid, edited, current_user, select_catalog=catalog)
