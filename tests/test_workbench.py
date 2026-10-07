@@ -256,6 +256,58 @@ def test_vero_keeps_the_step_by_step_flow():
     assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], "Vero")
 
 
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_manual_stage_correction_is_explicit_and_remains_in_the_apparatus_flow(user):
+    source = pd.DataFrame([case()])
+    backwards = [('001', {'STATUS': 'ORDEN RECIBIDA'})]
+    assert app.validate_workbench_changes(source, source, backwards, user)
+    assert not app.validate_workbench_changes(source, source, backwards, user, manual_stage=True)
+    assert not app.validate_status_change(identifier='001', apparatus='MSE', previous_status='REVISIÓN DE ARCHIVOS',
+        new_status='ORDEN RECIBIDA', current_user=user)[0]
+    assert app.validate_status_change(identifier='001', apparatus='MSE', previous_status='REVISIÓN DE ARCHIVOS',
+        new_status='ORDEN RECIBIDA', current_user=user, manual_stage=True)[0]
+    foreign = [('001', {'STATUS': 'SOLICITUD GUÍA PSM + PSM'})]
+    assert app.validate_workbench_changes(source, source, foreign, user, manual_stage=True)
+    assert 'SOLICITUD GUÍA PSM + PSM' not in app.get_manual_stage_statuses('MSE', 'REVISIÓN DE ARCHIVOS', user)
+
+
+def test_manual_stage_correction_preserves_roles_conflicts_and_stage_only_changes():
+    source = pd.DataFrame([case()])
+    change = [('001', {'STATUS': 'ORDEN RECIBIDA'})]
+    assert app.validate_workbench_changes(source, source, change, 'Vero', manual_stage=True)
+    assert not app.validate_status_change(identifier='001', apparatus='MSE', previous_status='REVISIÓN DE ARCHIVOS',
+        new_status='ORDEN RECIBIDA', current_user='Vero', manual_stage=True)[0]
+    fresh = pd.DataFrame([case(status='EN PLANEACIÓN')])
+    assert 'otro usuario' in app.validate_workbench_changes(source, fresh, change, 'Admin', manual_stage=True)[0]
+    extra = [('001', {'STATUS': 'ORDEN RECIBIDA', 'NOMBRE DOCTOR': 'Otro'})]
+    assert 'sólo se puede cambiar la etapa' in app.validate_workbench_changes(source, source, extra, 'Admin', manual_stage=True)[0]
+    sent = pd.DataFrame([case(status='PRODUCTO ENVIADO')])
+    assert app.validate_workbench_changes(sent, sent, change, 'Admin', manual_stage=True)
+    ready = pd.DataFrame([case(status='LISTO P/SINTERIZADO')])
+    print_change = [('001', {'STATUS': 'ELABORACIÓN PLATINA'})]
+    assert 'impresión' in app.validate_workbench_changes(ready, ready, print_change, 'Lesly', manual_stage=True)[0]
+
+
+def test_manual_stage_save_records_its_own_comment(monkeypatch):
+    source = pd.DataFrame([case()])
+    edited = source.copy()
+    edited.loc[0, 'STATUS'] = 'ORDEN RECIBIDA'
+    writes, logs = [], []
+    monkeypatch.setattr(app, 'clear_sheet_data_cache', lambda: None)
+    monkeypatch.setattr(app, 'reset_workbench', lambda: None)
+    monkeypatch.setattr(app, 'read_sheet_df', lambda _: source)
+    monkeypatch.setattr(app, 'update_row_by_columna_1', lambda identifier, changes, **kwargs:
+                        writes.append((identifier, changes, kwargs)) or {'success': True, 'skipped_columns': []})
+    monkeypatch.setattr(app, 'register_status_change', lambda **kwargs: logs.append(kwargs))
+    assert app.save_workbench_changes(source, edited, 'Admin', manual_stage=True) == (['001'], [])
+    assert writes[0][0] == '001'
+    assert writes[0][1] == {'STATUS': 'ORDEN RECIBIDA'}
+    assert writes[0][2]['expected_values']['STATUS'] == 'REVISIÓN DE ARCHIVOS'
+    assert logs[0]['change_comment'] == 'Cambio manual de etapa desde la ficha del pedido.'
+    assert logs[0]['previous_status'] == 'REVISIÓN DE ARCHIVOS'
+    assert logs[0]['new_status'] == 'ORDEN RECIBIDA'
+
+
 def test_planning_shortcut_requires_a_planning_stage_in_the_apparatus_flow(monkeypatch):
     flow = [('REVISIÓN DE ARCHIVOS', None), ('PAGO CONFECCIÓN', None), ('ELABORACIÓN PLATINA', None)]
     monkeypatch.setattr(app, 'get_process_flow', lambda _: flow)

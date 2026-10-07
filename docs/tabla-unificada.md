@@ -44,6 +44,12 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    Admin, Jime y Lesly también pueden pasar de **Revisión de archivos** a
    **En planeación** cuando esa etapa existe en el flujo del aparato, para
    iniciar la planeación de casos nuevos sin esperar las etapas de solicitud o pago.
+   Para correcciones, esos tres usuarios disponen de **Cambiar etapa manualmente**
+   en la ficha. Abre una lista completa del flujo del aparato y se guarda con
+   **Aplicar cambio manual**. Sólo cambia la etapa, valida datos recientes y las
+   reglas de impresión, y registra "Cambio manual de etapa desde la ficha del pedido."
+   en la bitácora. Se bloquea mientras haya cambios pendientes en la ficha o
+   en las tablas de Enviados y Pausados.
    Admin, Jime y Lesly conservan acceso a todas las áreas y su excepción de pagos;
    Vero conserva sus permisos limitados a sus propias transiciones. Reactivar
    pedidos pausados o enviados sigue siendo una acción del histórico. Las fechas

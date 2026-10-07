@@ -1623,6 +1623,17 @@ def get_allowed_next_statuses(
 
 
 
+def get_manual_stage_statuses(apparatus: str, current_status: str, current_user: str) -> list[str]:
+    """Etapas del aparato para una corrección explícita desde la ficha activa."""
+    current = normalize_status_alias(current_status)
+    if current_user not in ADMIN_ACCESS_USERS or current in WORKBENCH_CLOSED_STATUSES:
+        return [current]
+    flow = [status for status, _ in get_process_flow(apparatus)]
+    if not flow:
+        return [current]
+    return list(dict.fromkeys([current, *flow, "CANCELO", PAUSED_STATUS]))
+
+
 def get_user_passwords(secret_source: Any | None = None) -> dict[str, str]:
     """Lee las credenciales exclusivamente desde Streamlit Secrets."""
 
@@ -2148,14 +2159,21 @@ def validate_status_change(
     new_status: str,
     current_user: str,
     from_sent_archive: bool = False,
+    manual_stage: bool = False,
 ) -> tuple[bool, str]:
     """Aplica flujo, permisos y bloqueo por pagos antes de guardar STATUS."""
 
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
+    if manual_stage and from_sent_archive:
+        return False, "Usa el histórico de Enviados para reactivar este pedido."
+    if manual_stage and current_user not in ADMIN_ACCESS_USERS:
+        return False, "El usuario actual no puede cambiar etapas manualmente."
     if new_status == previous_status:
         return True, ""
-    if from_sent_archive:
+    if manual_stage:
+        allowed_statuses = get_manual_stage_statuses(apparatus, previous_status, current_user)
+    elif from_sent_archive:
         if current_user not in UNRESTRICTED_STAGE_USERS:
             return False, "El usuario actual no puede cambiar etapas desde Enviados."
         allowed_statuses = workbench_reactivation_statuses(apparatus, previous_status)
@@ -4588,6 +4606,7 @@ def advance_case_status(
     extra_changes: dict[str, Any] | None = None,
     expected_values: dict[str, Any] | None = None,
     from_sent_archive: bool = False,
+    manual_stage: bool = False,
 ) -> bool:
     """Actualiza STATUS en ESTATUS y registra cierre/apertura en TIEMPOS."""
 
@@ -4609,6 +4628,7 @@ def advance_case_status(
         new_status=new_status,
         current_user=current_user,
         from_sent_archive=from_sent_archive,
+        manual_stage=manual_stage,
     )
     if not is_valid:
         st.error(validation_message)
@@ -5881,13 +5901,15 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
 
 def validate_workbench_changes(
     original: pd.DataFrame, fresh: pd.DataFrame, changes: list[tuple[str, dict[str, Any]]], current_user: str,
-    *, select_catalog: dict | None = None, reactivate: bool = False,
+    *, select_catalog: dict | None = None, reactivate: bool = False, manual_stage: bool = False,
 ) -> list[str]:
     """Prevalida el lote sin escribir: rol, flujo, datos recientes, pago e impresión.
 
     En modo ``reactivate`` (histórico de Enviados) sólo se cambia la etapa.
     """
     errors = []
+    if manual_stage and reactivate:
+        return ["Usa el histórico de Enviados para reactivar este pedido."]
     allowed_columns = workbench_editable_columns(current_user, original.columns)
     if ID_COLUMN not in fresh:
         return ["No se pudo volver a leer la columna de folios. Actualiza los datos antes de guardar."]
@@ -5907,6 +5929,13 @@ def validate_workbench_changes(
         if conflicts:
             errors.append(f"{identifier}: otro usuario cambió {', '.join(sorted(conflicts))}. Actualiza la tabla.")
             continue
+        if manual_stage:
+            if current_user not in ADMIN_ACCESS_USERS:
+                errors.append(f"{identifier}: tu usuario no puede cambiar etapas manualmente.")
+                continue
+            if set(delta) != {STATUS_COLUMN}:
+                errors.append(f"{identifier}: en el cambio manual sólo se puede cambiar la etapa.")
+                continue
         if reactivate:
             if set(delta) != {STATUS_COLUMN}:
                 errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
@@ -5950,7 +5979,9 @@ def validate_workbench_changes(
         if STATUS_COLUMN not in delta:
             continue
         new_status = normalize_status_alias(delta[STATUS_COLUMN])
-        if not reactivate and new_status not in get_allowed_next_statuses(apparatus, previous_status, current_user):
+        allowed = (get_manual_stage_statuses(apparatus, previous_status, current_user) if manual_stage
+                   else get_allowed_next_statuses(apparatus, previous_status, current_user))
+        if not reactivate and new_status not in allowed:
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
             errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
@@ -5968,7 +5999,7 @@ def validate_workbench_changes(
 
 def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current_user: str,
                            *, select_catalog: dict | None = None,
-                           reactivate: bool = False) -> tuple[list[str], list[str]]:
+                           reactivate: bool = False, manual_stage: bool = False) -> tuple[list[str], list[str]]:
     """Guarda por folio; ``reactivate`` permite editar etapas desde Enviados."""
     try:
         changes = workbench_changes(original, edited)
@@ -5981,12 +6012,14 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
     clear_sheet_data_cache()
     fresh = canonical_workbench_df(read_sheet_df(SHEET_ESTATUS))
     errors = validate_workbench_changes(original, fresh, changes, current_user, select_catalog=select_catalog,
-                                        reactivate=reactivate)
+                                        reactivate=reactivate, manual_stage=manual_stage)
     if errors:
         return [], errors
     saved = []
     for identifier, delta in changes:
         comment = "Actualización desde la tabla de trabajo"
+        if manual_stage:
+            comment = "Cambio manual de etapa desde la ficha del pedido."
         if reactivate:
             comment = ("Etapa actualizada desde el histórico de Enviados."
                        if normalize_status_alias(delta[STATUS_COLUMN]) in WORKBENCH_SENT_STATUSES
@@ -5998,6 +6031,7 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
                 success = advance_case_status(identifier=identifier, row=row, new_status=delta[STATUS_COLUMN],
                                               current_user=current_user, comment=comment,
                                               from_sent_archive=reactivate,
+                                              manual_stage=manual_stage,
                                               extra_changes={key: value for key, value in delta.items() if key != STATUS_COLUMN},
                                               expected_values=expected)
                 if not success:
@@ -6212,6 +6246,41 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
             st.error(error)
 
 
+def render_workbench_manual_stage(row: pd.Series, current_user: str, disabled: bool) -> None:
+    if current_user not in ADMIN_ACCESS_USERS:
+        return
+    identifier = row[ID_COLUMN]
+    options = [status for status in get_manual_stage_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)[1:]
+               if not transition_requires_print_mark(current_user, row[STATUS_COLUMN], status, row)]
+    if not options:
+        return
+    disabled = disabled or workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
+    with st.expander("Cambiar etapa manualmente", key=f"manual_stage_{identifier}",
+                     expanded=False, on_change="rerun") as manual:
+        if not manual.open:
+            return
+        st.caption("Para corregir este pedido, elige una etapa de su flujo y aplica el cambio.")
+        revision = st.session_state.get("workbench_revision", 0)
+        target = st.selectbox("Etapa del flujo", options, index=None, placeholder="Selecciona la etapa correcta",
+                              format_func=lambda value: display_selectbox_value(STATUS_COLUMN, value),
+                              key=f"manual_stage_target_{identifier}_{current_user}_{revision}", disabled=disabled)
+        if st.button("Aplicar cambio manual", key=f"manual_stage_save_{identifier}",
+                     disabled=disabled or not target, type="primary"):
+            original = pd.DataFrame([row])
+            edited = original.copy()
+            edited[STATUS_COLUMN] = target
+            saved, errors = save_workbench_changes(original, edited, current_user, manual_stage=True)
+            if saved:
+                order_detail.clear_drafts("apparatus")
+                st.session_state["workbench_scroll_to_id"] = identifier
+                st.session_state["workbench_feedback"] = (saved, errors)
+                rerun_active_tab()
+            for error in errors:
+                st.error(error)
+        if disabled:
+            st.caption("Guarda o descarta primero los cambios pendientes en la ficha o en las tablas.")
+
+
 def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pending: bool) -> None:
     detail_rows = order_detail.rows_with_drafts(selected, "apparatus", ID_COLUMN)
     if detail_rows.empty:
@@ -6252,6 +6321,7 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
             (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
         ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
         render_workbench_order_editor(row, current_user)
+        render_workbench_manual_stage(row, current_user, form_pending)
         if (len(selected) <= 1 and row[STATUS_COLUMN] == "LISTO P/SINTERIZADO"
                 and not is_case_marked_for_printing(row)
                 and user_can_edit_tab(current_user, "Lesly")):
