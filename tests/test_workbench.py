@@ -71,8 +71,8 @@ def test_closed_aliases_and_unused_folios_are_hidden():
                        case("004", "PRODUCTO ENVIADO"), case("5", "REVISION DE ARCHIVOS "),
                        {app.ID_COLUMN:"006"}])
     result = app.active_workbench_cases(df)
-    assert list(result[app.ID_COLUMN]) == ["004", "5"]
-    assert result.iloc[1][app.STATUS_COLUMN] == "REVISIÓN DE ARCHIVOS"
+    assert list(result[app.ID_COLUMN]) == ["5"]
+    assert result.iloc[0][app.STATUS_COLUMN] == "REVISIÓN DE ARCHIVOS"
 
 
 @pytest.mark.parametrize("logs,reason", [([],"Sin registro"), ([log(status="EN PLANEACIÓN")],"no corresponde"),
@@ -277,8 +277,8 @@ def test_sent_cases_are_listed_apart_from_the_active_table():
         case("4", "PRODUCTO ENVIADO"), case("5"), {app.ID_COLUMN: "", app.STATUS_COLUMN: "ENVIADO"},
     ])
     sent = app.sent_workbench_cases(source)
-    assert list(sent[app.ID_COLUMN]) == ["1", "2"]
-    assert list(sent[app.STATUS_COLUMN]) == ["ENVIADO", "ENVÍO DE ENCUESTA"]
+    assert list(sent[app.ID_COLUMN]) == ["1", "2", "4"]
+    assert list(sent[app.STATUS_COLUMN]) == ["ENVIADO", "ENVÍO DE ENCUESTA", "PRODUCTO ENVIADO"]
     assert set(app.active_workbench_cases(source)[app.ID_COLUMN]).isdisjoint(sent[app.ID_COLUMN])
 
 
@@ -288,7 +288,7 @@ def test_sent_cases_return_to_any_open_stage_of_their_flow():
         assert options[0] == status
         assert {"ORDEN RECIBIDA", "LISTO P/CONFECCIÓN", "PRODUCTO ENVIADO"} <= set(options)
         assert not {"CANCELO", app.PAUSED_STATUS} & set(options)
-        assert "ENVÍO DE ENCUESTA" not in options[1:]
+        assert "ENVÍO DE ENCUESTA" in options
     assert "EN DISEÑO" in app.workbench_reactivation_statuses("TIGER", "ENVIADO")
     # Sólo los enviados usan esta ruta; los demás conservan su flujo normal.
     assert app.workbench_reactivation_statuses("MSE", "EN PLANEACIÓN") == ["EN PLANEACIÓN"]
@@ -409,7 +409,8 @@ with patch.multiple(
     assert list(at.session_state["workbench_sent_editor_baseline"][app.ID_COLUMN]) == ["900"]
 
 
-def test_sent_reactivation_blocks_refresh_and_returns_the_order_to_the_active_table():
+@pytest.mark.parametrize("target", ["EN DISEÑO", "ENVÍO DE ENCUESTA"])
+def test_sent_stage_change_blocks_refresh_and_updates_the_correct_table(target):
     from streamlit.testing.v1 import AppTest
     script = f'''
 import sys
@@ -418,7 +419,7 @@ import lab_pg as app
 import pandas as pd
 import streamlit as st
 if "demo_rows" not in st.session_state:
-    st.session_state.demo_rows = [{case()!r}, {case("900", "ENVIADO", "TIGER")!r}]
+    st.session_state.demo_rows = [{case()!r}, {case("900", "PRODUCTO ENVIADO", "TIGER")!r}]
     st.session_state.demo_logs = []
     st.session_state.workbench_sent_expanded = True
 def update(identifier, changes, **kwargs):
@@ -441,9 +442,11 @@ with patch.multiple(
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
+    assert at.button(key="workbench_signal_card_total").label.endswith("**1**")
+    assert any(item.label == "🚚 Enviados · 1 pedido(s)" for item in at.expander)
     key = at.session_state["workbench_sent_editor_key"]
     rows = at.session_state["workbench_sent_editor_baseline"].to_dict("records")
-    rows[0][app.STATUS_COLUMN] = app.display_selectbox_value(app.STATUS_COLUMN, "EN DISEÑO")
+    rows[0][app.STATUS_COLUMN] = app.display_selectbox_value(app.STATUS_COLUMN, target)
     at.session_state[key] = {"rows": rows}
     at.run()
     assert not at.exception
@@ -456,19 +459,29 @@ with patch.multiple(
     at.session_state[key] = {"rows": rows}
     at.run()
     assert not at.exception
-    assert at.session_state["demo_rows"][1][app.STATUS_COLUMN] == "EN DISEÑO"
-    assert at.session_state["demo_logs"][0]["change_comment"] == "Reactivado desde el histórico de Enviados."
-    assert at.button(key="workbench_signal_card_total").label.endswith("**2**")
-    assert any(item.label == "🚚 Enviados · 0 pedido(s)" for item in at.expander)
+    assert at.session_state["demo_rows"][1][app.STATUS_COLUMN] == target
+    archived = target == "ENVÍO DE ENCUESTA"
+    comment = ("Etapa actualizada desde el histórico de Enviados." if archived
+               else "Reactivado desde el histórico de Enviados.")
+    assert at.session_state["demo_logs"][0]["change_comment"] == comment
+    assert at.button(key="workbench_signal_card_total").label.endswith(f"**{1 if archived else 2}**")
+    assert any(item.label == f"🚚 Enviados · {1 if archived else 0} pedido(s)" for item in at.expander)
+    if archived:
+        assert at.button(key="workbench_sent_save").label == "Guardar etapas"
 
 
-def test_workbench_rebuilds_a_snapshot_created_before_paused_archive(monkeypatch):
-    legacy_table = pd.DataFrame([case("paused", status=app.PAUSED_STATUS)])
+@pytest.mark.parametrize("sent_archive_exists", [False, True])
+def test_workbench_rebuilds_a_snapshot_created_before_archive_changes(monkeypatch, sent_archive_exists):
+    legacy_table = pd.DataFrame([case("shipped", status="PRODUCTO ENVIADO")])
     app.st.session_state["workbench_snapshot"] = {
         "user": "Admin",
         "table": legacy_table,
         "at": NOW,
     }
+    if sent_archive_exists:
+        app.st.session_state["workbench_snapshot"].update({
+            "paused_table": pd.DataFrame(), "sent_table": pd.DataFrame(), "times": pd.DataFrame(),
+        })
     calls = []
 
     monkeypatch.setattr(app, "read_sheet_df", lambda sheet: pd.DataFrame())
@@ -489,6 +502,7 @@ def test_workbench_rebuilds_a_snapshot_created_before_paused_archive(monkeypatch
 
     assert calls == [False, True]
     assert "paused_table" in app.st.session_state["workbench_snapshot"]
+    assert app.st.session_state["workbench_snapshot"]["sent_statuses"] == app.WORKBENCH_SENT_STATUSES
 
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])

@@ -5507,9 +5507,9 @@ def render_active_app_tab(current_user: str) -> None:
 # ==============================
 # 📋 MESA ÚNICA DE TRABAJO
 # ==============================
-WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, "ENVIADO"}
-# Histórico de terminados: ENVIADO heredado y los que ya enviaron su encuesta.
-WORKBENCH_SENT_STATUSES = ("ENVIADO", "ENVÍO DE ENCUESTA")
+# Los pedidos salen de la mesa al enviar el producto; la encuesta se gestiona aquí.
+WORKBENCH_SENT_STATUSES = ("ENVIADO", "PRODUCTO ENVIADO", "ENVÍO DE ENCUESTA")
+WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, *WORKBENCH_SENT_STATUSES}
 WORKBENCH_COMPUTED_COLUMNS = [
     "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
     "DETALLE SEMÁFORO",
@@ -5551,7 +5551,7 @@ def canonical_workbench_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def active_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
-    """ENVIADO histórico se oculta; PRODUCTO ENVIADO aún debe cerrar encuesta."""
+    """Oculta los pedidos enviados, cancelados y pausados de la mesa activa."""
     result = canonical_workbench_df(df)
     if not {ID_COLUMN, STATUS_COLUMN}.issubset(result.columns):
         return result.iloc[0:0]
@@ -5587,17 +5587,17 @@ def sent_workbench_cases(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def workbench_reactivation_statuses(apparatus: Any, current_status: Any) -> list[str]:
-    """Etapas a las que puede regresar un pedido enviado para volver a la mesa activa.
+    """Etapas disponibles desde Enviados, incluida la encuesta sin reactivar.
 
-    Se ofrece cualquier etapa del flujo del aparato salvo las de cierre (Envío
-    de encuesta, Cancelo). Un pedido que no está enviado sólo conserva su etapa.
+    Se ofrece cualquier etapa del flujo salvo Cancelo y Confección en pausa.
+    Un pedido que no está enviado sólo conserva su etapa.
     """
     current = normalize_status_alias(current_status)
     flow = [status for status, _ in get_process_flow(apparatus)]
     sent = {normalize_text(status) for status in WORKBENCH_SENT_STATUSES}
     if normalize_text(current) not in sent or not flow:
         return [current]
-    closed = {normalize_text(status) for status in WORKBENCH_CLOSED_STATUSES}
+    closed = {normalize_text(status) for status in ("CANCELO", PAUSED_STATUS)}
     return list(dict.fromkeys([current, *(status for status in flow if normalize_text(status) not in closed)]))
 
 
@@ -5947,7 +5947,7 @@ def validate_workbench_changes(
 def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current_user: str,
                            *, select_catalog: dict | None = None,
                            reactivate: bool = False) -> tuple[list[str], list[str]]:
-    """Guarda por folio; ``reactivate`` saca pedidos del histórico de Enviados."""
+    """Guarda por folio; ``reactivate`` permite editar etapas desde Enviados."""
     try:
         changes = workbench_changes(original, edited)
     except ValueError as exc:
@@ -5963,9 +5963,12 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
     if errors:
         return [], errors
     saved = []
-    comment = ("Reactivado desde el histórico de Enviados." if reactivate
-               else "Actualización desde la tabla de trabajo")
     for identifier, delta in changes:
+        comment = "Actualización desde la tabla de trabajo"
+        if reactivate:
+            comment = ("Etapa actualizada desde el histórico de Enviados."
+                       if normalize_status_alias(delta[STATUS_COLUMN]) in WORKBENCH_SENT_STATUSES
+                       else "Reactivado desde el histórico de Enviados.")
         row = fresh[fresh[ID_COLUMN] == identifier].iloc[0]
         expected = {column: row.get(column, "") for column in {STATUS_COLUMN, APARATO_COLUMN, *delta}}
         try:
@@ -6400,7 +6403,7 @@ def render_paused_workbench(
 
 
 def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
-    """Histórico de enviados; cambiar la etapa devuelve el pedido a la mesa activa."""
+    """Permite registrar la encuesta o reactivar un pedido desde Enviados."""
     can_reactivate = current_user in UNRESTRICTED_STAGE_USERS
     form_pending = order_detail.pending_count("apparatus") > 0
     # Guardar reconstruye todas las tablas; no debe borrar ediciones de arriba.
@@ -6410,7 +6413,7 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
     if "workbench_sent_feedback" in st.session_state:
         saved, errors = st.session_state.pop("workbench_sent_feedback")
         if saved:
-            st.toast(f"Reactivado: {', '.join(saved)} · ya aparece en los pedidos activos.", icon="✅")
+            st.toast(f"Etapa guardada: {', '.join(saved)}.", icon="✅")
         for error in errors:
             st.error(error)
     expander_key = "workbench_sent_expanded"
@@ -6429,11 +6432,12 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
         if not archive.open:
             return
         st.caption(
-            "Histórico de pedidos enviados (Enviado y Envío de encuesta). Cambia la etapa de un "
-            "pedido y pulsa Guardar y reactivar: regresará a los pedidos activos de arriba."
+            "Los pedidos se archivan desde Producto enviado. Cambia la etapa a Envío de encuesta "
+            "y pulsa Guardar etapas: permanecerán aquí. Si eliges una etapa de trabajo, "
+            "el pedido volverá a la tabla principal."
             if can_reactivate
-            else "Histórico de pedidos enviados (Enviado y Envío de encuesta). "
-                 "Sólo Admin, Jime y Lesly pueden reactivarlos."
+            else "Histórico de pedidos enviados (Enviado, Producto enviado y Envío de encuesta). "
+                 "Sólo Admin, Jime y Lesly pueden cambiar sus etapas."
         )
         if table.empty:
             st.info("Todavía no hay pedidos enviados.")
@@ -6450,7 +6454,7 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
         filtered = filter_workbench_cases(table, search=search, apparatuses=apparatuses).reset_index(drop=True)
         st.caption(
             f"{len(filtered)} de {len(table)} pedidos enviados · Sólo se edita la etapa; se ofrece "
-            "cualquier etapa del flujo del aparato excepto Envío de encuesta y Cancelo."
+            "Envío de encuesta o una etapa de trabajo del flujo del aparato."
         )
         if filtered.empty:
             st.info("No hay pedidos enviados que coincidan con la búsqueda.")
@@ -6474,7 +6478,7 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
             changes = []
         save_column, discard_column, count_column = st.columns([1.5, 1.3, 3.2])
         if save_column.button(
-            "Guardar y reactivar", type="primary",
+            "Guardar etapas", type="primary",
             disabled=not changes or other_pending or not can_reactivate,
             use_container_width=True, key="workbench_sent_save",
         ):
@@ -6490,7 +6494,7 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
         if other_pending:
             count_column.caption("Guarda o descarta primero los cambios de la tabla de pedidos activos.")
         else:
-            count_column.caption(f"{len(changes)} pedidos por reactivar")
+            count_column.caption(f"{len(changes)} pedidos con cambios de etapa")
 
 
 def render_workbench(current_user: str) -> None:
@@ -6508,13 +6512,15 @@ def render_workbench(current_user: str) -> None:
         or "paused_table" not in snapshot
         or "sent_table" not in snapshot
         or "times" not in snapshot
+        or snapshot.get("sent_statuses") != WORKBENCH_SENT_STATUSES
     ):
         estatus = read_sheet_df(SHEET_ESTATUS)
         tiempos = read_sheet_df(SHEET_TIEMPOS)
         table = build_workbench_table(estatus, tiempos)
         paused_table = build_workbench_table(estatus, tiempos, paused_only=True)
         snapshot = {"user": current_user, "table": table, "paused_table": paused_table,
-                    "sent_table": sent_workbench_cases(estatus), "times": tiempos, "at": app_now()}
+                    "sent_table": sent_workbench_cases(estatus), "times": tiempos, "at": app_now(),
+                    "sent_statuses": WORKBENCH_SENT_STATUSES}
         st.session_state["workbench_snapshot"] = snapshot
     table = snapshot["table"]
     paused_table = snapshot.get("paused_table", table.iloc[0:0])
