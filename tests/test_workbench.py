@@ -158,6 +158,24 @@ def test_sheet_vendor_list_also_offers_jime_and_lesly(monkeypatch):
         app.st.session_state.pop("apparatus_form_catalog", None)
 
 
+def test_stefano_selected_day_survives_stage_autofill(monkeypatch):
+    clock = datetime(2026, 10, 7, 11, 45)
+    monkeypatch.setattr(app, 'app_now', lambda: clock)
+    writes = []
+    monkeypatch.setattr(app, 'update_row_by_columna_1',
+                        lambda identifier, changes, **kwargs: writes.append(changes) or
+                        {'success': True, 'skipped_columns': []})
+    monkeypatch.setattr(app, 'register_status_change', lambda **kwargs: None)
+    monkeypatch.setattr(app, 'clear_sheet_data_cache', lambda: None)
+    monkeypatch.setattr(app, 'reset_workbench', lambda: None)
+    assert app.advance_case_status(
+        identifier='001', row=pd.Series(case(status='EN PLANEACIÓN')),
+        new_status='REVISIÓN DISEÑO DOCTOR', current_user='Jime',
+        extra_changes={'FECHA/HORA ENVÍO STEFANO': '1 septiembre 2026 09:15'},
+    )
+    assert app.parse_spanish_datetime(writes[0]['FECHA/HORA ENVÍO STEFANO']) == datetime(2026, 9, 1, 11, 45)
+
+
 def test_outsourced_work_datetime_labels_reference_stefano():
     assert app.display_field_label("FECHA/HORA ENVÍO STEFANO") == "🚚 FECHA/HORA ENVÍO STEFANO"
     assert app.display_field_label("FECHA/HORA ENTREGA STEFANO") == "📬 FECHA/HORA ENTREGA STEFANO"

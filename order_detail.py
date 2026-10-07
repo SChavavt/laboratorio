@@ -235,11 +235,17 @@ def _now(namespace, identifier, column, key, equivalent, format_datetime, now):
     _remember_datetime(namespace, identifier, column, key, equivalent, format_datetime)
 
 
+def _remember_date_with_auto_time(namespace, identifier, column, key, equivalent, format_datetime, now):
+    st.session_state[key + "_time"] = now().time().replace(second=0, microsecond=0)
+    _remember_datetime(namespace, identifier, column, key, equivalent, format_datetime)
+
+
 def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   option_label, palettes, equivalent, parse_date, format_date,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
-                  multi_codecs=None, required=(), constrained=(), extra=None, hints=None):
+                  multi_codecs=None, required=(), constrained=(), extra=None, hints=None,
+                  automatic_time_columns=()):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
@@ -317,6 +323,15 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                         # El color del chip va dentro del campo, sin repetir el valor debajo.
                         styles.append(value_css(key, column, [item for item in shown if item],
                                                 palettes, column in multiple))
+                    elif column in automatic_time_columns:
+                        parsed = parse_datetime(text) if text else None
+                        dt_args = (namespace, identifier, column, key, equivalent, format_datetime)
+                        st.date_input(label, value=parsed.date() if parsed else None, key=key + "_date",
+                                      format="DD/MM/YYYY", disabled=blocked,
+                                      on_change=_remember_date_with_auto_time, args=(*dt_args, now),
+                                      help="Elige el día. La hora se registra automáticamente al guardar (Ciudad de México).")
+                        st.button("Ahora", key=key + "_now", disabled=blocked, use_container_width=True,
+                                  on_click=_now, args=(*dt_args, now))
                     elif column in datetime_columns and (not text or parse_datetime(text) is not None):
                         parsed = parse_datetime(text) if text else None
                         dt_args = (namespace, identifier, column, key, equivalent, format_datetime)
@@ -351,4 +366,11 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     discard.button("↩️ Descartar esta edición", key=f"detail_discard_{token}", disabled=not changed,
                    use_container_width=True, on_click=clear_drafts, args=(namespace,))
     count.caption(f"{len(draft['changes'])} campos con cambios" if changed else "Sin cambios pendientes")
-    return (draft["baseline"], dict(draft["changes"])) if submitted else None
+    if submitted:
+        changes = dict(draft["changes"])
+        for column in automatic_time_columns:
+            if column in changes and changes[column]:
+                parsed = parse_datetime(changes[column])
+                changes[column] = format_datetime(datetime.combine(parsed.date(), now().time()))
+        return draft["baseline"], changes
+    return None

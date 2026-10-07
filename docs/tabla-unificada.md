@@ -43,6 +43,8 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    tiene permitidos. Las fechas
    editables abren calendario y, cuando corresponde, hora; **Ahora** registra
    el momento de Ciudad de México y los valores antiguos se conservan al cancelar.
+   En **FECHA/HORA ENVÍO STEFANO** sólo se elige el día: la app registra la hora
+   de Ciudad de México al guardar, sin pedirla manualmente.
 3. La columna **Abrir** selecciona pedidos sin guardarlos ni modificar Sheets.
    Con un pedido seleccionado se muestran archivos, historial y las acciones
    de pago o diseño correspondientes. Con pedidos de impresión seleccionados,
