@@ -192,6 +192,27 @@ def test_status_choices_follow_saved_stage_until_next_save(user):
     assert label('EN PLANEACIÓN') not in field(at, 'STATUS').options
 
 
+@pytest.mark.parametrize('target', ['ESCANEO MAL (EN REPETICIÓN)', 'PAGO PLANEACIÓN'])
+def test_review_files_form_can_repeat_or_advance_to_payment(monkeypatch, target):
+    flow = lab.parse_aparato_process_matrix([
+        ['MSE', ''], ['Fases', 'Tiempo'], ['ORDEN RECIBIDA', ''],
+        ['REVISIÓN DE ARCHIVOS', ''], ['ESCANEO MAL (EN REPETICIÓN)', ''],
+        ['PAGO PLANEACIÓN', ''], ['EN PLANEACIÓN', '<3 dias'],
+    ])['MSE']
+    monkeypatch.setattr(lab, 'get_process_flow', lambda _: flow)
+    at = apparatus_app()
+    assert not at.exception
+    options = field(at, 'STATUS').options
+    for choice in ('ESCANEO MAL (EN REPETICIÓN)', 'PAGO PLANEACIÓN'):
+        assert lab.workbench_form_option_label(lab.STATUS_COLUMN, choice) in options
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'EN PLANEACIÓN') not in options
+    field(at, 'STATUS').select(target).run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('001', {'STATUS': target})]
+    assert at.session_state['demo_rows'][1][lab.STATUS_COLUMN] == target
+
+
 def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
     at = apparatus_app()
     field(at, 'VENDEDOR').select('MICHELLE').run()
