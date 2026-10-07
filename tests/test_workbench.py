@@ -308,6 +308,78 @@ def test_manual_stage_save_records_its_own_comment(monkeypatch):
     assert logs[0]['new_status'] == 'ORDEN RECIBIDA'
 
 
+def test_status_submenu_saves_manual_and_regular_rows_together_with_normal_field_edits(monkeypatch):
+    source = pd.DataFrame([case('001'), case('002')])
+    edited = source.copy()
+    edited.loc[0, 'STATUS'] = app.display_selectbox_value('STATUS', 'ORDEN RECIBIDA')
+    edited.loc[0, 'NOMBRE DOCTOR'] = 'Cliente corregido'
+    edited.loc[1, 'STATUS'] = 'EN PLANEACIÓN'
+    edited.attrs['manualStageTargets'] = {'001': app.display_selectbox_value('STATUS', 'ORDEN RECIBIDA')}
+    writes, logs = [], []
+    monkeypatch.setattr(app, 'clear_sheet_data_cache', lambda: None)
+    monkeypatch.setattr(app, 'reset_workbench', lambda: None)
+    monkeypatch.setattr(app, 'read_sheet_df', lambda _: source)
+    monkeypatch.setattr(app, 'update_row_by_columna_1', lambda identifier, changes, **kwargs:
+                        writes.append((identifier, changes, kwargs)) or {'success': True, 'skipped_columns': []})
+    monkeypatch.setattr(app, 'register_status_change', lambda **kwargs: logs.append(kwargs))
+    assert app.save_workbench_changes(source, edited, 'Admin') == (['001', '002'], [])
+    assert writes[0][1] == {'STATUS': 'ORDEN RECIBIDA', 'NOMBRE DOCTOR': 'Cliente corregido'}
+    assert writes[1][1]['STATUS'] == 'EN PLANEACIÓN'
+    assert 'manual' in logs[0]['change_comment']
+    assert logs[1]['change_comment'] == 'Actualización desde la tabla de trabajo'
+    assert writes[0][2]['expected_values']['NOMBRE DOCTOR'] == source.iloc[0]['NOMBRE DOCTOR']
+
+
+@pytest.mark.parametrize('user,target,intent', [
+    ('Vero', 'ORDEN RECIBIDA', 'ORDEN RECIBIDA'),
+    ('Admin', 'ORDEN RECIBIDA', 'EN PLANEACIÓN'),
+    ('Admin', 'SOLICITUD GUÍA PSM + PSM', 'SOLICITUD GUÍA PSM + PSM'),
+    ('Admin', '__all_stages__', '__all_stages__'),
+])
+def test_status_submenu_rejects_invalid_role_target_or_navigation_before_writing(monkeypatch, user, target, intent):
+    source = pd.DataFrame([case()])
+    edited = source.copy()
+    edited.loc[0, 'STATUS'] = target
+    edited.attrs['manualStageTargets'] = {'001': intent}
+    writes = []
+    monkeypatch.setattr(app, 'clear_sheet_data_cache', lambda: None)
+    monkeypatch.setattr(app, 'read_sheet_df', lambda _: source)
+    monkeypatch.setattr(app, 'update_row_by_columna_1', lambda *args, **kwargs: writes.append(args))
+    saved, errors = app.save_workbench_changes(source, edited, user)
+    assert not saved and errors and not writes
+
+
+def test_manual_intent_is_per_row_and_preserves_conflict_print_and_archive_validation():
+    source = pd.DataFrame([case('001'), case('002')])
+    changes = [('001', {'STATUS': 'ORDEN RECIBIDA'}), ('002', {'STATUS': 'ORDEN RECIBIDA'})]
+    errors = app.validate_workbench_changes(source, source, changes, 'Admin', manual_stage_ids={'001'})
+    assert len(errors) == 1 and errors[0].startswith('002:')
+    fresh = source.copy()
+    fresh.loc[0, 'NOMBRE DOCTOR'] = 'Editado por otro usuario'
+    changed = [('001', {'STATUS': 'ORDEN RECIBIDA', 'NOMBRE DOCTOR': 'Nueva edición'})]
+    assert 'otro usuario' in app.validate_workbench_changes(source, fresh, changed, 'Admin', manual_stage_ids={'001'})[0]
+    ready = pd.DataFrame([case(status='LISTO P/SINTERIZADO')])
+    assert 'impresión' in app.validate_workbench_changes(ready, ready,
+        [('001', {'STATUS': 'ELABORACIÓN PLATINA'})], 'Lesly', manual_stage_ids={'001'})[0]
+    sent = pd.DataFrame([case(status='PRODUCTO ENVIADO')])
+    assert app.validate_workbench_changes(sent, sent, changes[:1], 'Admin', manual_stage_ids={'001'})
+    assert app.validate_workbench_changes(sent, sent, changes[:1], 'Admin', manual_stage_ids={'001'}, reactivate=True)
+
+
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly', 'Vero'])
+def test_grid_all_stages_follow_each_apparatus_and_user(user):
+    source = pd.DataFrame([case()])
+    context = app.workbench_grid_options(app.workbench_display_df(source), source, user)['context']
+    labels = context['manualStageOptions']['001']
+    backwards = app.display_selectbox_value('STATUS', 'ORDEN RECIBIDA')
+    assert (backwards in labels) == (user != 'Vero')
+    assert app.display_selectbox_value('STATUS', 'SOLICITUD GUÍA PSM + PSM') not in labels
+    for apparatus in ('MSE', 'LEONE', 'HYRAX'):
+        signature = context['apparatusFlowKeys'][apparatus]
+        row = pd.Series(case(apparatus=apparatus))
+        assert context['apparatusManualStageOptions']['001'][signature] == app.workbench_manual_stage_options(row, user)
+
+
 def test_planning_shortcut_requires_a_planning_stage_in_the_apparatus_flow(monkeypatch):
     flow = [('REVISIÓN DE ARCHIVOS', None), ('PAGO CONFECCIÓN', None), ('ELABORACIÓN PLATINA', None)]
     monkeypatch.setattr(app, 'get_process_flow', lambda _: flow)

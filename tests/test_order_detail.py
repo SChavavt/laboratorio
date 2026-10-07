@@ -130,6 +130,7 @@ def save(original, edited, user, **kwargs):
     changes = app.workbench_changes(original, edited)
     st.session_state["attempt"] = changes
     st.session_state["save_options"] = kwargs
+    st.session_state["manual_targets"] = edited.attrs.get("manualStageTargets", {{}})
     if st.session_state.get("fail_save"):
         return [], ["Otro usuario cambió el pedido"]
     for identifier, delta in changes:
@@ -139,9 +140,6 @@ def save(original, edited, user, **kwargs):
     app.reset_workbench()
     return [identifier for identifier, _ in changes], []
 app.save_workbench_changes = save
-if st.session_state.get('manual_test_open'):
-    # AppTest todavía no expone el estado interactivo de los desplegables.
-    st.session_state['manual_stage_001'] = True
 app.main()
 '''
 
@@ -265,55 +263,132 @@ with patch.multiple(app,
 
 
 @pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
-def test_manual_stage_has_its_own_selector_and_save_and_locks_for_form_edits(user):
+def test_all_stages_opens_from_status_and_uses_the_usual_save(user):
     at = apparatus_app()
     at.session_state['demo_user'] = user
     button(at, 'Actualizar datos').click().run()
     assert not at.exception
-    [manual] = [item for item in at.expander if item.label == 'Cambiar etapa manualmente']
-    assert not manual.proto.expanded
+    assert detail.MORE_STAGES_LABEL in field(at, 'STATUS').options
     assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'ORDEN RECIBIDA') not in field(at, 'STATUS').options
-    at.session_state['manual_test_open'] = True
-    at.run()
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
     assert not at.exception
+    assert field(at, 'STATUS').value == 'REVISIÓN DE ARCHIVOS'
+    assert at.session_state[detail.draft_key('apparatus')]['001']['changes'] == {}
+    assert button(at, '💾 Guardar este pedido').disabled
     selector = next(item for item in at.selectbox if item.label == 'Etapa del flujo')
-    assert lab.display_selectbox_value(lab.STATUS_COLUMN, 'ORDEN RECIBIDA') in selector.options
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'ORDEN RECIBIDA') in selector.options
     selector.select('ORDEN RECIBIDA').run()
     field(at, 'VENDEDOR').select('MICHELLE').run()
-    assert button(at, 'Aplicar cambio manual').disabled
-    button(at, '↩️ Descartar esta edición').click().run()
-    assert not button(at, 'Aplicar cambio manual').disabled
-    button(at, 'Aplicar cambio manual').click().run()
+    button(at, '💾 Guardar este pedido').click().run()
     assert not at.exception
-    assert at.session_state['attempt'] == [('001', {'STATUS': 'ORDEN RECIBIDA'})]
-    assert at.session_state['save_options']['manual_stage'] is True
+    assert at.session_state['attempt'] == [('001', {'STATUS': 'ORDEN RECIBIDA', 'VENDEDOR': 'MICHELLE'})]
+    assert at.session_state['manual_targets'] == {'001': 'ORDEN RECIBIDA'}
     assert at.session_state['demo_rows'][1][lab.STATUS_COLUMN] == 'ORDEN RECIBIDA'
-    assert at.session_state['demo_rows'][1]['VENDEDOR'] == 'JIMENA'
-    assert button(at, 'Aplicar cambio manual').disabled
+    assert at.session_state['demo_rows'][1]['VENDEDOR'] == 'MICHELLE'
+    assert button(at, '💾 Guardar este pedido').disabled
+    assert not any(item.label == 'Etapa del flujo' for item in at.selectbox)
 
 
 @pytest.mark.parametrize('archive', ['sent', 'paused'])
 def test_manual_stage_does_not_save_over_pending_archive_edits(monkeypatch, archive):
     at = apparatus_app()
-    at.session_state['manual_test_open'] = True
-    at.run()
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
     next(item for item in at.selectbox if item.label == 'Etapa del flujo').select('ORDEN RECIBIDA').run()
-    assert not button(at, 'Aplicar cambio manual').disabled
+    assert not button(at, '💾 Guardar este pedido').disabled
     if archive == 'sent':
         monkeypatch.setattr(lab, 'workbench_sent_pending_count', lambda: 1)
     else:
         at.session_state['workbench_paused_pending'] = True
     at.run()
     assert not at.exception
-    assert button(at, 'Aplicar cambio manual').disabled
+    assert button(at, '💾 Guardar este pedido').disabled
 
 
-def test_manual_stage_control_is_not_shown_to_vero():
+def test_all_stages_option_is_not_shown_to_vero():
     at = apparatus_app()
     at.session_state['demo_user'] = 'Vero'
     button(at, 'Actualizar datos').click().run()
     assert not at.exception
-    assert not any(item.label == 'Cambiar etapa manualmente' for item in at.expander)
+    assert detail.MORE_STAGES_LABEL not in field(at, 'STATUS').options
+    assert not any(item.label == 'Etapa del flujo' for item in at.selectbox)
+
+
+def test_failed_manual_save_preserves_intent_and_discard_restores_normal_status():
+    at = apparatus_app()
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
+    field(at, 'Etapa del flujo').select('ORDEN RECIBIDA').run()
+    at.session_state['fail_save'] = True
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['manual_targets'] == {'001': 'ORDEN RECIBIDA'}
+    assert field(at, 'STATUS').value == 'ORDEN RECIBIDA'
+    assert not button(at, '💾 Guardar este pedido').disabled
+    button(at, '↩️ Descartar esta edición').click().run()
+    assert field(at, 'STATUS').value == 'REVISIÓN DE ARCHIVOS'
+    assert not any(item.label == 'Etapa del flujo' for item in at.selectbox)
+    assert button(at, '💾 Guardar este pedido').disabled
+
+
+def test_returning_to_a_suggested_stage_clears_manual_intent():
+    at = apparatus_app()
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
+    field(at, 'Etapa del flujo').select('ORDEN RECIBIDA').run()
+    field(at, 'STATUS').select('EN PLANEACIÓN').run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['manual_targets'] == {}
+    assert at.session_state['attempt'] == [('001', {'STATUS': 'EN PLANEACIÓN'})]
+
+
+def test_all_stages_follows_apparatus_edits_and_clears_a_foreign_manual_choice():
+    at = apparatus_app()
+    next(item for item in at.multiselect if 'APARATO' in item.label).set_value(['LEONE']).run()
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
+    field(at, 'Etapa del flujo').select('SOLICITUD GUÍA PSM + PSM').run()
+    assert field(at, 'STATUS').value == 'SOLICITUD GUÍA PSM + PSM'
+    next(item for item in at.multiselect if 'APARATO' in item.label).set_value(['MSE']).run()
+    assert not at.exception
+    assert field(at, 'STATUS').value == 'REVISIÓN DE ARCHIVOS'
+    assert not any(item.label == 'Etapa del flujo' for item in at.selectbox)
+    assert button(at, '💾 Guardar este pedido').disabled
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'SOLICITUD GUÍA PSM + PSM') not in field(at, 'Etapa del flujo').options
+
+
+def test_grid_all_stages_choice_uses_the_main_save_and_keeps_manual_intent():
+    at = apparatus_app()
+    key = at.session_state['workbench_editor_key']
+    response = {'editedRows': [{'Columna 1': '001',
+        'STATUS': lab.display_selectbox_value('STATUS', 'ORDEN RECIBIDA'),
+        '__manualStageTarget': lab.display_selectbox_value('STATUS', 'ORDEN RECIBIDA')}], 'selectedIds': ['001']}
+    at.session_state[key] = response
+    at.run()
+    assert not button(at, 'Guardar cambios').disabled
+    button(at, 'Guardar cambios').click()
+    # AppTest no ejecuta el navegador de AG Grid: reenvía su estado al guardar.
+    at.session_state[key] = response
+    at.run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('001', {'STATUS': 'ORDEN RECIBIDA'})]
+    assert lab.normalize_status_alias(at.session_state['manual_targets']['001']) == 'ORDEN RECIBIDA'
+    assert at.session_state['demo_rows'][0]['STATUS'] == 'REVISIÓN DE ARCHIVOS'
+    assert at.session_state['demo_rows'][1]['STATUS'] == 'ORDEN RECIBIDA'
+
+
+@pytest.mark.parametrize('archive', ['sent', 'paused'])
+def test_grid_manual_change_waits_for_archive_edits(monkeypatch, archive):
+    at = apparatus_app()
+    key = at.session_state['workbench_editor_key']
+    at.session_state[key] = {'editedRows': [{'Columna 1': '001', 'STATUS': 'ORDEN RECIBIDA',
+                                           '__manualStageTarget': 'ORDEN RECIBIDA'}], 'selectedIds': ['001']}
+    if archive == 'sent':
+        monkeypatch.setattr(lab, 'workbench_sent_pending_count', lambda: 1)
+    else:
+        at.session_state['workbench_paused_pending'] = True
+    at.run()
+    assert not at.exception
+    assert button(at, 'Guardar cambios').disabled
+    assert 'attempt' not in at.session_state
 
 
 def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
@@ -673,7 +748,7 @@ def test_apparatus_primary_fields_and_combination_save_with_secondary_fields():
     candidate = pd.Series({lab.ID_COLUMN: '001', lab.APARATO_COLUMN: combination,
                           lab.STATUS_COLUMN: 'REVISIÓN DE ARCHIVOS'})
     expected = lab.workbench_stage_options(candidate, 'Jime')
-    assert field(at, 'STATUS').options == [lab.workbench_form_option_label(lab.STATUS_COLUMN, lab.normalize_status_alias(value)) for value in expected]
+    assert field(at, 'STATUS').options == [*[lab.workbench_form_option_label(lab.STATUS_COLUMN, lab.normalize_status_alias(value)) for value in expected], detail.MORE_STAGES_LABEL]
     button(at, '💾 Guardar este pedido').click().run()
     assert not at.exception
     assert at.session_state['attempt'] == [('001', {

@@ -36,7 +36,8 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    modificados antes de comenzar las escrituras. Para todos los usuarios, el
    selector muestra la etapa actual, la siguiente y las alternativas previstas
    para esa etapa en el flujo del aparato. También ofrece cancelar o pausar
-   cuando el usuario tiene permiso. Se rechazan saltos a otras etapas al guardar.
+   cuando el usuario tiene permiso. Se rechazan saltos a otras etapas sin haberlas
+   elegido mediante la opción de cambio manual.
    `ESCANEO MAL (EN REPETICIÓN)` y `SOLICITUD DE CAMBIOS` son alternativas
    opcionales: se ofrecen junto con la siguiente etapa normal de la hoja. Así,
    si Revisión de archivos va seguida de Escaneo mal y Pago planeación, se puede
@@ -44,12 +45,17 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    Admin, Jime y Lesly también pueden pasar de **Revisión de archivos** a
    **En planeación** cuando esa etapa existe en el flujo del aparato, para
    iniciar la planeación de casos nuevos sin esperar las etapas de solicitud o pago.
-   Para correcciones, esos tres usuarios disponen de **Cambiar etapa manualmente**
-   en la ficha. Abre una lista completa del flujo del aparato y se guarda con
-   **Aplicar cambio manual**. Sólo cambia la etapa, valida datos recientes y las
-   reglas de impresión, y registra "Cambio manual de etapa desde la ficha del pedido."
-   en la bitácora. Se bloquea mientras haya cambios pendientes en la ficha o
-   en las tablas de Enviados y Pausados.
+   Para correcciones, esos tres usuarios disponen de **Ver todas las etapas…**
+   dentro de **STATUS**, tanto en la tabla como en la ficha. En la tabla abre
+   el segundo nivel del mismo menú y permite volver a las etapas sugeridas.
+   En la ficha abre **Etapa del flujo** justo debajo de STATUS. Muestra el flujo
+   completo del aparato, incluidas las etapas que no aparecen en la lista habitual;
+   al cambiar el aparato, también cambian esas opciones.
+   Abrir la lista no modifica el pedido. Se guarda la etapa elegida, junto con los
+   demás campos editados, con **Guardar cambios** en la tabla o **Guardar este pedido**
+   en la ficha. Se validan datos recientes, permisos y reglas de impresión, y los
+   cambios manuales se distinguen en la bitácora. La ficha se bloquea mientras
+   haya cambios pendientes en las tablas de Enviados y Pausados.
    Admin, Jime y Lesly conservan acceso a todas las áreas y su excepción de pagos;
    Vero conserva sus permisos limitados a sus propias transiciones. Reactivar
    pedidos pausados o enviados sigue siendo una acción del histórico. Las fechas

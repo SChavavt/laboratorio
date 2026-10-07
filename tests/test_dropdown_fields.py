@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dropdown_fields as dropdown
 import grid_interactions as interactions
 import alineadores_pg as align
+import workbench_grid as apparatus_grid
 
 
 def run_js(code, **values):
@@ -96,6 +97,69 @@ class Element {
 }
 const document = {createElement: tag => new Element(tag)};
 '''
+
+
+def test_status_submenu_navigates_without_saving_and_marks_only_manual_choices():
+    result = run_js(FAKE_DOM + '''
+const Editor = eval('(' + data.editor + ')');
+const commits = [];
+const row = {'Columna 1': '001', APARATO: 'MSE'};
+const params = {value: 'Revisión', data: row, stopEditing: cancelled => commits.push(Boolean(cancelled)),
+ context: {stageOptions: {'001': ['Revisión', 'Pago']}, manualStageOptions: {'001': ['Otra etapa ajena']},
+ apparatusFlowKeys: {MSE: 'mse'}, apparatusManualStageOptions: {'001': {mse: ['Revisión', 'Pago', 'Planeación']}},
+ palettes: {STATUS: {'Planeación': ['#ABCDEF', '#123456']}}}};
+const editor = new Editor(); editor.init(params);
+const labels = () => editor.buttons.map(button => button.textContent);
+const click = label => editor.buttons.find(button => button.textContent === label).listeners.click();
+const initial = labels();
+click('Ver todas las etapas… →');
+const full = labels();
+const beforeChoice = {commits: commits.length, value: editor.getValue(), target: row.__manualStageTarget || null};
+const color = editor.buttons.find(button => button.textContent === 'Planeación').style.backgroundColor;
+click('← Volver a etapas sugeridas');
+const returned = labels();
+click('Ver todas las etapas… →');
+editor.gui.listeners.keydown({key: 'Escape', preventDefault() {}});
+const cancelled = editor.getValue();
+click('Planeación');
+const chosen = {value: editor.getValue(), target: row.__manualStageTarget};
+editor.render(false);
+click('Pago');
+console.log(JSON.stringify({initial, full, beforeChoice, color, returned, cancelled, chosen,
+ recommended: {value: editor.getValue(), target: row.__manualStageTarget}, commits}));
+''', editor=javascript(apparatus_grid.status_editor()))
+    assert result['initial'] == ['Revisión', 'Pago', 'Ver todas las etapas… →']
+    assert result['full'] == ['← Volver a etapas sugeridas', 'Revisión', 'Pago', 'Planeación']
+    assert result['beforeChoice'] == {'commits': 0, 'value': 'Revisión', 'target': None}
+    assert result['returned'] == result['initial']
+    assert result['color'] == '#ABCDEF'
+    assert result['cancelled'] == 'Revisión'
+    assert result['chosen'] == {'value': 'Planeación', 'target': 'Planeación'}
+    assert result['recommended'] == {'value': 'Pago', 'target': None}
+    assert result['commits'] == [True, False, False]
+
+
+def test_status_without_extra_permissions_has_no_all_stages_menu():
+    result = run_js(FAKE_DOM + '''
+const Editor = eval('(' + data.editor + ')');
+const editor = new Editor();
+editor.init({value: 'Revisión', data: {'Columna 1': '001', APARATO: 'MSE'}, stopEditing() {},
+ context: {stageOptions: {'001': ['Revisión', 'Pago']}, palettes: {}}});
+console.log(JSON.stringify(editor.buttons.map(button => button.textContent)));
+''', editor=javascript(apparatus_grid.status_editor()))
+    assert result == ['Revisión', 'Pago']
+
+
+def test_grid_event_keeps_manual_intent_by_id_without_adding_sheet_columns():
+    grid = pd.DataFrame([{'id': '001', 'STATUS': 'Revisión', 'notes': 'Original', 'SELECCIONAR': False}])
+    response = {'editedRows': [{'id': '001', 'STATUS': 'Planeación', 'notes': 'Editado',
+                                interactions.MANUAL_STAGE_FIELD: 'Planeación'}], 'selectedIds': ['001']}
+    edited = interactions.response_frame(grid, response, 'id')
+    assert edited.attrs['manualStageTargets'] == {'001': 'Planeación'}
+    assert list(edited.columns) == list(grid.columns)
+    assert edited.iloc[0]['STATUS'] == 'Planeación' and edited.iloc[0]['SELECCIONAR']
+    response['editedRows'][0][interactions.MANUAL_STAGE_FIELD] = None
+    assert interactions.response_frame(grid, response, 'id').attrs['manualStageTargets'] == {}
 
 
 def test_checkbox_toggles_once_without_entering_cell_edit_mode():
