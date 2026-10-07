@@ -49,6 +49,11 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    Con un pedido seleccionado se muestran archivos, historial y las acciones
    de pago o diseño correspondientes. Con pedidos de impresión seleccionados,
    Admin/Lesly pueden marcarlos o avanzar por lote en la misma pantalla.
+   Con un solo pedido, la etapa se cambia desde **STATUS** en su ficha y se
+   confirma con **Guardar este pedido**. **Registrar impresión** aparece en esa
+   ficha sólo para pedidos en `LISTO P/SINTERIZADO` sin impresión registrada y
+   usuarios con permiso. **Impresión y avance por lote** aparece cerrado sólo al
+   seleccionar varios pedidos de producción.
 4. Nuevo pedido y Recibidos de Forms tienen sus propias pestañas.
    Las etapas de los pedidos permanecen juntas en Seguimiento.
 5. **Actualizar datos** vuelve a leer los pedidos y calcular el semáforo.
