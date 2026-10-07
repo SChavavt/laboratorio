@@ -6224,8 +6224,8 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
                 st.session_state["workbench_feedback"] = (saved, errors)
                 rerun_active_tab()
     print_cases = selected[selected[STATUS_COLUMN].isin(USER_TAB_STATUSES["Lesly"])]
-    if not form_pending and not print_cases.empty and user_can_edit_tab(current_user, "Lesly"):
-        with st.expander("Impresión y avance por lote", expanded=True):
+    if len(selected) > 1 and not form_pending and not print_cases.empty and user_can_edit_tab(current_user, "Lesly"):
+        with st.expander("Impresión y avance por lote", expanded=False):
             render_lesly_tab(current_user, selected_cases=print_cases)
     row = order_detail.choose_order(detail_rows, "apparatus", ID_COLUMN)
     if row is None:
@@ -6239,6 +6239,19 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
             (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
         ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
         render_workbench_order_editor(row, current_user)
+        if (len(selected) <= 1 and row[STATUS_COLUMN] == "LISTO P/SINTERIZADO"
+                and not is_case_marked_for_printing(row)
+                and user_can_edit_tab(current_user, "Lesly")):
+            if st.button("🖨️ Registrar impresión", key=f"detail_print_{identifier}", disabled=form_pending,
+                         help="Registra la fecha y hora de impresión. Después cambia STATUS en esta ficha y guarda el pedido."):
+                result = mark_case_for_printing(identifier, row, current_user)
+                if result["success"]:
+                    clear_sheet_data_cache()
+                    reset_workbench()
+                    st.session_state["workbench_feedback"] = ([identifier], [])
+                    rerun_active_tab()
+                else:
+                    st.error(result["message"])
         times = st.session_state.get("workbench_snapshot", {}).get("times", pd.DataFrame())
         latest_files = latest_estefano_files_from_frame(identifier, times)
         for url in latest_files.splitlines():

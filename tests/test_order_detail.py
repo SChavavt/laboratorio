@@ -119,7 +119,7 @@ st.session_state.setdefault("demo_rows", [
       "NOMBRE DOCTOR": "Cliente A", "NOMBRE PACIENTE": "Paciente A", "VENDEDOR": "JIMENA",
       "SERVICIO": "PLANEACIÓN", "FECHA ENVÍO": "valor antiguo", "FECHA/HORA ENVÍO STEFANO": "",
       "DETALLES & COMENTARIOS FINALES": "Sin cambio"}}])
-app.require_authenticated_user = lambda: "Jime"
+app.require_authenticated_user = lambda: st.session_state.get("demo_user", "Jime")
 app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
 app.ensure_tiempos_headers = lambda: None
 app.read_sheet_df = lambda name: pd.DataFrame(st.session_state.demo_rows) if name == app.SHEET_ESTATUS else pd.DataFrame()
@@ -293,6 +293,52 @@ def test_multi_selection_can_choose_one_form_without_clearing_other_checks():
     button(at, '↩️ Descartar esta edición').click().run()
     assert field(at, 'VENDEDOR').value == 'JIMENA'
     assert button(at, '💾 Guardar este pedido').disabled
+
+
+@pytest.mark.parametrize('status,printed,user,can_print', [
+    ('EN SINTERIZADO Y HORNEADO', '', 'Jime', False),
+    ('LISTO P/SINTERIZADO', '', 'Jime', True),
+    ('LISTO P/SINTERIZADO', '', 'Lesly', True),
+    ('LISTO P/SINTERIZADO', '2026-09-01 12:00:00', 'Jime', False),
+    ('LISTO P/SINTERIZADO', '', 'Vero', False),
+])
+def test_single_order_uses_its_own_stage_field_and_only_relevant_print_action(status, printed, user, can_print):
+    at = apparatus_app()
+    rows = at.session_state['demo_rows']
+    rows[1][lab.STATUS_COLUMN] = status
+    rows[1][lab.ESTATUS_PRINT_DATE_COLUMN] = printed
+    at.session_state['demo_rows'] = rows
+    at.session_state['demo_user'] = user
+    button(at, 'Actualizar datos').click().run()
+    assert not at.exception
+    assert field(at, 'STATUS').value == status
+    assert not any(item.label == 'Impresión y avance por lote' for item in at.expander)
+    assert any(item.label == '🖨️ Registrar impresión' for item in at.button) == can_print
+
+
+def test_single_print_action_records_print_date_without_changing_stage(monkeypatch):
+    at = apparatus_app()
+    rows = at.session_state['demo_rows']
+    rows[1][lab.STATUS_COLUMN] = 'LISTO P/SINTERIZADO'
+    at.session_state['demo_rows'] = rows
+    button(at, 'Actualizar datos').click().run()
+    timing_updates = []
+    def update(identifier, changes, **kwargs):
+        for row in at.session_state['demo_rows']:
+            if row[lab.ID_COLUMN] == identifier:
+                row.update(changes)
+        return {'success': True, 'skipped_columns': []}
+    monkeypatch.setattr(lab, 'update_row_by_columna_1', update)
+    monkeypatch.setattr(lab, 'get_active_tiempo_row', lambda _: (2, {}))
+    monkeypatch.setattr(lab, 'update_active_tiempo_row', lambda identifier, changes: timing_updates.append((identifier, changes)))
+    button(at, '🖨️ Registrar impresión').click().run()
+    assert not at.exception
+    saved = at.session_state['demo_rows'][1]
+    assert saved[lab.STATUS_COLUMN] == 'LISTO P/SINTERIZADO'
+    assert saved[lab.ESTATUS_PRINT_DATE_COLUMN]
+    assert timing_updates[0][0] == '001'
+    assert timing_updates[0][1]['USUARIO_IMPRESION'] == 'Jime'
+    assert not any(item.label == '🖨️ Registrar impresión' for item in at.button)
 
 
 def test_refresh_reloads_clean_widgets_and_now_sets_only_one_datetime():
