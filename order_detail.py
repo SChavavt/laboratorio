@@ -73,7 +73,7 @@ def detail_columns(columns, editable, pinned) -> list[str]:
 def stage_source(row, namespace, id_column, status_column):
     """El flujo usa el aparato/producto editado y parte de la etapa guardada."""
     draft = st.session_state.get(draft_key(namespace), {}).get(str(row[id_column]), {})
-    baseline = draft.get("baseline", row.to_dict())
+    baseline = draft.get("baseline", row.to_dict()) if draft.get("changes") else row.to_dict()
     candidate = {**baseline, **draft.get("changes", {})}
     candidate[status_column] = baseline.get(status_column, "")
     return pd.Series(candidate)

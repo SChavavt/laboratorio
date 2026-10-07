@@ -33,14 +33,13 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
 1. Busca por folio, doctor, paciente o aparato. Puedes filtrar por responsable,
    semáforo, aparato, etapa, vendedor y pago, u ordenar por urgencia.
 2. Edita las celdas habilitadas. **Guardar cambios** valida todos los pedidos
-   modificados antes de comenzar las escrituras. Admin, Jime y Lesly pueden
-   avanzar cualquier pedido a cualquier etapa admitida por su aparato, igual
-   que Admin, aunque el pago siga pendiente (por ejemplo, de Revisión de
-   archivos directo a En planeación); Vero conserva sus permisos de transición
-   limitados a sus propias etapas. El selector de etapa se calcula por pedido: para Admin,
-   Jime y Lesly incluye la etapa actual y todos los destinos admitidos por
-   ese aparato; para el resto, sólo los destinos inmediatos que su usuario
-   tiene permitidos. Las fechas
+   modificados antes de comenzar las escrituras. Para todos los usuarios, el
+   selector muestra la etapa actual, la siguiente y las alternativas previstas
+   para esa etapa en el flujo del aparato. También ofrece cancelar o pausar
+   cuando el usuario tiene permiso. Se rechazan saltos a otras etapas al guardar.
+   Admin, Jime y Lesly conservan acceso a todas las áreas y su excepción de pagos;
+   Vero conserva sus permisos limitados a sus propias transiciones. Reactivar
+   pedidos pausados o enviados sigue siendo una acción del histórico. Las fechas
    editables abren calendario y, cuando corresponde, hora; **Ahora** registra
    el momento de Ciudad de México y los valores antiguos se conservan al cancelar.
    En **FECHA/HORA ENVÍO STEFANO** sólo se elige el día: la app registra la hora

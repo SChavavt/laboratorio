@@ -233,15 +233,20 @@ def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
 
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
-def test_admin_jime_and_lesly_can_jump_to_planning_without_payment(user):
-    """De REVISIÓN DE ARCHIVOS pueden pasar directo a EN PLANEACIÓN aunque no haya pago."""
+def test_admin_jime_and_lesly_only_see_next_stage_and_branch_targets(user):
     row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
     options = app.workbench_stage_options(row, user)
     assert options[0] == app.display_selectbox_value(app.STATUS_COLUMN, "REVISIÓN DE ARCHIVOS")
-    for status in ("EN PLANEACIÓN", "PAGO PLANEACIÓN", "ORDEN RECIBIDA", "LISTO P/SINTERIZADO", "CANCELO", app.PAUSED_STATUS):
+    for status in ("ESCANEO MAL (EN REPETICIÓN)", "REALIZAR SOLICITUD PAGO PLANEACIÓN", "CANCELO", app.PAUSED_STATUS):
         assert app.display_selectbox_value(app.STATUS_COLUMN, status) in options
+    for status in ("EN PLANEACIÓN", "PAGO PLANEACIÓN", "ORDEN RECIBIDA", "LISTO P/SINTERIZADO"):
+        assert app.display_selectbox_value(app.STATUS_COLUMN, status) not in options
     original = pd.DataFrame([case()])
-    assert not app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], user)
+    assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], user)
+    assert not app.validate_workbench_changes(original, original, [("001", {"STATUS": "ESCANEO MAL (EN REPETICIÓN)"})], user)
+    valid, _ = app.validate_status_change(identifier="001", apparatus="MSE",
+        previous_status="REVISIÓN DE ARCHIVOS", new_status="EN PLANEACIÓN", current_user=user)
+    assert not valid
 
 
 def test_vero_keeps_the_step_by_step_flow():
@@ -674,7 +679,7 @@ def test_admin_access_users_see_every_responsible_by_default():
 
 def test_skip_stage_and_foreign_role_rejected():
     original = pd.DataFrame([case()])
-    assert not app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Admin")
+    assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Admin")
     assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PDTE ENVIAR GUÍA PSM + PSM"})],"Admin")
     assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"PRODUCTO ENVIADO"})],"Vero")
     assert app.validate_workbench_changes(original,original,[("001",{"STATUS":"ESCANEO MAL (EN REPETICIÓN)"})],"Vero")
@@ -1225,8 +1230,11 @@ def test_apparatus_with_own_sheet_column_ignores_process_alias(monkeypatch):
     app._cached_process_flow.cache_clear()
     try:
         assert app.get_process_flow("HYRAX") == hyrax
-        assert "EN PLANEACIÓN" in app.get_allowed_next_statuses(
+        assert "EN PLANEACIÓN" not in app.get_allowed_next_statuses(
             "HYRAX", "REVISIÓN DE ARCHIVOS", "Admin"
+        )
+        assert "EN PLANEACIÓN" in app.get_allowed_next_statuses(
+            "HYRAX", "PAGO CONFECCIÓN", "Admin"
         )
         # Sin columna propia, TRAMPA LINGUAL sigue usando PIEZA SINTERIZADA.
         assert app.get_process_flow("TRAMPA LINGUAL") == pieza
