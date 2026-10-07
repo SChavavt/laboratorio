@@ -1569,6 +1569,10 @@ SPECIAL_TRANSITIONS = {
 }
 
 
+# Estas etapas son desvíos opcionales, no pasos obligatorios del avance normal.
+OPTIONAL_PROCESS_STATUSES = {"ESCANEO MAL (EN REPETICIÓN)", "SOLICITUD DE CAMBIOS"}
+
+
 
 def get_allowed_next_statuses(
     apparatus: str, current_status: str, current_user: str = ""
@@ -1591,8 +1595,11 @@ def get_allowed_next_statuses(
         return [normalized_current_status, statuses[0]] if normalized_current_status else [statuses[0]]
 
     allowed = [statuses[current_index]]
-    if current_index + 1 < len(statuses):
-        allowed.append(statuses[current_index + 1])
+    optional = {normalize_text(status) for status in OPTIONAL_PROCESS_STATUSES}
+    for next_status in statuses[current_index + 1:]:
+        allowed.append(next_status)
+        if normalize_text(next_status) not in optional:
+            break
 
     special_targets = SPECIAL_TRANSITIONS.get(statuses[current_index], [])
     valid_by_norm = {normalize_text(status): status for status in statuses}

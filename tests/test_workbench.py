@@ -256,6 +256,34 @@ def test_vero_keeps_the_step_by_step_flow():
     assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], "Vero")
 
 
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+@pytest.mark.parametrize('current,branch,next_normal', [
+    ('REVISIÓN DE ARCHIVOS', 'ESCANEO MAL (EN REPETICIÓN)', 'PAGO PLANEACIÓN'),
+    ('REVISIÓN PLAN DOCTOR', 'SOLICITUD DE CAMBIOS', 'PAGO CONFECCIÓN'),
+])
+def test_sheet_optional_branches_also_allow_the_next_normal_stage(monkeypatch, user, current, branch, next_normal):
+    matrix = [['MSE', ''], ['Fases', 'Tiempo'],
+              ['ORDEN RECIBIDA', ''], ['REVISIÓN DE ARCHIVOS', ''],
+              ['ESCANEO MAL (EN REPETICIÓN)', ''], ['PAGO PLANEACIÓN', ''],
+              ['EN PLANEACIÓN', '<3 dias'], ['REVISIÓN PLAN DOCTOR', ''],
+              ['SOLICITUD DE CAMBIOS', '<3 dias'], ['PAGO CONFECCIÓN', ''],
+              ['ELABORACIÓN PLATINA', '<1 hr']]
+    flow = app.parse_aparato_process_matrix(matrix)['MSE']
+    monkeypatch.setattr(app, 'get_process_flow', lambda _: flow)
+    row = pd.Series(case(status=current))
+    options = app.workbench_stage_options(row, user)
+    for target in (branch, next_normal):
+        assert app.display_selectbox_value(app.STATUS_COLUMN, target) in options
+        source = pd.DataFrame([row])
+        assert not app.validate_workbench_changes(source, source, [('001', {'STATUS': target})], user)
+        assert app.validate_status_change(identifier='001', apparatus='MSE', previous_status=current,
+            new_status=target, current_user=user)[0]
+    if current == 'REVISIÓN DE ARCHIVOS':
+        assert app.display_selectbox_value(app.STATUS_COLUMN, 'EN PLANEACIÓN') not in options
+        source = pd.DataFrame([row])
+        assert app.validate_workbench_changes(source, source, [('001', {'STATUS': 'EN PLANEACIÓN'})], user)
+
+
 def test_jime_and_lesly_have_full_editing_permissions_like_admin():
     """Jime y Lesly editan cualquier etapa, igual que Admin (Vero conserva sus límites)."""
     jime_row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))

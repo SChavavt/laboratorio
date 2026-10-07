@@ -37,6 +37,10 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    selector muestra la etapa actual, la siguiente y las alternativas previstas
    para esa etapa en el flujo del aparato. También ofrece cancelar o pausar
    cuando el usuario tiene permiso. Se rechazan saltos a otras etapas al guardar.
+   `ESCANEO MAL (EN REPETICIÓN)` y `SOLICITUD DE CAMBIOS` son alternativas
+   opcionales: se ofrecen junto con la siguiente etapa normal de la hoja. Así,
+   si Revisión de archivos va seguida de Escaneo mal y Pago planeación, se puede
+   elegir repetición o avanzar directamente a Pago planeación.
    Admin, Jime y Lesly conservan acceso a todas las áreas y su excepción de pagos;
    Vero conserva sus permisos limitados a sus propias transiciones. Reactivar
    pedidos pausados o enviados sigue siendo una acción del histórico. Las fechas
