@@ -119,17 +119,18 @@ encabezados.
 
 ## Pedidos visibles y guardado
 
-- Se ocultan `ENVIADO` histórico, `ENVÍO DE ENCUESTA` y `CANCELO`.
-- `PRODUCTO ENVIADO` sigue visible porque aún falta cerrar su encuesta.
+- Se ocultan `ENVIADO` histórico, `PRODUCTO ENVIADO`, `ENVÍO DE ENCUESTA` y `CANCELO`.
+- Los pedidos se archivan desde `PRODUCTO ENVIADO`; la encuesta se registra desde el histórico.
 - Debajo de **🚫 Confección en pausa** está el desplegable
-  **🚚 Enviados · N pedido(s)**, histórico de los pedidos en `ENVIADO` y
+  **🚚 Enviados · N pedido(s)**, histórico de los pedidos en `ENVIADO`, `PRODUCTO ENVIADO` y
   `ENVÍO DE ENCUESTA` (los `CANCELO` permanecen archivados en la hoja). Tiene
   buscador (folio, doctor, paciente o aparato) y filtro por aparato. Sólo se
-  edita la etapa: se ofrece cualquier etapa del flujo del aparato, excepto
-  `ENVÍO DE ENCUESTA` y `CANCELO`. Al pulsar **Guardar y reactivar** el pedido
-  vuelve a la tabla de pedidos activos y `TIEMPOS_APARATOS` registra el cambio
-  con el comentario "Reactivado desde el histórico de Enviados.". Admin, Jime y
-  Lesly pueden reactivar; Vero sólo consulta el histórico.
+  edita la etapa: se ofrece `ENVÍO DE ENCUESTA` y las etapas de trabajo del flujo.
+  Al pulsar **Guardar etapas**, los pedidos en `PRODUCTO ENVIADO` o
+  `ENVÍO DE ENCUESTA` permanecen archivados. Si se elige una etapa de trabajo,
+  el pedido vuelve a la tabla principal. `TIEMPOS_APARATOS` registra el cambio
+  como actualización del histórico o reactivación, según corresponda. Admin,
+  Jime y Lesly pueden cambiar las etapas; Vero sólo consulta el histórico.
 - Mientras haya etapas elegidas sin guardar en Enviados no se puede actualizar
   datos, filtrar ni guardar la tabla principal; lo mismo al revés.
 - Se omiten folios reservados que no tienen datos de un pedido.
