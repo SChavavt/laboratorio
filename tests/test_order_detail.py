@@ -1,5 +1,5 @@
 """Regresiones de edición por identidad, borradores y permisos de acciones en lote."""
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import sys
 
@@ -311,6 +311,29 @@ def test_refresh_reloads_clean_widgets_and_now_sets_only_one_datetime():
     assert identifier == '001'
     assert set(delta) == {'FECHA/HORA ENVÍO STEFANO'}
     assert lab.parse_spanish_datetime(delta['FECHA/HORA ENVÍO STEFANO']) is not None
+
+
+@pytest.mark.parametrize('existing', ['', '2 septiembre 2026 09:15'])
+def test_stefano_shipping_only_asks_for_day_and_uses_save_time(monkeypatch, existing):
+    clock = [datetime(2026, 10, 7, 10, 20)]
+    monkeypatch.setattr(lab, 'app_now', lambda: clock[0])
+    at = apparatus_app()
+    rows = at.session_state['demo_rows']
+    rows[1]['FECHA/HORA ENVÍO STEFANO'] = existing
+    at.session_state['demo_rows'] = rows
+    button(at, 'Actualizar datos').click().run()
+    assert not at.exception
+    assert not any('FECHA/HORA ENVÍO STEFANO' in item.key for item in at.time_input)
+    assert button(at, '💾 Guardar este pedido').disabled
+    calendar = next(item for item in at.date_input if 'ENVÍO STEFANO' in item.label)
+    calendar.set_value(date(2026, 9, 1)).run()
+    clock[0] = datetime(2026, 10, 7, 11, 45)
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    [(identifier, delta)] = at.session_state['attempt']
+    assert identifier == '001'
+    assert set(delta) == {'FECHA/HORA ENVÍO STEFANO'}
+    assert lab.parse_spanish_datetime(delta['FECHA/HORA ENVÍO STEFANO']) == datetime(2026, 9, 1, 11, 45)
 
 
 @pytest.mark.parametrize('sheet', [align.SHEET_ORDERS, align.SHEET_POLANCO])

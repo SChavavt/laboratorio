@@ -4616,6 +4616,14 @@ def advance_case_status(
             current_user=current_user,
         )
     )
+    # La fecha elegida para Stefano prevalece sobre el autollenado de la etapa.
+    stefano_column = "FECHA/HORA ENVÍO STEFANO"
+    if stefano_column in extra_changes:
+        selected = parse_spanish_datetime(extra_changes[stefano_column])
+        estatus_changes[stefano_column] = (
+            format_sheet_datetime(datetime.combine(selected.date(), app_now().time()))
+            if selected else extra_changes[stefano_column]
+        )
     result = update_row_by_columna_1(identifier, estatus_changes, expected_values=expected_values)
     if not result["success"]:
         st.error(result["error"] or "No se pudo actualizar STATUS.")
@@ -6172,6 +6180,7 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
                                       lambda values: canonical_apparatus_value(" + ".join(values)))},
         equivalent=values_equivalent_for_column, parse_date=parse_simple_date, format_date=format_sheet_date,
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
+        automatic_time_columns={"FECHA/HORA ENVÍO STEFANO"},
         format_datetime=format_sheet_datetime, now=app_now,
         hints={STATUS_COLUMN: workbench_stage_hint(row, current_user)})
     if result:
