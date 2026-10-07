@@ -129,6 +129,7 @@ app.get_workbench_form_catalog = lambda: {{"VENDEDOR": ["JIMENA", "MICHELLE"], "
 def save(original, edited, user, **kwargs):
     changes = app.workbench_changes(original, edited)
     st.session_state["attempt"] = changes
+    st.session_state["save_options"] = kwargs
     if st.session_state.get("fail_save"):
         return [], ["Otro usuario cambió el pedido"]
     for identifier, delta in changes:
@@ -138,6 +139,9 @@ def save(original, edited, user, **kwargs):
     app.reset_workbench()
     return [identifier for identifier, _ in changes], []
 app.save_workbench_changes = save
+if st.session_state.get('manual_test_open'):
+    # AppTest todavía no expone el estado interactivo de los desplegables.
+    st.session_state['manual_stage_001'] = True
 app.main()
 '''
 
@@ -180,7 +184,8 @@ def test_status_choices_follow_saved_stage_until_next_save(user):
     label = lambda value: lab.workbench_form_option_label(lab.STATUS_COLUMN, value)
     assert label('REVISIÓN DE ARCHIVOS') in field(at, 'STATUS').options
     assert label('REALIZAR SOLICITUD PAGO PLANEACIÓN') in field(at, 'STATUS').options
-    for stage in ('ORDEN RECIBIDA', 'EN PLANEACIÓN', 'PRODUCTO ENVIADO'):
+    assert label('EN PLANEACIÓN') in field(at, 'STATUS').options
+    for stage in ('ORDEN RECIBIDA', 'PRODUCTO ENVIADO'):
         assert label(stage) not in field(at, 'STATUS').options
     field(at, 'STATUS').select('REALIZAR SOLICITUD PAGO PLANEACIÓN').run()
     assert not at.exception
@@ -205,12 +210,110 @@ def test_review_files_form_can_repeat_or_advance_to_payment(monkeypatch, target)
     options = field(at, 'STATUS').options
     for choice in ('ESCANEO MAL (EN REPETICIÓN)', 'PAGO PLANEACIÓN'):
         assert lab.workbench_form_option_label(lab.STATUS_COLUMN, choice) in options
-    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'EN PLANEACIÓN') not in options
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'EN PLANEACIÓN') in options
     field(at, 'STATUS').select(target).run()
     button(at, '💾 Guardar este pedido').click().run()
     assert not at.exception
     assert at.session_state['attempt'] == [('001', {'STATUS': target})]
     assert at.session_state['demo_rows'][1][lab.STATUS_COLUMN] == target
+
+
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_new_case_can_advance_from_receipt_to_review_and_planning(user):
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import streamlit as st
+import lab_pg as app
+from unittest.mock import patch
+st.session_state.setdefault('rows', [{{app.ID_COLUMN: '001', app.APARATO_COLUMN: 'MSE',
+    app.STATUS_COLUMN: 'ORDEN RECIBIDA', 'NOMBRE DOCTOR': 'Caso nuevo', 'PAGO': 'SIN PAGO'}}])
+st.session_state.setdefault('logs', [])
+def update(identifier, changes, **kwargs):
+    for row in st.session_state['rows']:
+        if row[app.ID_COLUMN] == identifier:
+            row.update(changes)
+    return {{'success': True, 'skipped_columns': [], 'error': ''}}
+with patch.multiple(app,
+    require_authenticated_user=lambda: {user!r},
+    workbench_tab_options=lambda _: ['📋 Seguimiento'],
+    ensure_tiempos_headers=lambda: None,
+    read_sheet_df=lambda name: pd.DataFrame(st.session_state['rows']) if name == app.SHEET_ESTATUS else pd.DataFrame(),
+    get_workbench_form_catalog=lambda: {{}},
+    clear_sheet_data_cache=lambda: None,
+    update_row_by_columna_1=update,
+    register_status_change=lambda **kwargs: st.session_state['logs'].append(kwargs),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    key = at.session_state['workbench_editor_key']
+    rows = at.session_state['workbench_editor_baseline'].to_dict('records')
+    rows[0]['SELECCIONAR'] = True
+    at.session_state[key] = {'rows': rows}
+    at.run()
+    for target in ('REVISIÓN DE ARCHIVOS', 'EN PLANEACIÓN'):
+        assert lab.workbench_form_option_label(lab.STATUS_COLUMN, target) in field(at, 'STATUS').options
+        field(at, 'STATUS').select(target).run()
+        button(at, '💾 Guardar este pedido').click().run()
+        assert not at.exception
+        assert at.session_state['rows'][0][lab.STATUS_COLUMN] == target
+    assert [(log['previous_status'], log['new_status']) for log in at.session_state['logs']] == [
+        ('ORDEN RECIBIDA', 'REVISIÓN DE ARCHIVOS'), ('REVISIÓN DE ARCHIVOS', 'EN PLANEACIÓN')]
+
+
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_manual_stage_has_its_own_selector_and_save_and_locks_for_form_edits(user):
+    at = apparatus_app()
+    at.session_state['demo_user'] = user
+    button(at, 'Actualizar datos').click().run()
+    assert not at.exception
+    [manual] = [item for item in at.expander if item.label == 'Cambiar etapa manualmente']
+    assert not manual.proto.expanded
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'ORDEN RECIBIDA') not in field(at, 'STATUS').options
+    at.session_state['manual_test_open'] = True
+    at.run()
+    assert not at.exception
+    selector = next(item for item in at.selectbox if item.label == 'Etapa del flujo')
+    assert lab.display_selectbox_value(lab.STATUS_COLUMN, 'ORDEN RECIBIDA') in selector.options
+    selector.select('ORDEN RECIBIDA').run()
+    field(at, 'VENDEDOR').select('MICHELLE').run()
+    assert button(at, 'Aplicar cambio manual').disabled
+    button(at, '↩️ Descartar esta edición').click().run()
+    assert not button(at, 'Aplicar cambio manual').disabled
+    button(at, 'Aplicar cambio manual').click().run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('001', {'STATUS': 'ORDEN RECIBIDA'})]
+    assert at.session_state['save_options']['manual_stage'] is True
+    assert at.session_state['demo_rows'][1][lab.STATUS_COLUMN] == 'ORDEN RECIBIDA'
+    assert at.session_state['demo_rows'][1]['VENDEDOR'] == 'JIMENA'
+    assert button(at, 'Aplicar cambio manual').disabled
+
+
+@pytest.mark.parametrize('archive', ['sent', 'paused'])
+def test_manual_stage_does_not_save_over_pending_archive_edits(monkeypatch, archive):
+    at = apparatus_app()
+    at.session_state['manual_test_open'] = True
+    at.run()
+    next(item for item in at.selectbox if item.label == 'Etapa del flujo').select('ORDEN RECIBIDA').run()
+    assert not button(at, 'Aplicar cambio manual').disabled
+    if archive == 'sent':
+        monkeypatch.setattr(lab, 'workbench_sent_pending_count', lambda: 1)
+    else:
+        at.session_state['workbench_paused_pending'] = True
+    at.run()
+    assert not at.exception
+    assert button(at, 'Aplicar cambio manual').disabled
+
+
+def test_manual_stage_control_is_not_shown_to_vero():
+    at = apparatus_app()
+    at.session_state['demo_user'] = 'Vero'
+    button(at, 'Actualizar datos').click().run()
+    assert not at.exception
+    assert not any(item.label == 'Cambiar etapa manualmente' for item in at.expander)
 
 
 def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
