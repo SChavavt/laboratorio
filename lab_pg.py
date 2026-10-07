@@ -1602,6 +1602,10 @@ def get_allowed_next_statuses(
             break
 
     special_targets = SPECIAL_TRANSITIONS.get(statuses[current_index], [])
+    if (normalize_text(statuses[current_index]) == normalize_text("REVISIÓN DE ARCHIVOS")
+            and current_user in ADMIN_ACCESS_USERS):
+        # Permite iniciar la planeación de casos nuevos una vez revisados los archivos.
+        special_targets = [*special_targets, "EN PLANEACIÓN"]
     valid_by_norm = {normalize_text(status): status for status in statuses}
     for target in special_targets:
         configured_target = valid_by_norm.get(normalize_text(target))

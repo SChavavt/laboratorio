@@ -233,20 +233,20 @@ def test_status_options_are_specific_to_each_saved_stage_and_apparatus():
 
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
-def test_admin_jime_and_lesly_only_see_next_stage_and_branch_targets(user):
+def test_admin_jime_and_lesly_see_flow_targets_and_planning_shortcut(user):
     row = pd.Series(case(status="REVISIÓN DE ARCHIVOS"))
     options = app.workbench_stage_options(row, user)
     assert options[0] == app.display_selectbox_value(app.STATUS_COLUMN, "REVISIÓN DE ARCHIVOS")
-    for status in ("ESCANEO MAL (EN REPETICIÓN)", "REALIZAR SOLICITUD PAGO PLANEACIÓN", "CANCELO", app.PAUSED_STATUS):
+    for status in ("ESCANEO MAL (EN REPETICIÓN)", "REALIZAR SOLICITUD PAGO PLANEACIÓN", "EN PLANEACIÓN", "CANCELO", app.PAUSED_STATUS):
         assert app.display_selectbox_value(app.STATUS_COLUMN, status) in options
-    for status in ("EN PLANEACIÓN", "PAGO PLANEACIÓN", "ORDEN RECIBIDA", "LISTO P/SINTERIZADO"):
+    for status in ("PAGO PLANEACIÓN", "ORDEN RECIBIDA", "LISTO P/SINTERIZADO"):
         assert app.display_selectbox_value(app.STATUS_COLUMN, status) not in options
     original = pd.DataFrame([case()])
-    assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], user)
+    assert not app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], user)
     assert not app.validate_workbench_changes(original, original, [("001", {"STATUS": "ESCANEO MAL (EN REPETICIÓN)"})], user)
     valid, _ = app.validate_status_change(identifier="001", apparatus="MSE",
         previous_status="REVISIÓN DE ARCHIVOS", new_status="EN PLANEACIÓN", current_user=user)
-    assert not valid
+    assert valid
 
 
 def test_vero_keeps_the_step_by_step_flow():
@@ -254,6 +254,15 @@ def test_vero_keeps_the_step_by_step_flow():
     assert app.display_selectbox_value(app.STATUS_COLUMN, "EN PLANEACIÓN") not in app.workbench_stage_options(row, "Vero")
     original = pd.DataFrame([case()])
     assert app.validate_workbench_changes(original, original, [("001", {"STATUS": "EN PLANEACIÓN"})], "Vero")
+
+
+def test_planning_shortcut_requires_a_planning_stage_in_the_apparatus_flow(monkeypatch):
+    flow = [('REVISIÓN DE ARCHIVOS', None), ('PAGO CONFECCIÓN', None), ('ELABORACIÓN PLATINA', None)]
+    monkeypatch.setattr(app, 'get_process_flow', lambda _: flow)
+    row = pd.Series(case(status='REVISIÓN DE ARCHIVOS', apparatus='HYRAX'))
+    assert app.display_selectbox_value(app.STATUS_COLUMN, 'EN PLANEACIÓN') not in app.workbench_stage_options(row, 'Admin')
+    assert not app.validate_status_change(identifier='001', apparatus='HYRAX',
+        previous_status='REVISIÓN DE ARCHIVOS', new_status='EN PLANEACIÓN', current_user='Admin')[0]
 
 
 @pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
@@ -279,9 +288,10 @@ def test_sheet_optional_branches_also_allow_the_next_normal_stage(monkeypatch, u
         assert app.validate_status_change(identifier='001', apparatus='MSE', previous_status=current,
             new_status=target, current_user=user)[0]
     if current == 'REVISIÓN DE ARCHIVOS':
-        assert app.display_selectbox_value(app.STATUS_COLUMN, 'EN PLANEACIÓN') not in options
+        assert app.display_selectbox_value(app.STATUS_COLUMN, 'EN PLANEACIÓN') in options
+        assert app.display_selectbox_value(app.STATUS_COLUMN, 'ELABORACIÓN PLATINA') not in options
         source = pd.DataFrame([row])
-        assert app.validate_workbench_changes(source, source, [('001', {'STATUS': 'EN PLANEACIÓN'})], user)
+        assert app.validate_workbench_changes(source, source, [('001', {'STATUS': 'ELABORACIÓN PLATINA'})], user)
 
 
 def test_jime_and_lesly_have_full_editing_permissions_like_admin():
@@ -1258,7 +1268,7 @@ def test_apparatus_with_own_sheet_column_ignores_process_alias(monkeypatch):
     app._cached_process_flow.cache_clear()
     try:
         assert app.get_process_flow("HYRAX") == hyrax
-        assert "EN PLANEACIÓN" not in app.get_allowed_next_statuses(
+        assert "EN PLANEACIÓN" in app.get_allowed_next_statuses(
             "HYRAX", "REVISIÓN DE ARCHIVOS", "Admin"
         )
         assert "EN PLANEACIÓN" in app.get_allowed_next_statuses(

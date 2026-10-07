@@ -41,6 +41,9 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    opcionales: se ofrecen junto con la siguiente etapa normal de la hoja. Así,
    si Revisión de archivos va seguida de Escaneo mal y Pago planeación, se puede
    elegir repetición o avanzar directamente a Pago planeación.
+   Admin, Jime y Lesly también pueden pasar de **Revisión de archivos** a
+   **En planeación** cuando esa etapa existe en el flujo del aparato, para
+   iniciar la planeación de casos nuevos sin esperar las etapas de solicitud o pago.
    Admin, Jime y Lesly conservan acceso a todas las áreas y su excepción de pagos;
    Vero conserva sus permisos limitados a sus propias transiciones. Reactivar
    pedidos pausados o enviados sigue siendo una acción del histórico. Las fechas

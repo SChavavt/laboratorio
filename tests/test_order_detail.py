@@ -180,7 +180,8 @@ def test_status_choices_follow_saved_stage_until_next_save(user):
     label = lambda value: lab.workbench_form_option_label(lab.STATUS_COLUMN, value)
     assert label('REVISIÓN DE ARCHIVOS') in field(at, 'STATUS').options
     assert label('REALIZAR SOLICITUD PAGO PLANEACIÓN') in field(at, 'STATUS').options
-    for stage in ('ORDEN RECIBIDA', 'EN PLANEACIÓN', 'PRODUCTO ENVIADO'):
+    assert label('EN PLANEACIÓN') in field(at, 'STATUS').options
+    for stage in ('ORDEN RECIBIDA', 'PRODUCTO ENVIADO'):
         assert label(stage) not in field(at, 'STATUS').options
     field(at, 'STATUS').select('REALIZAR SOLICITUD PAGO PLANEACIÓN').run()
     assert not at.exception
@@ -205,12 +206,58 @@ def test_review_files_form_can_repeat_or_advance_to_payment(monkeypatch, target)
     options = field(at, 'STATUS').options
     for choice in ('ESCANEO MAL (EN REPETICIÓN)', 'PAGO PLANEACIÓN'):
         assert lab.workbench_form_option_label(lab.STATUS_COLUMN, choice) in options
-    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'EN PLANEACIÓN') not in options
+    assert lab.workbench_form_option_label(lab.STATUS_COLUMN, 'EN PLANEACIÓN') in options
     field(at, 'STATUS').select(target).run()
     button(at, '💾 Guardar este pedido').click().run()
     assert not at.exception
     assert at.session_state['attempt'] == [('001', {'STATUS': target})]
     assert at.session_state['demo_rows'][1][lab.STATUS_COLUMN] == target
+
+
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_new_case_can_advance_from_receipt_to_review_and_planning(user):
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import streamlit as st
+import lab_pg as app
+from unittest.mock import patch
+st.session_state.setdefault('rows', [{{app.ID_COLUMN: '001', app.APARATO_COLUMN: 'MSE',
+    app.STATUS_COLUMN: 'ORDEN RECIBIDA', 'NOMBRE DOCTOR': 'Caso nuevo', 'PAGO': 'SIN PAGO'}}])
+st.session_state.setdefault('logs', [])
+def update(identifier, changes, **kwargs):
+    for row in st.session_state['rows']:
+        if row[app.ID_COLUMN] == identifier:
+            row.update(changes)
+    return {{'success': True, 'skipped_columns': [], 'error': ''}}
+with patch.multiple(app,
+    require_authenticated_user=lambda: {user!r},
+    workbench_tab_options=lambda _: ['📋 Seguimiento'],
+    ensure_tiempos_headers=lambda: None,
+    read_sheet_df=lambda name: pd.DataFrame(st.session_state['rows']) if name == app.SHEET_ESTATUS else pd.DataFrame(),
+    get_workbench_form_catalog=lambda: {{}},
+    clear_sheet_data_cache=lambda: None,
+    update_row_by_columna_1=update,
+    register_status_change=lambda **kwargs: st.session_state['logs'].append(kwargs),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    key = at.session_state['workbench_editor_key']
+    rows = at.session_state['workbench_editor_baseline'].to_dict('records')
+    rows[0]['SELECCIONAR'] = True
+    at.session_state[key] = {'rows': rows}
+    at.run()
+    for target in ('REVISIÓN DE ARCHIVOS', 'EN PLANEACIÓN'):
+        assert lab.workbench_form_option_label(lab.STATUS_COLUMN, target) in field(at, 'STATUS').options
+        field(at, 'STATUS').select(target).run()
+        button(at, '💾 Guardar este pedido').click().run()
+        assert not at.exception
+        assert at.session_state['rows'][0][lab.STATUS_COLUMN] == target
+    assert [(log['previous_status'], log['new_status']) for log in at.session_state['logs']] == [
+        ('ORDEN RECIBIDA', 'REVISIÓN DE ARCHIVOS'), ('REVISIÓN DE ARCHIVOS', 'EN PLANEACIÓN')]
 
 
 def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
