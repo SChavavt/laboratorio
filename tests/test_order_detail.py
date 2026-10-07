@@ -172,6 +172,26 @@ def test_form_saves_only_selected_id_and_changed_fields_then_stays_open():
     assert not at.text_input(key='workbench_search').disabled
 
 
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_status_choices_follow_saved_stage_until_next_save(user):
+    at = apparatus_app()
+    at.session_state['demo_user'] = user
+    button(at, 'Actualizar datos').click().run()
+    label = lambda value: lab.workbench_form_option_label(lab.STATUS_COLUMN, value)
+    assert label('REVISIÓN DE ARCHIVOS') in field(at, 'STATUS').options
+    assert label('REALIZAR SOLICITUD PAGO PLANEACIÓN') in field(at, 'STATUS').options
+    for stage in ('ORDEN RECIBIDA', 'EN PLANEACIÓN', 'PRODUCTO ENVIADO'):
+        assert label(stage) not in field(at, 'STATUS').options
+    field(at, 'STATUS').select('REALIZAR SOLICITUD PAGO PLANEACIÓN').run()
+    assert not at.exception
+    assert label('PAGO PLANEACIÓN') not in field(at, 'STATUS').options
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert field(at, 'STATUS').value == 'REALIZAR SOLICITUD PAGO PLANEACIÓN'
+    assert label('PAGO PLANEACIÓN') in field(at, 'STATUS').options
+    assert label('EN PLANEACIÓN') not in field(at, 'STATUS').options
+
+
 def test_draft_survives_uncheck_and_failed_save_and_can_be_discarded():
     at = apparatus_app()
     field(at, 'VENDEDOR').select('MICHELLE').run()
@@ -203,7 +223,7 @@ def test_card_shows_stage_and_signal_once_without_fixed_texts():
     [header] = [text for text in texts if 'class="order-chip"' in text]
     assert '🔵 REVISIÓN DE ARCHIVOS' in header and '⚪ Sin medición' in header
     assert 'Sin registro de inicio de esta etapa' in header
-    assert 'cualquier etapa de su flujo' in field(at, 'STATUS').help
+    assert 'Siguiente etapa y alternativas permitidas' in field(at, 'STATUS').help
     # El color de Sheets pinta el propio campo; no hay un chip repetido debajo.
     css = ''.join(item.proto.body for item in at.get('html'))
     assert detail.widget_class(field(at, 'STATUS').key) + ' [role="group"] {background: #C9E6EC' in css

@@ -137,7 +137,7 @@ USER_VISIBLE_TABS = {
     "Vero": ["vero"],
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
-# Pueden elegir cualquier etapa del flujo y avanzar aunque el pago esté pendiente.
+# Los perfiles globales conservan acceso a todas las áreas y excepción de pagos.
 # Perfiles con acceso global: ven todos los pedidos y tienen los mismos permisos
 # operativos que Admin. Una sola fuente de verdad evita restricciones accidentales.
 ADMIN_ACCESS_USERS = frozenset({"Admin", "Jime", "Lesly"})
@@ -1578,11 +1578,6 @@ def get_allowed_next_statuses(
     normalized_current_status = normalize_status_alias(current_status)
     flow = get_process_flow(apparatus)
     statuses = [status for status, _ in flow]
-    if current_user in UNRESTRICTED_STAGE_USERS and statuses:
-        # Estos usuarios pueden mover el pedido a cualquier etapa de su flujo,
-        # por ejemplo de REVISIÓN DE ARCHIVOS a EN PLANEACIÓN sin pasar por pagos.
-        current = [normalized_current_status] if normalized_current_status else []
-        return list(dict.fromkeys([*current, *statuses, "CANCELO", PAUSED_STATUS]))
     if normalize_text(normalized_current_status) == normalize_text(PAUSED_STATUS):
         # Una pausa no forma parte del flujo: al reactivar el caso se puede
         # elegir la etapa real en la que debe continuar este aparato.
@@ -2141,6 +2136,7 @@ def validate_status_change(
     previous_status: str,
     new_status: str,
     current_user: str,
+    from_sent_archive: bool = False,
 ) -> tuple[bool, str]:
     """Aplica flujo, permisos y bloqueo por pagos antes de guardar STATUS."""
 
@@ -2148,7 +2144,12 @@ def validate_status_change(
     new_status = normalize_status_alias(new_status)
     if new_status == previous_status:
         return True, ""
-    allowed_statuses = get_allowed_next_statuses(apparatus, previous_status, current_user)
+    if from_sent_archive:
+        if current_user not in UNRESTRICTED_STAGE_USERS:
+            return False, "El usuario actual no puede cambiar etapas desde Enviados."
+        allowed_statuses = workbench_reactivation_statuses(apparatus, previous_status)
+    else:
+        allowed_statuses = get_allowed_next_statuses(apparatus, previous_status, current_user)
     if new_status not in allowed_statuses:
         return False, (
             f"STATUS no permitido para {apparatus}: {previous_status} → {new_status}. "
@@ -4575,6 +4576,7 @@ def advance_case_status(
     comment: str = "",
     extra_changes: dict[str, Any] | None = None,
     expected_values: dict[str, Any] | None = None,
+    from_sent_archive: bool = False,
 ) -> bool:
     """Actualiza STATUS en ESTATUS y registra cierre/apertura en TIEMPOS."""
 
@@ -4595,6 +4597,7 @@ def advance_case_status(
         previous_status=previous_status,
         new_status=new_status,
         current_user=current_user,
+        from_sent_archive=from_sent_archive,
     )
     if not is_valid:
         st.error(validation_message)
@@ -5936,7 +5939,7 @@ def validate_workbench_changes(
         if STATUS_COLUMN not in delta:
             continue
         new_status = normalize_status_alias(delta[STATUS_COLUMN])
-        if new_status not in get_allowed_next_statuses(apparatus, previous_status, current_user):
+        if not reactivate and new_status not in get_allowed_next_statuses(apparatus, previous_status, current_user):
             errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
             errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
@@ -5983,6 +5986,7 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
             if STATUS_COLUMN in delta:
                 success = advance_case_status(identifier=identifier, row=row, new_status=delta[STATUS_COLUMN],
                                               current_user=current_user, comment=comment,
+                                              from_sent_archive=reactivate,
                                               extra_changes={key: value for key, value in delta.items() if key != STATUS_COLUMN},
                                               expected_values=expected)
                 if not success:
@@ -6156,10 +6160,8 @@ def workbench_stage_hint(row: pd.Series, current_user: str) -> str:
     apparatus, status = row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN]
     targets = [target for target in get_allowed_next_statuses(apparatus, status, current_user)
                if target != status and is_transition_allowed_for_user(current_user, status, target, apparatus)]
-    if targets and current_user in UNRESTRICTED_STAGE_USERS:
-        return "Tu usuario puede mover este pedido a cualquier etapa de su flujo, aunque el pago siga pendiente."
     if targets:
-        return "Etapas permitidas para tu usuario: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets)
+        return "Siguiente etapa y alternativas permitidas desde la etapa guardada: " + " · ".join(display_selectbox_value(STATUS_COLUMN, value) for value in targets)
     return "Tu usuario no puede mover este pedido desde su etapa actual."
 
 
