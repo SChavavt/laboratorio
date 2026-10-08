@@ -93,6 +93,25 @@ quedan los campos principales y el resto en desplegables juntos (**Servicio y
 archivos**, **Fechas y entrega**…). Cada selector se pinta con el color de su
 opción; la etapa usa el mismo color que en la tabla.
 
+En **📋 Servicio y archivos**, **Adjuntar facturas PDF** permite subir varios PDFs
+a la orden mediante **Guardar facturas**, y agregar más en cargas posteriores.
+El guardado conserva los campos pendientes de la ficha. Las facturas se guardan
+en el S3 del laboratorio, por separado para Alineadores y Polanco:
+`facturas/alineadores/<folio>/` y `facturas/polanco/<folio>/`. Compartir un folio
+con Aparatos o Polanco no mezcla sus archivos. No hay que agregar columnas a Sheets.
+
+La nueva pestaña **🔎 Buscar casos** consulta Alineadores y Polanco, incluidas
+órdenes enviadas, canceladas y pausadas, por paciente, doctor, folio o producto.
+El resultado identifica la hoja de origen y muestra el resumen de la orden,
+sus facturas y los enlaces existentes de sus columnas de archivos.
+**Abrir PDF** y **Descargar PDF** usan enlaces temporales; **Actualizar facturas**
+renueva la lista y esos enlaces. Desde el mismo resultado se pueden añadir
+facturas a órdenes archivadas. Los folios duplicados dentro de una hoja requieren
+corregir la hoja antes de consultar o adjuntar sus facturas.
+
+La configuración AWS y los permisos del prefijo `facturas/` se describen en
+[Facturas PDF y buscador de casos](tabla-unificada.md#facturas-pdf-y-buscador-de-casos).
+
 ## Envíos y alineadores (ficha del pedido)
 
 Las columnas del plan de tratamiento (`TEMPLATE SUP` … `Total`, R:V) y de los
