@@ -13,6 +13,7 @@ import dropdown_fields as dropdown
 import grid_interactions as interactions
 import alineadores_pg as align
 import workbench_grid as apparatus_grid
+import aligners_grid
 
 
 def run_js(code, **values):
@@ -148,6 +149,35 @@ editor.init({value: 'Revisión', data: {'Columna 1': '001', APARATO: 'MSE'}, sto
 console.log(JSON.stringify(editor.buttons.map(button => button.textContent)));
 ''', editor=javascript(apparatus_grid.status_editor()))
     assert result == ['Revisión', 'Pago']
+
+
+def test_aligners_status_submenu_matches_apparatus_behaviour():
+    result = run_js(FAKE_DOM + '''
+const Editor = eval('(' + data.editor + ')');
+const commits = [];
+const row = {'No. Orden': '001'};
+const params = {value: 'Revisión', data: row, stopEditing: cancelled => commits.push(Boolean(cancelled)),
+ context: {idColumn: 'No. Orden', stageOptions: {'001': ['Revisión', 'Planeación']},
+ manualStageOptions: {'001': ['Revisión', 'Planeación', 'En impresión']}, palettes: {STATUS: {}}}};
+const editor = new Editor(); editor.init(params);
+const labels = () => editor.buttons.map(button => button.textContent);
+const click = label => editor.buttons.find(button => button.textContent === label).listeners.click();
+const initial = labels();
+click('Ver todas las etapas… →');
+const full = labels();
+click('En impresión');
+const chosen = {value: editor.getValue(), target: row.__manualStageTarget};
+const plain = new Editor();
+plain.init({value: 'Revisión', data: {'No. Orden': '002'}, stopEditing() {},
+ context: {idColumn: 'No. Orden', stageOptions: {'002': ['Revisión', 'Planeación']}, palettes: {}}});
+console.log(JSON.stringify({initial, full, chosen, commits,
+ plain: plain.buttons.map(button => button.textContent)}));
+''', editor=javascript(aligners_grid.aligners_status_editor()))
+    assert result['initial'] == ['Revisión', 'Planeación', 'Ver todas las etapas… →']
+    assert result['full'] == ['← Volver a etapas sugeridas', 'Revisión', 'Planeación', 'En impresión']
+    assert result['chosen'] == {'value': 'En impresión', 'target': 'En impresión'}
+    assert result['commits'] == [False]
+    assert result['plain'] == ['Revisión', 'Planeación']
 
 
 def test_grid_event_keeps_manual_intent_by_id_without_adding_sheet_columns():

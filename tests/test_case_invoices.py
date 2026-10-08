@@ -131,6 +131,22 @@ def test_search_matches_patient_doctor_id_without_accents_and_keeps_archived_cas
     assert list(search.find_cases(cases, query)[search.ID_COLUMN]) == ['001']
     assert search.find_cases(cases, 'ausente').empty
     assert search.find_cases(cases, '').empty
+    assert search.find_cases(cases, '003').empty
+
+
+@pytest.mark.parametrize('case_type', ['aparatos', 'alineadores', 'polanco'])
+@pytest.mark.parametrize('partial', [{}, {'DETALLE COMENTARIOS': 'Sólo información administrativa'}])
+def test_search_retains_partial_duplicate_folios_for_validation(case_type, partial):
+    cases = search.source_cases(pd.DataFrame([
+        {'Folio': '001', 'NOMBRE PACIENTE': 'Paciente demo'},
+        {'Folio': ' 001 ', **partial},
+        {'Folio': '', 'NOMBRE PACIENTE': 'Fila sin folio'},
+    ]), case_type, 'Folio')
+    assert list(cases[search.ID_COLUMN]) == ['001', '001']
+    assert list(cases[search.SOURCE_COLUMN]) == [case_type, case_type]
+    assert len(search.find_cases(cases, '001')) == 1
+    with pytest.raises(ValueError, match='duplicado'):
+        invoices.require_unique_case(cases, '001', search.ID_COLUMN)
 
 
 EDITOR_SCRIPT = f'''
@@ -251,6 +267,22 @@ def test_duplicate_search_result_cannot_access_or_upload_invoices(store):
     assert not at.exception
     assert any('duplicado' in item.value for item in at.error)
     assert not at.file_uploader and not at.get('link_button')
+
+
+@pytest.mark.parametrize('partial', [{}, {'DETALLE COMENTARIOS': 'Sólo información administrativa'}])
+@pytest.mark.parametrize('query', ['jose', '001'])
+def test_partial_duplicate_blocks_invoice_access_even_with_one_search_result(store, monkeypatch, partial, query):
+    store.upload('aparatos', '001', [Upload('factura-privada.pdf')], 'Jime', lambda: None)
+    listing = Mock()
+    monkeypatch.setattr(invoices, 'list_invoices', listing)
+    at = AppTest.from_string(SEARCH_SCRIPT, default_timeout=15).run()
+    at.session_state['rows'] = [at.session_state['rows'][0], {'Folio': ' 001 ', **partial}]
+    at.text_input[0].set_value(query).run()
+    assert not at.exception
+    assert any('1 caso(s)' in item.value for item in at.caption)
+    assert any('duplicado' in item.value for item in at.error)
+    assert not at.file_uploader and not at.get('link_button')
+    listing.assert_not_called()
 
 
 def test_aligner_search_preserves_invoice_origin_when_folios_match(store, monkeypatch):

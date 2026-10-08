@@ -113,8 +113,12 @@ def build_aligners_grid_options(
     palettes: dict[str, dict[str, tuple[str, str]]],
     time_zone: str,
     hidden_columns: set[str] | None = None,
+    manual_stage_options: dict[str, list[str]] | None = None,
 ) -> dict:
-    """Crea el editor manteniendo las transiciones ligadas a cada número de orden."""
+    """Crea el editor manteniendo las transiciones ligadas a cada número de orden.
+
+    ``manual_stage_options`` alimenta «Ver todas las etapas…» dentro de STATUS.
+    """
 
     hidden = set(hidden_columns or [])
     system_fixed = [
@@ -243,6 +247,7 @@ def build_aligners_grid_options(
         "context": {
             "idColumn": "No. Orden",
             "stageOptions": stage_options,
+            "manualStageOptions": manual_stage_options or {},
             "palettes": palettes,
         },
         "defaultColDef": {

@@ -846,3 +846,72 @@ with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
         "Método para mejorar la relación izquierda:",
     ]
     assert [item for item in at.caption if "403 Forbidden" in item.value]
+
+
+# --- Cambio manual de etapa («Ver todas las etapas…»), igual que en Aparatos ---
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
+def test_manual_stage_offers_whole_product_flow(definitions, user):
+    options = app.get_manual_stage_statuses("CONVENC.", "REVISIÓN DE ARCHIVOS", definitions, user)
+    assert options[0] == "REVISIÓN DE ARCHIVOS"
+    assert {"EN IMPRESIÓN", "LISTO P/ENVÍO", "BORRADOR TITAN", "CANCELADO"} <= set(options)
+    # La lista habitual sólo ofrece el siguiente paso, las pausas y Cancelado.
+    assert "EN IMPRESIÓN" not in app.get_allowed_next_statuses("CONVENC.", "REVISIÓN DE ARCHIVOS", definitions)
+
+
+@pytest.mark.parametrize("user,status,product", [
+    ("Vero", "REVISIÓN DE ARCHIVOS", "CONVENC."), ("Admin", "ENVIADO", "CONVENC."),
+    ("Admin", "CANCELADO", "CONVENC."), ("Admin", "REVISIÓN DE ARCHIVOS", "DESCONOCIDO"),
+])
+def test_manual_stage_not_offered_without_permission_or_for_closed_orders(definitions, user, status, product):
+    assert app.get_manual_stage_statuses(product, status, definitions, user) == [status]
+
+
+def test_manual_stage_validation_requires_explicit_choice_and_permission(definitions):
+    row = pd.Series(order())
+    jump = {app.STATUS_COLUMN: "EN IMPRESIÓN"}
+    assert app.validate_delta(row, jump, definitions)
+    assert not app.validate_delta(row, jump, definitions, manual_stage=True, current_user="Jime")
+    assert app.validate_delta(row, jump, definitions, manual_stage=True, current_user="Vero")
+    assert app.validate_delta(pd.Series(order(status="ENVIADO")), jump, definitions,
+                              manual_stage=True, current_user="Admin", reactivate=True)
+
+
+def test_grid_offers_all_stages_menu_only_to_manual_users(definitions):
+    source = pd.DataFrame([order("1"), order("2", "ENVIADO")])
+    grid = app.display_workbench_df(source, definitions)
+    admin = app.build_grid_configuration(grid, source, definitions, current_user="Admin")["context"]
+    assert app.status_display_value("EN IMPRESIÓN", definitions) in admin["manualStageOptions"]["1"]
+    assert admin["manualStageOptions"]["2"] == [app.status_display_value("ENVIADO", definitions)]
+    vero = app.build_grid_configuration(grid, source, definitions, current_user="Vero")["context"]
+    assert vero["manualStageOptions"]["1"] == [app.status_display_value("REVISIÓN DE ARCHIVOS", definitions)]
+    sent = app.build_grid_configuration(grid, source, definitions, reactivate=True, current_user="Admin")
+    assert sent["context"]["manualStageOptions"] == {}
+
+
+def test_save_accepts_manual_jump_and_logs_it(definitions, monkeypatch):
+    writes, logs = [], []
+    monkeypatch.setattr(app, "update_order_row", lambda identifier, delta, **kwargs:
+                        writes.append((identifier, delta)) or {"success": True, "error": ""})
+    monkeypatch.setattr(app, "register_status_change", lambda **kwargs: logs.append(kwargs))
+    monkeypatch.setattr(app, "clear_sheet_data_cache", lambda: None)
+    monkeypatch.setattr(app, "reset_workbench", lambda: None)
+    source = pd.DataFrame([order()])
+    baseline = app.display_workbench_df(source, definitions)
+    target = app.status_display_value("EN IMPRESIÓN", definitions)
+    edited = baseline.copy()
+    edited.loc[0, app.STATUS_COLUMN] = target
+
+    # Sin elegirlo desde «Ver todas las etapas…», el salto se rechaza.
+    saved, errors = app.save_workbench_changes(source, baseline, edited, "Jime", definitions)
+    assert not saved and errors and not writes
+
+    edited.attrs["manualStageTargets"] = {"001": target}
+    saved, errors = app.save_workbench_changes(source, baseline, edited, "Jime", definitions)
+    assert saved == ["001"] and not errors
+    assert writes == [("001", {app.STATUS_COLUMN: "EN IMPRESIÓN"})]
+    assert logs[0]["comment"] == app.MANUAL_STAGE_COMMENT
+
+    writes.clear()
+    saved, errors = app.save_workbench_changes(source, baseline, edited, "Vero", definitions)
+    assert not saved and any("manualmente" in error for error in errors) and not writes

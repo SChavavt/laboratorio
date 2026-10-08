@@ -26,25 +26,29 @@ def normalized(value) -> str:
 
 
 def source_cases(frame: pd.DataFrame, case_type: str, id_column: str) -> pd.DataFrame:
+    """Conserva todos los folios para validar duplicados, incluso filas parciales."""
     if id_column not in frame:
         return pd.DataFrame()
     result = frame.copy()
     result[ID_COLUMN] = result[id_column].map(text)
     result[SOURCE_COLUMN] = case_type
-    meaningful = [column for column in SEARCH_COLUMNS if column != ID_COLUMN and column in result]
-    mask = result[ID_COLUMN].ne("")
-    if meaningful:
-        mask &= result[meaningful].apply(lambda row: any(text(value) for value in row), axis=1)
-    return result[mask].reset_index(drop=True)
+    return result[result[ID_COLUMN].ne("")].reset_index(drop=True)
 
 
 def find_cases(frame: pd.DataFrame, query: str) -> pd.DataFrame:
     terms = normalized(query).split()
     if not terms or frame.empty:
         return frame.iloc[:0].copy()
+    # Sólo los resultados omiten filas sin datos de búsqueda; la validación
+    # del folio usa todas las filas de source_cases.
+    meaningful = [column for column in SEARCH_COLUMNS if column != ID_COLUMN and column in frame]
+    mask = pd.Series(True, index=frame.index)
+    if meaningful:
+        mask &= frame[meaningful].apply(lambda row: any(text(value) for value in row), axis=1)
     fields = [column for column in SEARCH_COLUMNS if column in frame]
     searchable = frame[fields].apply(lambda row: normalized(" ".join(text(value) for value in row)), axis=1)
-    return frame[searchable.map(lambda value: all(term in value for term in terms))].reset_index(drop=True)
+    mask &= searchable.map(lambda value: all(term in value for term in terms))
+    return frame[mask].reset_index(drop=True)
 
 
 def row_file_links(row) -> list[tuple[str, str]]:
