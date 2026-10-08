@@ -7,6 +7,16 @@ from st_aggrid import AgGrid, JsCode
 from grid_interactions import COLLECT_ROWS, configure_selection, response_frame
 
 BUSINESS_ORDER = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
+# Ayuda de las fechas de Stefano que la app registra sola; la ficha (lab_pg) la reutiliza.
+STEFANO_COLUMN_HELP = {
+    "FECHA/HORA ENVÍO STEFANO": "Se registra sola al pasar a EN PLANEACIÓN, SOLICITUD DE CAMBIOS o "
+                                "EN DISEÑO; elige otro día sólo si lo enviaste antes, en el mismo "
+                                "guardado del cambio de etapa o después (si lo guardas antes, el "
+                                "cambio de etapa lo reemplaza). De aquí se cuenta el regreso de Stefano.",
+    "FECHA/HORA ENTREGA STEFANO": "Se registra sola cuando el pedido sale de EN PLANEACIÓN, "
+                                  "SOLICITUD DE CAMBIOS o EN DISEÑO; si fue otro día, captúrala en el "
+                                  "mismo guardado del cambio de etapa o después.",
+}
 
 
 @lru_cache(maxsize=1)
@@ -131,19 +141,31 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
               "NOMBRE PACIENTE": "Paciente", "DETALLE COMENTARIOS": "Comentarios",
               "DETALLE SEMÁFORO": "Motivo del semáforo",
               "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
-              "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano"}
+              "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano",
+              "SIGUIENTE ETAPA": "⏭️ Siguiente etapa", "PRÓXIMA FECHA": "📅 Próxima fecha",
+              "ENTREGA ESTIMADA": "🚚 Entrega estimada"}
+    header_tooltips = {
+        "PRÓXIMA FECHA": "Cuándo regresa Stefano o vence la etapa; si se espera al doctor "
+                         "o el pago, desde cuándo.",
+        "ENTREGA ESTIMADA": "Salida proyectada (entrada a PRODUCTO ENVIADO): suma el tiempo de las "
+                            "etapas pendientes. El pago no la detiene; las esperas del doctor la mueven.",
+        "FECHA PARA ENTREGA": "La calcula la hoja: envío a Stefano + 6 días hábiles. Sólo lectura.",
+        **STEFANO_COLUMN_HELP,
+    }
     widths = {"SELECCIONAR": 58, "Columna 1": 74, "SEMÁFORO": 112, "APARATO": 126,
               "STATUS": 150, "NOMBRE DOCTOR": 118, "NOMBRE PACIENTE": 118,
-              "DETALLE COMENTARIOS": 130, "DETALLE SEMÁFORO": 260}
+              "DETALLE COMENTARIOS": 130, "DETALLE SEMÁFORO": 260,
+              "SIGUIENTE ETAPA": 170, "PRÓXIMA FECHA": 230, "ENTREGA ESTIMADA": 190}
     minimum_widths = {"SELECCIONAR": 54, "Columna 1": 68, "SEMÁFORO": 104, "APARATO": 112,
                       "STATUS": 136, "NOMBRE DOCTOR": 102, "NOMBRE PACIENTE": 102,
                       "DETALLE COMENTARIOS": 112}
     maximum_widths = {"SELECCIONAR": 62, "Columna 1": 90, "SEMÁFORO": 126, "APARATO": 156,
                       "STATUS": 180, "NOMBRE DOCTOR": 150, "NOMBRE PACIENTE": 150,
-                      "DETALLE COMENTARIOS": 175, "DETALLE SEMÁFORO": 330}
+                      "DETALLE COMENTARIOS": 175, "DETALLE SEMÁFORO": 330, "PRÓXIMA FECHA": 340}
     business_order = BUSINESS_ORDER
     default_order = [*business_order, "RESPONSABLE", "HORAS EN ETAPA",
-                     "PLAZO HORAS", "LÍMITE ETAPA", "DETALLE SEMÁFORO"]
+                     "PLAZO HORAS", "LÍMITE ETAPA", "SIGUIENTE ETAPA", "PRÓXIMA FECHA",
+                     "ENTREGA ESTIMADA", "DETALLE SEMÁFORO"]
     system_fixed = [column for column in ["SELECCIONAR", "Columna 1", "SEMÁFORO"] if column in grid]
     business_fixed = [column for column in business_order if column in grid]
     pinned = system_fixed + business_fixed
@@ -166,6 +188,8 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         }
         if column != "SELECCIONAR":
             config["tooltipField"] = column
+        if column in header_tooltips:
+            config["headerTooltip"] = header_tooltips[column]
         if column in pinned:
             config.update(pinned="left", lockPinned=True, lockPosition=True,
                           suppressMovable=True, suppressAutoSize=True)

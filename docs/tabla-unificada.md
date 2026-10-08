@@ -62,7 +62,9 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    editables abren calendario y, cuando corresponde, hora; **Ahora** registra
    el momento de Ciudad de México y los valores antiguos se conservan al cancelar.
    En **FECHA/HORA ENVÍO STEFANO** sólo se elige el día: la app registra la hora
-   de Ciudad de México al guardar, sin pedirla manualmente.
+   de Ciudad de México al guardar, sin pedirla manualmente. Normalmente no hace
+   falta capturarla: se registra sola al cambiar de etapa (ver
+   [Envío y entrega de Stefano](#envío-y-entrega-de-stefano)).
 3. La columna **Abrir** selecciona pedidos sin guardarlos ni modificar Sheets.
    Con un pedido seleccionado se muestran archivos, historial y las acciones
    de pago o diseño correspondientes. Con pedidos de impresión seleccionados,
@@ -102,7 +104,10 @@ etapa.
 Todos los usuarios autenticados pueden corregir las columnas provenientes de
 `ESTATUS APARATOS`, incluidas doctor, paciente, aparato y las fechas que la app
 autollena. Folio, semáforo y los cálculos exclusivos de la vista permanecen
-protegidos. El filtro Responsable
+protegidos. **Fecha para entrega** también es sólo de lectura (en la tabla y en
+la ficha): la calcula una fórmula de la hoja (`FECHA/HORA ENVÍO STEFANO` + 6
+días hábiles) y escribir en su rango la rompería, así que la app nunca la
+escribe, ni al guardar pagos ni al crear pedidos. El filtro Responsable
 elige inicialmente al usuario activo cuando su nombre existe en los datos; en
 caso contrario comienza en Todos y siempre permite cambiar la selección.
 
@@ -122,25 +127,87 @@ oscuro sobre morado claro para que su estado siga siendo legible.
 | Verde | Menos del 80% del plazo de la etapa |
 | Amarillo | Desde 80% y antes de alcanzar el plazo |
 | Rojo | Plazo agotado o alerta especial de pago atrasada |
-| Gris | Sin inicio, sin plazo válido, folio duplicado o registro de tiempo inconsistente |
+| Gris | Sin inicio, sin plazo válido, esperando al doctor, folio duplicado o registro de tiempo inconsistente |
 
 El detalle muestra el motivo del color. Se conservan las alertas especiales de
 pagos para Tiger, Leone y Distalizador; se muestra la más urgente entre la alerta
-de etapa y la alerta especial. Los plazos cuentan lunes a viernes, 24 horas por
+de etapa y la alerta especial, salvo mientras se espera al doctor
+(`REVISIÓN PLAN DOCTOR`, `REVISIÓN DISEÑO DOCTOR`, `VOBO/ACEPTACIÓN PLANEACIÓN`,
+`ESPERANDO STL PSM DOCTOR`, `ESCANEO MAL (EN REPETICIÓN)`): entonces el pedido
+queda gris aunque la hoja les asigne un tiempo, y la alerta especial sólo
+aparece en el motivo. En las etapas de Stefano (`EN PLANEACIÓN`,
+`SOLICITUD DE CAMBIOS`, `EN DISEÑO`) el plazo cuenta desde
+`FECHA/HORA ENVÍO STEFANO`, aunque sea anterior al inicio de la etapa (un envío
+capturado con otro día); una fecha sin hora del mismo día en que empezó la etapa
+cuenta desde ese inicio. Se ignora, y se cuenta desde el inicio del registro
+activo, si no se entiende, es futura o es de una ronda anterior: anterior al
+cierre del último registro de una etapa de Stefano del pedido en
+`TIEMPOS_APARATOS`, con 5 minutos de tolerancia. Semáforo, horas, plazo y límite
+de la fila usan ese mismo inicio. Los plazos cuentan lunes a viernes, 24 horas por
 día hábil, como el modelo existente; no representan un turno laboral de 8 horas.
 
 El flujo y sus plazos se leen de `PROCESOS POR APARATO` (misma hoja horizontal
 Fases/Tiempo por aparato que usa `PROCESOS POR PRODUCTO` en alineadores) y se
-combinan sobre `PROCESS_CONFIG`: un aparato o tiempo que ya está programado en
-el código sigue funcionando si Sheets falla o todavía no lo tiene ahí; la hoja
-sólo agrega aparatos nuevos o actualiza sus tiempos, nunca elimina lo
-programado. Un aparato con columna propia (p. ej. Hyrax o Trampa Lingual) usa
+combinan sobre `PROCESS_CONFIG`: un aparato que ya está programado en el código
+sigue funcionando si Sheets falla o todavía no lo tiene ahí. Un aparato con
+columna en la hoja usa la lista completa de esa columna (nombres, orden y
+tiempos), que reemplaza la programada. Un aparato con columna propia (p. ej. Hyrax o Trampa Lingual) usa
 esa columna; sólo si no la tiene toma el flujo de `PIEZA SINTERIZADA`. Se relee cada hora (no en cada actualización de 30 s de los
 pedidos) o al pulsar **Actualizar datos**, para no afectar el rendimiento. La
 tabla usa la duración guardada en el registro activo de `TIEMPOS_APARATOS`. No
 se inventan fechas iniciales para pedidos antiguos ni se escribe una columna de
 semáforo en Google Sheets. Los registros nuevos respetan el orden real de sus
 encabezados.
+
+## Envío y entrega de Stefano
+
+Las dos fechas de Stefano se registran solas en cada cambio de etapa (tabla,
+ficha, cambio manual, reactivación desde Enviados o pausa), con la hora de
+Ciudad de México y para cualquier usuario:
+
+- Entrar a `EN PLANEACIÓN`, `SOLICITUD DE CAMBIOS` o `EN DISEÑO` desde otra
+  etapa registra **FECHA/HORA ENVÍO STEFANO**: estar en esas etapas significa
+  que el trabajo ya se envió a Stefano, y desde ahí se cuenta su regreso.
+- Salir de esas etapas a cualquier otra registra **FECHA/HORA ENTREGA
+  STEFANO** (Stefano entregó), salvo al pausar o cancelar, que no son una
+  entrega. Pasar de una etapa de Stefano a otra registra ambas: regresó y se
+  volvió a enviar.
+- Cada ronda reemplaza la fecha anterior, así que **Fecha para entrega** (la
+  fórmula de la hoja) sigue al último envío. Entrar a `STL PSM ENVIADO` ya no
+  registra la entrega de Stefano.
+- Si en el mismo guardado se captura alguna de las dos, manda lo capturado: del
+  envío se toma el día elegido con la hora del guardado (para registrar un envío
+  hecho antes) y la entrega se guarda tal cual. Un día capturado en un guardado
+  anterior al cambio de etapa se reemplaza; después del cambio se puede corregir
+  sin que se pierda. El envío no puede ser una fecha futura.
+
+La confirmación del cambio de etapa dice lo registrado, p. ej. «Envío a Stefano
+registrado: mié 07/10 16:00 · regresa lun 12/10 16:00» (el regreso suma el
+tiempo de la nueva etapa) o «Entrega de Stefano registrada: …»; en Seguimiento
+aparece como un solo aviso flotante aunque se cambien varios pedidos a la vez.
+Si el día elegido para el envío es de una ronda anterior (p. ej. al pasar de
+`EN PLANEACIÓN` a `SOLICITUD DE CAMBIOS` con un día pasado), la confirmación lo
+dice y da el regreso que mostrará la tabla, contado desde el cambio de etapa.
+Los encabezados de la tabla y la ayuda (?) de la ficha lo recuerdan.
+
+## Agenda del pedido
+
+Tres columnas calculadas (sólo lectura, se ocultan con las automáticas) van
+justo después de **Límite etapa**, también para quien ya guardó un orden de
+columnas antes de que existieran. Se recalculan en cada lectura con el flujo del
+aparato en `PROCESOS POR APARATO`; no se escriben en Sheets.
+
+| Columna | Qué muestra |
+| --- | --- |
+| Siguiente etapa | La siguiente etapa obligatoria del flujo (sin las opcionales `ESCANEO MAL` y `SOLICITUD DE CAMBIOS`). |
+| Próxima fecha | Etapas de Stefano: «Regresa Stefano: vie 09/10 13:56», contado desde el envío registrado. Espera del doctor: «Esperando doctor desde lun 05/10 (2 días hábiles)». Pagos: «Esperando pago desde …». Otras etapas con tiempo: «Vence: …». |
+| Entrega estimada | Día en que el pedido entraría a `PRODUCTO ENVIADO`: parte del vencimiento de la etapa actual (o de ahora, si ya pasó o la etapa no tiene tiempo) y suma el tiempo de cada etapa obligatoria pendiente. |
+
+El pago nunca detiene la entrega estimada (las etapas de pago suman cero, porque
+hay doctores que trabajan antes de pagar). Las esperas del doctor también suman
+cero; como la columna se recalcula, la fecha se recorre sola mientras el doctor
+no responde y lo indica con «(+ revisión doctor)». La ficha del pedido muestra
+la próxima fecha y la entrega estimada junto al semáforo.
 
 ## Pedidos visibles y guardado
 
