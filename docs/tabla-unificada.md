@@ -1,9 +1,9 @@
 # Mesa de trabajo de laboratorio
 
 `lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa en
-**Seguimiento**, seguida de **Nuevo pedido** y **Recibidos de Forms**, en ese
-orden. Se respetan los permisos de cada usuario: Admin, Jime y Lesly tienen las
-tres pestañas y Vero, Seguimiento y **Confección y Calidad**.
+**Seguimiento**, seguida de **Buscar casos** y **Recibidos de Forms**. **Nuevo pedido**
+se abre desde Seguimiento. Admin, Jime, Lesly y Vero pueden consultar Buscar casos;
+Vero conserva también su pestaña **Confección y Calidad**.
 Jime también atiende las etapas de planeación y diseño que antes correspondían a
 Estefano; Estefano ya no aparece como usuario de acceso.
 Usa las mismas credenciales de Sheets/S3 y la misma entrada de Streamlit.
@@ -72,11 +72,42 @@ Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
    ficha sólo para pedidos en `LISTO P/SINTERIZADO` sin impresión registrada y
    usuarios con permiso. **Impresión y avance por lote** aparece cerrado sólo al
    seleccionar varios pedidos de producción.
-4. Nuevo pedido y Recibidos de Forms tienen sus propias pestañas.
+4. Buscar casos y Recibidos de Forms tienen sus propias pestañas.
    Las etapas de los pedidos permanecen juntas en Seguimiento.
 5. **Actualizar datos** vuelve a leer los pedidos y calcular el semáforo.
    La hora de consulta es visible. Los filtros y las acciones quedan bloqueados
    mientras hay celdas pendientes, para no perder cambios sin guardarlos.
+
+## Facturas PDF y buscador de casos
+
+La ficha incluye **Adjuntar facturas PDF** dentro de **📋 Servicio y archivos**.
+Permite elegir varios PDFs y pulsar **Guardar facturas**, así como añadir más
+facturas después. Las selecciones de campos de la ficha se conservan mientras
+se guardan los archivos. Dos facturas con el mismo nombre se almacenan por
+separado; reintentar una carga parcialmente fallida conserva un solo objeto por
+archivo de esa selección. Se valida la extensión y la cabecera PDF de todo el
+lote, y se comprueba que la orden siga existiendo con un folio único antes de subir.
+
+**🔎 Buscar casos** encuentra órdenes por folio, paciente, doctor o aparato,
+sin distinguir mayúsculas ni acentos. Incluye pedidos activos, enviados,
+cancelados y pausados. Al elegir una orden muestra el resumen y sus facturas,
+con **Abrir PDF**, **Descargar PDF** y **Actualizar facturas**. También permite
+adjuntar facturas desde ese buscador para órdenes archivadas. Los folios duplicados
+requieren corregir la hoja antes de consultar o añadir sus facturas.
+
+Las facturas se guardan en el bucket S3 existente bajo `facturas/aparatos/<folio>/`.
+Cada carga tiene su propia clave de archivo; los nombres se codifican para
+conservar espacios y caracteres especiales. **No hay que agregar columnas a
+Google Sheets.** El vínculo se conserva por vista y folio, independientemente
+de la etapa del pedido. Los enlaces para abrir y descargar son temporales
+(30 minutos); **Actualizar facturas** genera enlaces nuevos.
+
+Se utilizan las claves AWS existentes, en la raíz de Streamlit Secrets o en
+`[aws]`: `aws_access_key_id`, `aws_secret_access_key`, `aws_region` y
+`s3_bucket_name`. La cuenta debe poder listar objetos (`s3:ListBucket`) y
+leer/escribir archivos (`s3:GetObject`, `s3:PutObject`) bajo el prefijo `facturas/`.
+No se habilitan permisos públicos al subir las facturas. Estos permisos y la
+configuración real del bucket se comprueban en el entorno desplegado.
 
 La interfaz usa acentos morados y turquesa, contadores con los colores del
 semáforo y las etiquetas originales con emojis en las etapas y desplegables.

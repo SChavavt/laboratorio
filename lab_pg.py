@@ -32,6 +32,8 @@ from grid_interactions import response_frame
 import dropdown_fields
 from copy import deepcopy
 from workbench_grid import BUSINESS_ORDER, build_grid_options, render_grid
+import case_invoices
+import case_search
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -6239,6 +6241,17 @@ def workbench_stage_hint(row: pd.Series, current_user: str) -> str:
     return "Tu usuario no puede mover este pedido desde su etapa actual."
 
 
+def verify_invoice_case(identifier: str) -> None:
+    read_sheet_df.clear(SHEET_ESTATUS)
+    case_invoices.require_unique_case(canonical_workbench_df(read_sheet_df(SHEET_ESTATUS)), identifier, ID_COLUMN)
+
+
+def render_case_search(current_user: str) -> None:
+    case_search.render(current_user, namespace="aparatos",
+        load_cases=lambda: case_search.source_cases(canonical_workbench_df(read_sheet_df(SHEET_ESTATUS)), "aparatos", ID_COLUMN),
+        verify_case=lambda _, identifier: verify_invoice_case(identifier), rerun=rerun_active_tab)
+
+
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     archive_pending = workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
     if archive_pending:
@@ -6264,6 +6277,9 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
         automatic_time_columns={"FECHA/HORA ENVÍO STEFANO"},
         format_datetime=format_sheet_datetime, now=app_now,
+        section_extras={case_invoices.SERVICE_SECTION: lambda: case_invoices.render_section(
+            "aparatos", str(row[ID_COLUMN]), current_user,
+            verify_case=lambda: verify_invoice_case(str(row[ID_COLUMN])), rerun=rerun_active_tab)},
         hints={STATUS_COLUMN: workbench_stage_hint(row, current_user)})
     if result:
         baseline, delta = result
@@ -6832,11 +6848,13 @@ def workbench_tab_options(current_user: str) -> list[str]:
 
     legacy_tabs = USER_VISIBLE_TABS.get(current_user, [])
     labels = [APP_TAB_OPTIONS[key] for key in legacy_tabs if key != "nuevo"]
-    return ["📋 Seguimiento", *labels]
+    return ["📋 Seguimiento", case_search.TAB_LABEL, *labels]
 
 
 def render_workbench_auxiliary(label: str, current_user: str) -> None:
-    if label == APP_TAB_OPTIONS["nuevo"]:
+    if label == case_search.TAB_LABEL:
+        render_case_search(current_user)
+    elif label == APP_TAB_OPTIONS["nuevo"]:
         if workbench_has_pending_edits():
             st.info("Guarda o descarta los cambios de Seguimiento antes de crear un pedido.")
             return
@@ -6859,6 +6877,15 @@ def render_workbench_auxiliary(label: str, current_user: str) -> None:
         render_procesos_tab()
 
 
+def guard_workbench_tab_change(current_user: str) -> None:
+    previous = st.session_state.get("workbench_active_tab", "📋 Seguimiento")
+    key = f"lab_primary_tabs_{current_user}"
+    if (st.session_state.get(key) != previous
+            and (workbench_has_pending_edits() or st.session_state.get("workbench_paused_pending"))):
+        st.session_state[key] = previous
+        st.session_state["workbench_tab_warning"] = True
+
+
 @st.fragment(key="lab_active_tab_content")
 def render_workbench_tabs(current_user: str) -> None:
     """Ejecuta únicamente el contenido de la pestaña visible."""
@@ -6866,12 +6893,15 @@ def render_workbench_tabs(current_user: str) -> None:
     tabs = st.tabs(
         labels,
         key=f"lab_primary_tabs_{current_user}",
-        on_change="rerun",
+        on_change=guard_workbench_tab_change, args=(current_user,),
     )
     for label, tab in zip(labels, tabs):
         if not tab.open:
             continue
         with tab:
+            st.session_state["workbench_active_tab"] = label
+            if st.session_state.pop("workbench_tab_warning", False):
+                st.warning("Guarda o descarta los cambios antes de cambiar de pestaña.")
             if label == "📋 Seguimiento":
                 render_workbench(current_user)
             else:

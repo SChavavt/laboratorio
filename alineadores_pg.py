@@ -27,6 +27,8 @@ import pandas as pd
 import streamlit as st
 import forms_notices
 import order_detail
+import case_invoices
+import case_search
 from grid_interactions import response_frame
 import dropdown_fields
 from order_identifiers import identifier_resolver
@@ -3382,6 +3384,27 @@ def render_shipments_section(namespace: str, identifier: str, plan: ShipmentBloc
         render_shipment_fields(namespace, identifier, block, token, previous, allow_range=True)
 
 
+def invoice_case_type(sheet_name: str | None = None) -> str:
+    return "polanco" if (sheet_name or current_order_sheet()) == SHEET_POLANCO else "alineadores"
+
+
+def verify_invoice_case(case_type: str, identifier: str) -> None:
+    if case_type not in {"alineadores", "polanco"}:
+        raise ValueError("Selecciona un caso de Alineadores válido.")
+    sheet_name = SHEET_POLANCO if case_type == "polanco" else SHEET_ORDERS
+    read_order_values.clear(sheet_name)
+    case_invoices.require_unique_case(read_orders_df(sheet_name), identifier, ID_COLUMN)
+
+
+def render_case_search(current_user: str) -> None:
+    def load_cases():
+        frames = [case_search.source_cases(read_orders_df(sheet_name), invoice_case_type(sheet_name), ID_COLUMN)
+                  for sheet_name in (SHEET_ORDERS, SHEET_POLANCO)]
+        return pd.concat(frames, ignore_index=True)
+    case_search.render(current_user, namespace="alineadores", load_cases=load_cases,
+                       verify_case=verify_invoice_case, rerun=rerun_active_tab)
+
+
 def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: dict) -> None:
     from aligners_grid import BUSINESS_ORDER
 
@@ -3418,6 +3441,9 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         format_date=lambda value: value.isoformat(), now=app_now,
         extra=(lambda: render_shipments_section(namespace, identifier, plan, shipments))
         if shipments and current_user in APP_USERS else None,
+        section_extras={case_invoices.SERVICE_SECTION: lambda: case_invoices.render_section(
+            invoice_case_type(), identifier, current_user,
+            verify_case=lambda: verify_invoice_case(invoice_case_type(), identifier), rerun=rerun_active_tab)},
         hints={STATUS_COLUMN: f"El pedido está en pausa por **{status}**. Al resolverla podrás elegir la "
                               "etapa real a la que debe regresar."} if is_pause_status(status) else None)
     if result:
@@ -4491,6 +4517,7 @@ def render_board(current_user: str) -> None:
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📋 Seguimiento Polanco",
+    case_search.TAB_LABEL,
     FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
 )
@@ -4525,6 +4552,8 @@ def render_app_tabs(current_user: str) -> None:
                 render_processes(current_user)
             elif label == BOARD_TAB_LABEL:
                 render_board(current_user)
+            elif label == case_search.TAB_LABEL:
+                render_case_search(current_user)
             else:
                 render_aligners_forms_tab()
         break

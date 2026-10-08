@@ -275,7 +275,7 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
                   multi_codecs=None, required=(), constrained=(), extra=None, hints=None,
-                  automatic_time_columns=(), expanded_catalog=None):
+                  automatic_time_columns=(), expanded_catalog=None, section_extras=None):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
@@ -283,6 +283,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     ``hints`` pone la ayuda de un campo en su ícono (?) en vez de un texto fijo.
     ``expanded_catalog`` ofrece un segundo selector dentro del campo; abrirlo
     sólo navega y nunca añade una opción artificial a los cambios del pedido.
+    ``section_extras`` añade acciones propias a una sección y sólo las carga
+    cuando se abre, sin mezclarlas con los cambios de los campos.
     """
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -304,13 +306,17 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                  else "📋 Servicio y archivos" if column in catalog
                  else "📦 Otros datos")
         groups.setdefault(group, []).append(column)
+    for group in section_extras or {}:
+        groups.setdefault(group, [])
     # Los datos principales quedan a la vista; las demás secciones se pliegan juntas.
-    sections = [(st.container(), primary_fields)] if primary_fields else []
+    sections = [(st.container(), primary_fields, None)] if primary_fields else []
     folded = st.container(key=f"order_sections_{token}") if groups or extra is not None else None
-    sections += [(folded.expander(group, expanded=False, key=f"detail_group_{token}_{group}"), fields)
+    sections += [(folded.expander(group, expanded=False, key=f"detail_group_{token}_{group}",
+                                 on_change="rerun" if group in (section_extras or {}) else "ignore"),
+                  fields, (section_extras or {}).get(group))
                  for group, fields in groups.items()]
     styles = []
-    for section, fields in sections:
+    for section, fields, section_extra in sections:
         with section:
             regular = [column for column in fields if "COMENTARIO" not in column]
             width = grid_width(len(regular))
@@ -407,6 +413,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                         st.text_input(label, value=text, **common)
                         if "FECHA" in column and text:
                             st.caption("Se conserva el texto de esta fecha; puedes corregirlo aquí.")
+            if section_extra is not None and section.open:
+                section_extra()
     if extra is not None:
         with folded:
             extra()

@@ -974,10 +974,10 @@ app.main()
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     expected_tabs = {
-        "Admin": ["📋 Seguimiento", "📥 Recibidos de Forms"],
-        "Jime": ["📋 Seguimiento", "📥 Recibidos de Forms"],
-        "Lesly": ["📋 Seguimiento", "📥 Recibidos de Forms"],
-        "Vero": ["📋 Seguimiento", "🛠️ Confección y Calidad"],
+        "Admin": ["📋 Seguimiento", "🔎 Buscar casos", "📥 Recibidos de Forms"],
+        "Jime": ["📋 Seguimiento", "🔎 Buscar casos", "📥 Recibidos de Forms"],
+        "Lesly": ["📋 Seguimiento", "🔎 Buscar casos", "📥 Recibidos de Forms"],
+        "Vero": ["📋 Seguimiento", "🔎 Buscar casos", "🛠️ Confección y Calidad"],
     }
     assert [tab.label for tab in at.tabs] == expected_tabs[user]
     new_order = [item for item in at.expander if item.label == "➕ Nuevo pedido"]

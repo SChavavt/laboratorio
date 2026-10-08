@@ -428,6 +428,7 @@ with (
     patch.object(app, "render_aligners_forms_tab", lambda: st.write("forms ejecutados")),
     patch.object(app, "render_alerts", lambda _: st.write("alertas ejecutadas")),
     patch.object(app, "render_processes", lambda _: st.write("procesos ejecutados")),
+    patch.object(app, "render_case_search", lambda _: st.write("buscador ejecutado")),
 ):
     app.main()
 '''
@@ -435,7 +436,7 @@ with (
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
     assert [tab.label for tab in at.tabs] == [
-        "📋 Seguimiento", "📋 Seguimiento Polanco", "📥 Recibidos de Forms", "📺 Tablero"
+        "📋 Seguimiento", "📋 Seguimiento Polanco", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
     ]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[2].markdown
@@ -444,14 +445,20 @@ with (
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[2].markdown] == ["forms ejecutados"]
+    assert [item.value for item in at.tabs[3].markdown] == ["forms ejecutados"]
+
+    at.session_state["aligners_primary_tabs_Admin"] = "🔎 Buscar casos"
+    at.run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[2].markdown] == ["buscador ejecutado"]
+    assert not at.tabs[0].markdown and not at.tabs[3].markdown
 
     # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[2].markdown
+    assert not at.tabs[3].markdown
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):
