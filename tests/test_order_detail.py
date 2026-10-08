@@ -806,3 +806,53 @@ app.render_aligner_order_editor(pd.Series(st.session_state.row), 'Jime', definit
     assert at.session_state['row']['STATUS'] == 'POR HACER SETUP'
     assert at.session_state['row']['NOMBRE PACIENTE'] == 'Paciente corregido'
     assert at.session_state['row']['ARCHIVOS RECIBIDOS'] == 'STLs, TOMO'
+
+
+ALIGNER_MANUAL_SCRIPT = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import pandas as pd
+import streamlit as st
+import alineadores_pg as app
+definitions = app.parse_process_matrix([["GRAPHY", ""], ["Fases", "Tiempo"],
+    ["REVISIÓN DE ARCHIVOS", "1 día"], ["EN PLANEACIÓN", "1 día"], ["EN IMPRESIÓN", "1 día"],
+    ["ENVIADO", ""], ["IMPRESIÓN EN PAUSA", ""]])
+st.session_state.setdefault("row", {{app.ID_COLUMN: "0001", app.STATUS_COLUMN: "REVISIÓN DE ARCHIVOS",
+    app.PRODUCT_COLUMN: "GRAPHY", "NOMBRE DOCTOR": "Cliente demo", "NOMBRE PACIENTE": "Paciente demo"}})
+app.get_order_form_catalog = lambda: {{}}
+def save(source, baseline, edited, user, definitions, **kwargs):
+    st.session_state["attempt"] = app.grid_changes(baseline, edited, definitions)
+    st.session_state["manual_targets"] = edited.attrs.get("manualStageTargets", {{}})
+    st.session_state.row.update(dict(st.session_state["attempt"])["0001"])
+    return ["0001"], []
+app.save_workbench_changes = save
+app.render_case_actions(pd.DataFrame([st.session_state.row]), pd.DataFrame(),
+                        st.session_state.get("demo_user", "Jime"), definitions, False)
+'''
+
+
+@pytest.mark.parametrize('user', ['Admin', 'Jime', 'Lesly'])
+def test_aligner_all_stages_opens_from_status_and_uses_the_usual_save(user):
+    at = AppTest.from_string(ALIGNER_MANUAL_SCRIPT, default_timeout=15)
+    at.session_state['demo_user'] = user
+    at.run()
+    assert not at.exception
+    assert detail.MORE_STAGES_LABEL in field(at, 'STATUS').options
+    assert not any('EN IMPRESIÓN' in option for option in field(at, 'STATUS').options)
+    field(at, 'STATUS').select(detail.MORE_STAGES).run()
+    assert not at.exception
+    assert field(at, 'STATUS').value == 'REVISIÓN DE ARCHIVOS'
+    assert button(at, '💾 Guardar este pedido').disabled
+    field(at, 'Etapa del flujo').select('EN IMPRESIÓN').run()
+    button(at, '💾 Guardar este pedido').click().run()
+    assert not at.exception
+    assert at.session_state['attempt'] == [('0001', {align.STATUS_COLUMN: 'EN IMPRESIÓN'})]
+    assert at.session_state['manual_targets'] == {'0001': 'EN IMPRESIÓN'}
+
+
+def test_aligner_all_stages_hidden_for_users_without_manual_permission():
+    at = AppTest.from_string(ALIGNER_MANUAL_SCRIPT, default_timeout=15)
+    at.session_state['demo_user'] = 'Vero'
+    at.run()
+    assert not at.exception
+    assert detail.MORE_STAGES_LABEL not in field(at, 'STATUS').options

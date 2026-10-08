@@ -523,6 +523,31 @@ def get_allowed_next_statuses(
     return list(dict.fromkeys(allowed))
 
 
+# Igual que en Aparatos: Admin, Jime y Lesly pueden corregir la etapa eligiendo
+# cualquiera del flujo con «Ver todas las etapas…» dentro de STATUS.
+MANUAL_STAGE_USERS = ("Admin", "Jime", "Lesly")
+MANUAL_STAGE_COMMENT = "Cambio manual de etapa desde STATUS (todas las etapas)."
+
+
+def get_manual_stage_statuses(
+    product: Any,
+    current_status: Any,
+    definitions: dict[str, ProcessDefinition],
+    current_user: str,
+) -> list[str]:
+    """Etapas del producto para una corrección explícita de un pedido activo.
+
+    Incluye todo el flujo normal, las pausas y Cancelado. Un pedido enviado o
+    cancelado se corrige desde el histórico, no desde aquí.
+    """
+
+    definition = get_process_definition(product, definitions)
+    current = canonical_status(current_status, configured_statuses(definitions))
+    if current_user not in MANUAL_STAGE_USERS or definition is None or is_terminal_status(current):
+        return [current]
+    return list(dict.fromkeys([current, *definition.normal_statuses, *definition.pauses, "CANCELADO"]))
+
+
 def get_reactivation_statuses(
     product: Any,
     current_status: Any,
@@ -2468,9 +2493,16 @@ def validate_delta(
     definitions: dict[str, ProcessDefinition],
     *,
     reactivate: bool = False,
+    manual_stage: bool = False,
+    current_user: str = "",
 ) -> list[str]:
+    """``manual_stage`` valida contra todas las etapas del producto (ver get_manual_stage_statuses)."""
     errors: list[str] = []
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+    if manual_stage and reactivate:
+        return [f"{identifier}: usa el histórico de Enviados para reactivar este pedido."]
+    if manual_stage and current_user not in MANUAL_STAGE_USERS:
+        return [f"{identifier}: tu usuario no puede cambiar etapas manualmente."]
     invalid_columns = set(delta) - aligners_editable_columns(row.index)
     if invalid_columns:
         errors.append(f"{identifier}: no se puede editar {', '.join(sorted(invalid_columns))}.")
@@ -2484,8 +2516,11 @@ def validate_delta(
     if STATUS_COLUMN in delta:
         previous = canonical_status(row.get(STATUS_COLUMN, ""), configured_statuses(definitions))
         product = delta.get(PRODUCT_COLUMN, row.get(PRODUCT_COLUMN, ""))
-        allowed_for = get_reactivation_statuses if reactivate else get_allowed_next_statuses
-        allowed = allowed_for(product, previous, definitions)
+        if manual_stage:
+            allowed = get_manual_stage_statuses(product, previous, definitions, current_user)
+        else:
+            allowed_for = get_reactivation_statuses if reactivate else get_allowed_next_statuses
+            allowed = allowed_for(product, previous, definitions)
         new = canonical_status(delta[STATUS_COLUMN], configured_statuses(definitions))
         if status_key(new) not in {status_key(item) for item in allowed}:
             errors.append(f"{identifier}: {previous} → {new} no es una transición permitida.")
@@ -2509,6 +2544,15 @@ def save_workbench_changes(
         return [], [str(exc)]
     if not changes:
         return [], []
+    # Filas cuya etapa se eligió desde «Ver todas las etapas…» (tabla o ficha).
+    manual_targets = {clean_cell(key).strip(): value
+                      for key, value in edited.attrs.get("manualStageTargets", {}).items()}
+    manual_ids = {
+        identifier for identifier, delta in changes
+        if STATUS_COLUMN in delta and identifier in manual_targets
+        and status_key(grid_cell_value(STATUS_COLUMN, manual_targets[identifier], definitions))
+        == status_key(delta[STATUS_COLUMN])
+    }
     multiple = dropdown_fields.multiple_columns(select_catalog or {}, source, MULTI_SELECT_COLUMNS)
     order_detail.restore_catalog_values(changes, select_catalog, multiple)
 
@@ -2525,7 +2569,8 @@ def save_workbench_changes(
         if identifier not in source_by_id.index:
             errors.append(f"{identifier}: el pedido ya no está en la vista actual.")
         else:
-            errors.extend(validate_delta(source_by_id.loc[identifier], delta, definitions, reactivate=reactivate))
+            errors.extend(validate_delta(source_by_id.loc[identifier], delta, definitions, reactivate=reactivate,
+                                         manual_stage=identifier in manual_ids, current_user=current_user))
             for column, value in delta.items():
                 if column in (select_catalog or {}) and column != STATUS_COLUMN and not dropdown_fields.valid_value(
                     value, select_catalog[column], multiple=column in multiple,
@@ -2538,7 +2583,8 @@ def save_workbench_changes(
             errors.append(f"{identifier}: el pedido ya no está en la vista actual.")
             break
         row = source_by_id.loc[identifier]
-        validation_errors = validate_delta(row, delta, definitions, reactivate=reactivate)
+        validation_errors = validate_delta(row, delta, definitions, reactivate=reactivate,
+                                           manual_stage=identifier in manual_ids, current_user=current_user)
         if validation_errors:
             errors.extend(validation_errors)
             break
@@ -2566,7 +2612,10 @@ def save_workbench_changes(
                     comment=(
                         "Reactivado desde el histórico de Enviados."
                         if reactivate
-                        else delta.get("DETALLE COMENTARIOS", "")
+                        else " ".join(filter(None, [
+                            MANUAL_STAGE_COMMENT if identifier in manual_ids else "",
+                            delta.get("DETALLE COMENTARIOS", ""),
+                        ]))
                     ),
                 )
             except Exception as exc:
@@ -2620,9 +2669,18 @@ def build_grid_configuration(
     hidden_columns: set[str] | None = None,
     reactivate: bool = False,
     select_catalog: dict | None = None,
+    current_user: str = "",
 ) -> dict:
-    """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa."""
+    """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa.
+
+    Fuera de él, ``current_user`` decide si STATUS ofrece «Ver todas las etapas…».
+    """
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
+    manual_stages = {} if reactivate else {
+        row[ID_COLUMN]: [status_display_value(option, definitions) for option in get_manual_stage_statuses(
+            row.get(PRODUCT_COLUMN, ""), row.get(STATUS_COLUMN, ""), definitions, current_user)]
+        for _, row in source.iterrows() if row[ID_COLUMN] not in duplicates
+    }
     stages = {
         row[ID_COLUMN]: (
             grid_stage_options(row, definitions, reactivate=reactivate)
@@ -2680,6 +2738,7 @@ def build_grid_configuration(
         palettes=palettes,
         time_zone=APP_TIMEZONE_NAME,
         hidden_columns=hidden_columns,
+        manual_stage_options=manual_stages,
     )
     return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
         labeler=new_order_option_label, palettes=order_dropdown_palettes(selections),
@@ -3394,6 +3453,8 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
     candidate = order_detail.stage_source(row, namespace, ID_COLUMN, STATUS_COLUMN)
     catalog[STATUS_COLUMN] = list(dict.fromkeys([candidate.get(STATUS_COLUMN, ""),
         *get_allowed_next_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""), definitions)]))
+    manual_options = get_manual_stage_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""),
+                                               definitions, current_user)
     fields = order_detail.detail_columns(tracking_columns(row.index),
         aligners_editable_columns(row.index) if current_user in APP_USERS else set(), BUSINESS_ORDER)
     # Plan y envíos no van en la tabla ni como campos sueltos: tienen su desplegable.
@@ -3408,11 +3469,13 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
     labels.update({column: "📅 " + column.replace("_", " · ") for column in fields if "FECHA" in column})
     # La etapa se pinta como en la tabla y el encabezado de la ficha.
     palettes = {**order_dropdown_palettes(catalog),
-                STATUS_COLUMN: {value: status_palette_value(value) for value in catalog[STATUS_COLUMN]}}
+                STATUS_COLUMN: {value: status_palette_value(value)
+                                for value in dict.fromkeys([*catalog[STATUS_COLUMN], *manual_options])}}
     result = order_detail.render_editor(row, namespace=namespace, id_column=ID_COLUMN,
         columns=fields, catalog=catalog, labels=labels,
         option_label=lambda column, value: status_display_value(value, definitions) if column == STATUS_COLUMN else new_order_option_label(column, value),
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
+        expanded_catalog={STATUS_COLUMN: manual_options},
         palettes=palettes, multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
         equivalent=values_equivalent, parse_date=parse_simple_date,
         format_date=lambda value: value.isoformat(), now=app_now,
@@ -3424,6 +3487,10 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         baseline, delta = result
         source = pd.DataFrame([baseline])
         edited = pd.DataFrame([{**baseline, **delta}])
+        target = (st.session_state.get(order_detail.draft_key(namespace), {}).get(identifier, {})
+                  .get("manual_targets", {}).get(STATUS_COLUMN))
+        if target and delta.get(STATUS_COLUMN) == target:
+            edited.attrs["manualStageTargets"] = {identifier: target}
         saved, errors = save_workbench_changes(source, source, edited, current_user, definitions,
                                              select_catalog=catalog)
         if saved:
@@ -3690,6 +3757,8 @@ def render_active_orders(
     st.caption(
         f"{len(filtered)} de {len(table)} pedidos · Cada fila sólo ofrece su siguiente etapa normal, "
         "las pausas aplicables y Cancelado. En una pausa se habilitan las etapas para reanudar."
+        + (" Para corregir, «Ver todas las etapas…» dentro de STATUS ofrece todo el flujo."
+           if current_user in MANUAL_STAGE_USERS else "")
     )
     if filtered.empty:
         st.info("No hay pedidos que coincidan con los filtros.")
@@ -3727,7 +3796,7 @@ def render_active_orders(
     cached = st.session_state.get(config_key)
     if not cached or cached[0] != key:
         cached = (key, build_grid_configuration(grid, source_grid, definitions,
-            hidden_columns=hidden, select_catalog=catalog))
+            hidden_columns=hidden, select_catalog=catalog, current_user=current_user))
         st.session_state[config_key] = cached
     options = deepcopy(cached[1])
     form_pending = bool(order_detail.pending_count(tracking_key("aligners")))
