@@ -664,7 +664,16 @@ TEXT_AREA_COLUMNS = {
     "DETALLES & COMENTARIOS FINALES",
 }
 
-DEFAULT_DELIVERY_BUSINESS_DAYS = 10
+# FECHA PARA ENTREGA (columna L) es una fórmula matricial de la hoja:
+# =MAP(K161:K983, LAMBDA(fecha, IF(fecha="", "", WORKDAY(INT(fecha), 6)))),
+# es decir, envío a Stefano + 6 días hábiles. Cualquier valor escrito en su
+# rango (incluso con USER_ENTERED) rompe la fórmula (#REF!) y deja en blanco
+# todas las fechas de entrega: la app sólo la lee y nunca la escribe.
+ESTATUS_FORMULA_COLUMNS = ("FECHA PARA ENTREGA",)
+FORMULA_DELIVERY_HELP = (
+    "La calcula la hoja: FECHA/HORA ENVÍO STEFANO + 6 días hábiles. La app no la "
+    "modifica; la salida proyectada por etapas está en ENTREGA ESTIMADA."
+)
 SPECIAL_PAYMENT_SLA_APPARATUSES = {"DISTALIZADOR", "TIGER", "LEONE"}
 SPECIAL_PAYMENT_SLA_BUSINESS_DAYS = 10
 PLANNING_PAYMENT_SLA_TARGET_STATUS = "GUÍA PSM + PSM ENVIADA"
@@ -818,6 +827,21 @@ def format_sheet_datetime(value: datetime) -> str:
     """Formatea fecha/hora como texto YYYY/MM/DD HH:MM para columnas combinadas."""
 
     return value.strftime("%Y/%m/%d %H:%M")
+
+
+SPANISH_WEEKDAY_ABBREVIATIONS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+
+
+def format_short_day(value: date) -> str:
+    """Formatea un día para la mesa: ``vie 09/10``."""
+
+    return f"{SPANISH_WEEKDAY_ABBREVIATIONS[value.weekday()]} {value:%d/%m}"
+
+
+def format_short_datetime(value: datetime) -> str:
+    """Formatea día y hora (24 h) para la mesa: ``vie 09/10 13:56``."""
+
+    return f"{format_short_day(value)} {value:%H:%M}"
 
 def is_numeric_value(value: Any) -> bool:
     """Indica si un valor de celda puede editarse como número."""
@@ -1222,17 +1246,26 @@ def parse_time_limit_to_business_hours(text: Any) -> float | None:
 def add_business_time(start_datetime: datetime, time_text: Any) -> tuple[str, str]:
     """Suma horas o días hábiles, sin contar sábados ni domingos."""
 
-    if not time_text:
+    result = add_business_time_dt(start_datetime, time_text)
+    if result is None:
         return "", ""
+    return result.strftime("%Y-%m-%d"), result.strftime("%H:%M:%S")
+
+
+def add_business_time_dt(start_datetime: datetime, time_text: Any) -> datetime | None:
+    """Igual que ``add_business_time`` pero devuelve el datetime (None sin plazo válido)."""
+
+    if not time_text:
+        return None
 
     cleaned = normalize_text(clean_cell(time_text))
     parts = cleaned.replace("<", " ").split()
     if not parts:
-        return "", ""
+        return None
     try:
         amount = int(float(parts[0].replace(",", ".")))
     except ValueError:
-        return "", ""
+        return None
     unit = parts[1] if len(parts) > 1 else ""
 
     current = start_datetime
@@ -1253,7 +1286,7 @@ def add_business_time(start_datetime: datetime, time_text: Any) -> tuple[str, st
             if is_business_day(current):
                 remaining_hours -= 1
 
-    return current.strftime("%Y-%m-%d"), current.strftime("%H:%M:%S")
+    return current
 
 
 def business_hours_elapsed(start_datetime: datetime, now: datetime) -> float:
@@ -1334,8 +1367,9 @@ def merge_dynamic_process_flows(
     """Combina lo leído de PROCESOS POR APARATO sobre el catálogo vigente.
 
     Lo programado a mano en PROCESS_CONFIG/APARATO_OPTIONS sigue funcionando
-    si Sheets falla o todavía no tiene un aparato: la hoja sólo agrega
-    aparatos nuevos o actualiza sus tiempos, nunca elimina lo programado. La
+    si Sheets falla o todavía no tiene un aparato. Un aparato con columna en la
+    hoja reemplaza su lista completa de etapas (nombres, orden y tiempos); los
+    aparatos sin columna conservan el flujo programado. La
     comparación ignora mayúsculas/acentos (p. ej. "Hyrax" en Sheets contra
     "HYRAX" en el código) para no duplicar el mismo aparato con otra letra.
     """
@@ -1632,6 +1666,189 @@ def get_manual_stage_statuses(apparatus: str, current_status: str, current_user:
     if not flow:
         return [current]
     return list(dict.fromkeys([current, *flow, "CANCELO", PAUSED_STATUS]))
+
+
+# Agenda del pedido. Los nombres cubren los de PROCESOS POR APARATO y los del
+# código; se comparan con normalize_text.
+# Etapas en las que el trabajo está con Stefano (planeación/diseño externos).
+PLANNER_STAGE_STATUSES = ("EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "EN DISEÑO")
+# Esperas del doctor: el reloj de la etapa nunca las pone en amarillo/rojo,
+# aunque la hoja les asigne un tiempo.
+DOCTOR_WAIT_STATUSES = (
+    "REVISIÓN PLAN DOCTOR", "REVISIÓN DISEÑO DOCTOR", "VOBO/ACEPTACIÓN PLANEACIÓN",
+    "ESPERANDO STL PSM DOCTOR", "ESCANEO MAL (EN REPETICIÓN)",
+)
+DOCTOR_WAIT_STATE = "Esperando doctor"
+STEFANO_SENT_COLUMN = "FECHA/HORA ENVÍO STEFANO"
+# La entrega estimada es el momento en que el pedido entra a esta etapa.
+DELIVERY_TARGET_STATUS = "PRODUCTO ENVIADO"
+
+
+STAGE_ROLE_BY_KEY = {
+    normalize_text(status): role
+    for role, statuses in (("payment", PAYMENT_STATUSES), ("doctor", DOCTOR_WAIT_STATUSES),
+                           ("planner", PLANNER_STAGE_STATUSES))
+    for status in statuses
+}
+
+
+def stage_role(status: Any) -> str:
+    """Clasifica una etapa: "planner" (Stefano), "doctor", "payment" o "" (laboratorio)."""
+
+    return STAGE_ROLE_BY_KEY.get(normalize_text(normalize_status_alias(status)), "")
+
+
+def get_next_normal_status(apparatus: str, current_status: str) -> str:
+    """Siguiente etapa obligatoria del flujo, sin desvíos opcionales; "" si no hay."""
+
+    statuses = [status for status, _ in get_process_flow(apparatus)]
+    keys = [normalize_text(status) for status in statuses]
+    current = normalize_text(normalize_status_alias(current_status))
+    if current not in keys or current in {normalize_text(status) for status in TERMINAL_STATUSES}:
+        return ""
+    optional = {normalize_text(status) for status in OPTIONAL_PROCESS_STATUSES}
+    return next((status for status in statuses[keys.index(current) + 1:]
+                 if normalize_text(status) not in optional), "")
+
+
+def stage_time_limit(
+    apparatus: str, status: str, log: dict[str, Any] | None = None
+) -> tuple[str | None, float | None]:
+    """Plazo de la etapa actual como (texto para sumar, horas hábiles).
+
+    Con registro activo manda la copia guardada al entrar a la etapa
+    (TIEMPO_CONFIGURADO / TIEMPO_MAXIMO_HORAS), la misma que mide el semáforo;
+    sin registro se usa el tiempo vigente del flujo. Las esperas del doctor no
+    tienen plazo.
+    """
+
+    if stage_role(status) == "doctor":
+        return None, None
+    if log:
+        try:
+            hours = float(clean_cell(log.get("TIEMPO_MAXIMO_HORAS", "")).strip().replace(",", "."))
+        except ValueError:
+            return None, None
+        if not math.isfinite(hours) or hours <= 0:
+            return None, None
+        configured = clean_cell(log.get("TIEMPO_CONFIGURADO", "")).strip()
+        if parse_time_limit_to_business_hours(configured) == hours:
+            return configured, hours
+        return f"{hours:g} hrs", hours
+    configured = get_time_limit(apparatus, status)
+    hours = parse_time_limit_to_business_hours(configured)
+    if hours is None or not math.isfinite(hours) or hours <= 0:
+        return None, None
+    return configured, hours
+
+
+def current_stage_timing(
+    apparatus: str, status: str, log: dict[str, Any] | None, stefano_sent: Any = "",
+    *, use_stefano_sent: bool = True, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Inicio efectivo, plazo y vencimiento de la etapa actual, sin leer Sheets.
+
+    En las etapas de Stefano se cuenta desde FECHA/HORA ENVÍO STEFANO (el día
+    que Jime registra el envío) cuando ese día es igual o posterior al inicio
+    de la etapa: se toma el más tardío de ambos. Un envío anterior al inicio es
+    de una ronda pasada y se ignora; sin inicio registrado, basta el envío.
+    Un envío posterior a ``now`` (p. ej. texto viejo sin año) también se ignora.
+    """
+
+    log = log or {}
+    role = stage_role(status)
+    log_start = parse_start_datetime(log.get("FECHA_INICIO", ""), log.get("HORA_INICIO", ""))
+    start = log_start
+    if role == "planner" and use_stefano_sent:
+        sent = parse_spanish_datetime(stefano_sent)
+        if sent is not None and (now is None or sent <= now) and (
+                log_start is None or sent.date() >= log_start.date()):
+            start = max(sent, log_start) if log_start else sent
+    time_text, hours = stage_time_limit(apparatus, status, log)
+    deadline = add_business_time_dt(start, time_text) if start and time_text else None
+    return {"role": role, "log_start": log_start, "start": start,
+            "time_text": time_text, "hours": hours, "deadline": deadline}
+
+
+def stage_timing_state(timing: dict[str, Any], *, has_log: bool, now: datetime) -> str:
+    """Estado del semáforo de la etapa, medido desde el mismo inicio que su vencimiento."""
+
+    if timing["role"] == "doctor":
+        return DOCTOR_WAIT_STATE
+    start, hours = timing["start"], timing["hours"]
+    if start is None and not has_log:
+        return "Sin registro de inicio de esta etapa"
+    if hours is None:
+        return "Sin tiempo configurado"
+    if start is None:
+        return "Sin fecha de inicio"
+    return calculate_alert_state(start.strftime("%Y-%m-%d"), start.strftime("%H:%M:%S"), hours, now=now)
+
+
+def next_date_label(timing: dict[str, Any], now: datetime) -> str:
+    """PRÓXIMA FECHA: cuándo regresa Stefano, vence la etapa o desde cuándo se espera."""
+
+    role, start, deadline = timing["role"], timing["start"], timing["deadline"]
+    if role == "doctor":
+        if start is None:
+            return DOCTOR_WAIT_STATE
+        # Días hábiles transcurridos por calendario: de viernes a lunes es 1.
+        days = sum(1 for offset in range(1, (now.date() - start.date()).days + 1)
+                   if is_business_day(start.date() + timedelta(days=offset)))
+        waited = "hoy" if days == 0 else f"{days} {'día hábil' if days == 1 else 'días hábiles'}"
+        return f"{DOCTOR_WAIT_STATE} desde {format_short_day(start)} ({waited})"
+    if role == "payment":
+        return f"Esperando pago desde {format_short_day(start)}" if start else "Esperando pago"
+    if deadline is None:
+        return "—"
+    # Un envío capturado sólo con el día vence a medianoche: basta mostrar el día.
+    shown = (format_short_day(deadline) if deadline.time() == datetime.min.time()
+             else format_short_datetime(deadline))
+    return f"{'Regresa Stefano' if role == 'planner' else 'Vence'}: {shown}"
+
+
+def estimated_delivery_label(
+    apparatus: str, status: str, timing: dict[str, Any], now: datetime, shipped: Any = ""
+) -> str:
+    """ENTREGA ESTIMADA: cuándo entra el pedido a PRODUCTO ENVIADO.
+
+    Parte del vencimiento de la etapa actual (o de ahora, si ya pasó o la etapa
+    no tiene tiempo) y suma en orden el tiempo de cada etapa obligatoria
+    posterior. El pago no la detiene y las esperas del doctor suman cero: como
+    se recalcula en cada lectura, la fecha se mueve sola mientras el doctor no
+    responde, y se avisa con "(+ revisión doctor)".
+    """
+
+    current = normalize_text(normalize_status_alias(status))
+    if current == normalize_text("CANCELO"):
+        return "—"
+    if current == normalize_text(PAUSED_STATUS):
+        return "En pausa"
+    flow = get_process_flow(apparatus)
+    keys = [normalize_text(name) for name, _ in flow]
+    target = normalize_text(DELIVERY_TARGET_STATUS)
+    end = keys.index(target) if target in keys else len(flow)
+    if (current in {normalize_text(name) for name in WORKBENCH_SENT_STATUSES}
+            or (current in keys and keys.index(current) >= end)):
+        shipped_day = parse_simple_date(shipped)
+        return f"Enviado {format_short_day(shipped_day)}" if shipped_day else "Enviado"
+    if current not in keys:
+        return "—"
+    cursor = now
+    if timing["role"] != "doctor" and timing["time_text"]:
+        # Sin inicio conocido, la etapa actual cuenta completa desde ahora.
+        stage_end = timing["deadline"] or add_business_time_dt(now, timing["time_text"])
+        cursor = max(stage_end, now) if stage_end else now
+    doctor_pending = timing["role"] == "doctor"
+    skipped = {normalize_text(name) for name in (*OPTIONAL_PROCESS_STATUSES, *TERMINAL_STATUSES)}
+    for name, time_limit in flow[keys.index(current) + 1:end]:
+        if normalize_text(name) in skipped:
+            continue
+        if stage_role(name) == "doctor":
+            doctor_pending = True
+            continue
+        cursor = add_business_time_dt(cursor, time_limit) or cursor
+    return format_short_day(cursor) + (" (+ revisión doctor)" if doctor_pending else "")
 
 
 def get_user_passwords(secret_source: Any | None = None) -> dict[str, str]:
@@ -2439,7 +2656,11 @@ def get_user_preferences_worksheet():
 
 
 def normalize_column_order(order: Any, available_columns: Any) -> list[str]:
-    """Elimina columnas fijas, desconocidas o repetidas de una preferencia."""
+    """Elimina columnas fijas, desconocidas o repetidas de una preferencia.
+
+    Las columnas de agenda que faltan en un orden guardado antes de que
+    existieran se acomodan después de LÍMITE ETAPA, no al final de la tabla.
+    """
     available = [clean_cell(column).strip() for column in available_columns
                  if clean_cell(column).strip() not in WORKBENCH_FIXED_COLUMNS]
     requested = order if isinstance(order, (list, tuple)) else []
@@ -2448,6 +2669,13 @@ def normalize_column_order(order: Any, available_columns: Any) -> list[str]:
         cleaned = clean_cell(column).strip()
         if cleaned in available and cleaned not in result:
             result.append(cleaned)
+    requested_keys = {clean_cell(column).strip() for column in requested}
+    missing = [column for column in WORKBENCH_SCHEDULE_COLUMNS
+               if column in result and column not in requested_keys]
+    if requested_keys and missing and WORKBENCH_SCHEDULE_ANCHOR in result:
+        result = [column for column in result if column not in missing]
+        anchor = result.index(WORKBENCH_SCHEDULE_ANCHOR) + 1
+        result[anchor:anchor] = missing
     return result
 
 
@@ -2887,12 +3115,24 @@ def get_forms_file_links(value: Any) -> list[str]:
     return links
 
 
+def estatus_formula_positions(headers: list[str]) -> set[int]:
+    """Posiciones (1-based) de las columnas que calcula la hoja; nunca se escriben."""
+
+    return {position for column in ESTATUS_FORMULA_COLUMNS
+            if (position := get_header_position(headers, column)) is not None}
+
+
 def update_row_by_columna_1(
     identifier: str, changes: dict[str, Any], *, expected_values: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Actualiza solo las celdas modificadas de ESTATUS APARATOS por Columna 1."""
+    """Actualiza solo las celdas modificadas de ESTATUS APARATOS por Columna 1.
 
-    result = {"success": False, "updated_columns": [], "skipped_columns": [], "error": ""}
+    Las columnas de ESTATUS_FORMULA_COLUMNS se descartan siempre (quedan en
+    ``protected_columns``): escribirlas rompería la fórmula de la hoja.
+    """
+
+    result = {"success": False, "updated_columns": [], "skipped_columns": [],
+              "protected_columns": [], "error": ""}
     if not changes:
         return result
 
@@ -2943,10 +3183,14 @@ def update_row_by_columna_1(
 
     updates = []
     canonical_changes: dict[str, Any] = {}
+    protected_positions = estatus_formula_positions(headers)
     for column, value in changes.items():
         column_position = get_header_position(headers, column)
         if column_position is None:
             result["skipped_columns"].append(column)
+            continue
+        if column_position in protected_positions:
+            result["protected_columns"].append(column)
             continue
         updates.append(
             Cell(target_row_number, column_position, prepare_sheet_value(value))
@@ -2955,7 +3199,11 @@ def update_row_by_columna_1(
         canonical_changes[canonical_column_name(column)] = value
 
     if not updates:
-        result["error"] = "No encontré encabezados válidos para las columnas modificadas."
+        result["error"] = (
+            f"{', '.join(result['protected_columns'])}: la calcula la hoja y la app no la modifica."
+            if result["protected_columns"]
+            else "No encontré encabezados válidos para las columnas modificadas."
+        )
         return result
 
     try:
@@ -2984,9 +3232,7 @@ NEW_ORDER_ESTATUS_FIELDS = [
     "VENDEDOR",
     "SERVICIO",
     "ARCHIVOS RECIBIDOS",
-    "DÍAS DE ENTREGA",
     "FECHA DE RECEPCIÓN",
-    "FECHA PARA ENTREGA",
 ]
 
 
@@ -3018,12 +3264,14 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
     target_row = find_first_available_estatus_row(values, headers)
 
     updates = []
+    # Nunca se escribe una columna calculada por la hoja, ni siquiera vacía.
+    protected_positions = estatus_formula_positions(headers)
     for column in NEW_ORDER_ESTATUS_FIELDS:
         if column not in row_dict:
             continue
 
         column_position = get_header_position(headers, column)
-        if column_position is None:
+        if column_position is None or column_position in protected_positions:
             continue
 
         updates.append(
@@ -3485,6 +3733,13 @@ def render_edit_field(
         )
         return text_value
 
+    if canonical_column in ESTATUS_FORMULA_COLUMNS:
+        st.text_input(
+            display_field_label(column), value=text_value, key=key, disabled=True,
+            help=FORMULA_DELIVERY_HELP,
+        )
+        return text_value
+
     if canonical_column in SELECTBOX_OPTIONS_BY_COLUMN:
         fixed_options = SELECTBOX_OPTIONS_BY_COLUMN[canonical_column]
         if canonical_column == APARATO_COLUMN:
@@ -3662,7 +3917,8 @@ def render_nuevo_pedido_tab() -> None:
     st.caption(
         "Captura los datos principales en ESTATUS APARATOS. "
         "La fecha de recepción se guarda automáticamente con la fecha de hoy; "
-        "la fecha de entrega se calculará al aprobar el pago de confección."
+        "la fecha para entrega la calcula la hoja (envío a Stefano + 6 días hábiles) "
+        "y la salida proyectada por etapas se ve en Entrega estimada."
     )
     render_success_feedback(
         "nuevo_pedido_success_message",
@@ -3690,12 +3946,12 @@ def render_nuevo_pedido_tab() -> None:
                 )
             with admin_info_cols[1]:
                 st.info(
-                    f"{display_field_label('DÍAS DE ENTREGA')}: "
-                    f"{DEFAULT_DELIVERY_BUSINESS_DAYS} días hábiles para todos los aparatos."
+                    f"{display_field_label('FECHA PARA ENTREGA')}: la calcula la hoja "
+                    "con FECHA/HORA ENVÍO STEFANO + 6 días hábiles; la app no la escribe."
                 )
                 st.info(
-                    f"{display_field_label('FECHA PARA ENTREGA')}: "
-                    "se calculará automáticamente al aprobar PAGO CONFECCIÓN."
+                    "🚚 ENTREGA ESTIMADA: Seguimiento proyecta la salida sumando el tiempo "
+                    "de las etapas pendientes; el pago no la detiene."
                 )
 
         first_row_cols = st.columns(3)
@@ -3775,9 +4031,7 @@ def render_nuevo_pedido_tab() -> None:
         "VENDEDOR": clean_vendedor,
         "SERVICIO": clean_servicio,
         "ARCHIVOS RECIBIDOS": clean_archivos_recibidos,
-        "DÍAS DE ENTREGA": DEFAULT_DELIVERY_BUSINESS_DAYS,
         "FECHA DE RECEPCIÓN": format_sheet_date(fecha_recepcion),
-        "FECHA PARA ENTREGA": "",
     }
 
     try:
@@ -4044,12 +4298,12 @@ def get_alert_context_fields(
         canonical_column_name(column): column for column in estatus_row.index
     }
     status_norm = normalize_text(new_status or current_status)
+    # FECHA PARA ENTREGA no se sugiere: la calcula la hoja (ESTATUS_FORMULA_COLUMNS).
     suggestions = [
         "DETALLE COMENTARIOS",
         "VENDEDOR",
         "SERVICIO",
         "PAGO",
-        "FECHA PARA ENTREGA",
     ]
 
     if "PAGO" in status_norm:
@@ -5178,6 +5432,23 @@ def build_payment_authorization_changes(
     }
 
 
+def build_payment_estatus_changes(
+    *, current_status: str, payment_status: str, can_advance: bool, today: date
+) -> dict[str, str]:
+    """Columnas de ESTATUS APARATOS al guardar un pago.
+
+    Sólo se registra la fecha del pago autorizado: FECHA PARA ENTREGA la
+    calcula la hoja y la entrega proyectada se ve en ENTREGA ESTIMADA.
+    """
+
+    changes = {"PAGO": payment_status}
+    if can_advance and current_status == "PAGO PLANEACIÓN":
+        changes["FECHA PAGO PLANEACION"] = format_sheet_date(today)
+    if can_advance and current_status == "PAGO CONFECCIÓN":
+        changes["FECHA PAGO CONFECCION"] = format_sheet_date(today)
+    return changes
+
+
 def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -> None:
     if selected_row is None:  # En la ficha, el desplegable ya nombra la sección.
         st.subheader("💳 Control de Pagos")
@@ -5268,15 +5539,12 @@ def render_pagos_tab(current_user: str, selected_row: pd.Series | None = None) -
         if not update_active_tiempo_row(selected_id, tiempo_changes):
             st.error("No se pudo registrar la autorización de pago. Actualiza el pedido e inténtalo de nuevo.")
             return
-        now_dt = app_now()
-        estatus_changes = {"PAGO": selected_payment_status}
-        if tiempo_changes["PUEDE_AVANZAR"] == "Sí":
-            if current_status == "PAGO PLANEACIÓN":
-                estatus_changes["FECHA PAGO PLANEACION"] = format_sheet_date(now_dt.date())
-            if current_status == "PAGO CONFECCIÓN":
-                estatus_changes["FECHA PAGO CONFECCION"] = format_sheet_date(now_dt.date())
-                estatus_changes["DÍAS DE ENTREGA"] = DEFAULT_DELIVERY_BUSINESS_DAYS
-                estatus_changes["FECHA PARA ENTREGA"] = format_sheet_date(add_business_days(now_dt.date(), DEFAULT_DELIVERY_BUSINESS_DAYS))
+        estatus_changes = build_payment_estatus_changes(
+            current_status=current_status,
+            payment_status=selected_payment_status,
+            can_advance=tiempo_changes["PUEDE_AVANZAR"] == "Sí",
+            today=app_today(),
+        )
         result = update_row_by_columna_1(selected_id, estatus_changes)
         if result["success"]:
             clear_sheet_data_cache()
@@ -5552,9 +5820,13 @@ def render_active_app_tab(current_user: str) -> None:
 # Los pedidos salen de la mesa al enviar el producto; la encuesta se gestiona aquí.
 WORKBENCH_SENT_STATUSES = ("ENVIADO", "PRODUCTO ENVIADO", "ENVÍO DE ENCUESTA")
 WORKBENCH_CLOSED_STATUSES = {*TERMINAL_STATUSES, *WORKBENCH_SENT_STATUSES}
+# Agenda del pedido: van justo después de LÍMITE ETAPA, también para quien ya
+# guardó un orden de columnas antes de que existieran.
+WORKBENCH_SCHEDULE_COLUMNS = ["SIGUIENTE ETAPA", "PRÓXIMA FECHA", "ENTREGA ESTIMADA"]
+WORKBENCH_SCHEDULE_ANCHOR = "LÍMITE ETAPA"
 WORKBENCH_COMPUTED_COLUMNS = [
-    "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", "LÍMITE ETAPA",
-    "DETALLE SEMÁFORO",
+    "SEMÁFORO", "RESPONSABLE", "HORAS EN ETAPA", "PLAZO HORAS", WORKBENCH_SCHEDULE_ANCHOR,
+    *WORKBENCH_SCHEDULE_COLUMNS, "DETALLE SEMÁFORO",
 ]
 WORKBENCH_AUTOMATIC_COLUMNS = {
     *WORKBENCH_COMPUTED_COLUMNS,
@@ -5680,7 +5952,11 @@ def build_workbench_table(
     *,
     paused_only: bool = False,
 ) -> pd.DataFrame:
-    """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas."""
+    """Une cada pedido con su etapa activa, sin inventar inicios ni multiplicar filas.
+
+    Semáforo, horas, plazo, límite y agenda (siguiente etapa, próxima fecha y
+    entrega estimada) salen del mismo inicio efectivo y de un solo "ahora".
+    """
     cases = paused_workbench_cases(estatus_df) if paused_only else active_workbench_cases(estatus_df)
     logs = canonical_workbench_df(tiempos_df)
     if ID_COLUMN in logs:
@@ -5695,30 +5971,47 @@ def build_workbench_table(
         identifier = case[ID_COLUMN]
         matches = active_logs.get(identifier, pd.DataFrame())
         log: dict[str, Any] = {}
+        timing_issue = ""
         if len(matches) == 1 and normalize_text(matches.iloc[0][STATUS_COLUMN]) == normalize_text(case[STATUS_COLUMN]):
             log = matches.iloc[0].to_dict()
-            stage_state = calculate_alert_state(log.get("FECHA_INICIO", ""), log.get("HORA_INICIO", ""),
-                                                log.get("TIEMPO_MAXIMO_HORAS", ""), now=now)
         elif len(matches) > 1:
-            stage_state = "Varios registros activos; revisar tiempos"
+            timing_issue = "Varios registros activos; revisar tiempos"
         elif len(matches) == 1:
-            stage_state = "El registro de tiempo no corresponde a la etapa actual"
-        else:
-            stage_state = "Sin registro de inicio de esta etapa"
+            timing_issue = "El registro de tiempo no corresponde a la etapa actual"
         if (cases[ID_COLUMN] == identifier).sum() > 1:
             log = {}
-            stage_state = "Folio duplicado; corregir antes de editar"
-        start = parse_start_datetime(log.get("FECHA_INICIO", ""), log.get("HORA_INICIO", ""))
+            timing_issue = "Folio duplicado; corregir antes de editar"
+        apparatus, status = case.get(APARATO_COLUMN, ""), case[STATUS_COLUMN]
+        # Con registros contradictorios no se mide desde el envío a Stefano:
+        # el aviso gris debe seguir visible hasta corregirlos.
+        timing = current_stage_timing(apparatus, status, log, case.get(STEFANO_SENT_COLUMN, ""),
+                                      use_stefano_sent=not timing_issue, now=now)
+        stage_state = timing_issue or stage_timing_state(timing, has_log=bool(log), now=now)
+        start = timing["start"]
         special_state = get_special_payment_sla_alert_state(case, lookup)
         states = [stage_state, *([special_state] if special_state else [])]
-        signal = min((workbench_signal(state) for state in states), key=workbench_signal_rank)
-        configured_hours = pd.to_numeric(log.get("TIEMPO_MAXIMO_HORAS", ""), errors="coerce")
+        # Mientras se espera al doctor el pedido nunca se pinta atrasado; la
+        # alerta especial de pago sigue a la vista en el motivo del semáforo.
+        signal_states = [stage_state] if timing["role"] == "doctor" else states
+        signal = min((workbench_signal(state) for state in signal_states), key=workbench_signal_rank)
+        stored_limit = " ".join(filter(None, [log.get("FECHA_LIMITE", ""), log.get("HORA_LIMITE", "")]))
+        deadline = timing["deadline"]
+        if timing["role"] == "doctor":
+            stage_limit = "—"
+        elif deadline and (not stored_limit or start != timing["log_start"]):
+            stage_limit = deadline.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            stage_limit = stored_limit or "—"
         computed.append({
             "SEMÁFORO": signal,
-            "RESPONSABLE": get_process_responsible(case[STATUS_COLUMN]) or "Por asignar",
+            "RESPONSABLE": get_process_responsible(status) or "Por asignar",
             "HORAS EN ETAPA": round(business_hours_elapsed(start, now), 2) if start else None,
-            "PLAZO HORAS": float(configured_hours) if pd.notna(configured_hours) and math.isfinite(configured_hours) and configured_hours > 0 else None,
-            "LÍMITE ETAPA": " ".join(filter(None, [log.get("FECHA_LIMITE", ""), log.get("HORA_LIMITE", "")])) or "—",
+            "PLAZO HORAS": timing["hours"] if log or start else None,
+            "LÍMITE ETAPA": stage_limit,
+            "SIGUIENTE ETAPA": get_next_normal_status(apparatus, status) or "—",
+            "PRÓXIMA FECHA": next_date_label(timing, now),
+            "ENTREGA ESTIMADA": estimated_delivery_label(apparatus, status, timing, now,
+                                                         case.get("FECHA ENVÍO", "")),
             "DETALLE SEMÁFORO": " · ".join(states),
         })
     for column in WORKBENCH_COMPUTED_COLUMNS:
@@ -5727,10 +6020,14 @@ def build_workbench_table(
 
 
 def workbench_editable_columns(current_user: str, available_columns: Any = ()) -> set[str]:
-    """Permite corregir toda columna respaldada por Sheets salvo las columnas fijas."""
+    """Permite corregir toda columna respaldada por Sheets salvo las columnas fijas.
+
+    Las columnas que calcula una fórmula de la hoja (FECHA PARA ENTREGA) se
+    protegen igual que los cálculos de la vista: nadie las edita.
+    """
     if current_user not in APP_USERS:
         return set()
-    protected = {"SELECCIONAR", ID_COLUMN, *WORKBENCH_COMPUTED_COLUMNS}
+    protected = {"SELECCIONAR", ID_COLUMN, *WORKBENCH_COMPUTED_COLUMNS, *ESTATUS_FORMULA_COLUMNS}
     return set(available_columns) - protected
 
 
@@ -6239,6 +6536,18 @@ def workbench_stage_hint(row: pd.Series, current_user: str) -> str:
     return "Tu usuario no puede mover este pedido desde su etapa actual."
 
 
+WORKBENCH_SCHEDULE_CHIPS = (
+    ("PRÓXIMA FECHA", "📅 Próxima fecha", ("#E0F2FE", "#075985")),
+    ("ENTREGA ESTIMADA", "🚚 Entrega estimada", ("#CCFBF1", "#115E59")),
+)
+
+
+def workbench_schedule_chips(row: pd.Series) -> list[tuple[str, tuple[str, str]]]:
+    """Chips de la ficha con la próxima fecha y la entrega estimada del pedido."""
+    return [(f"{label}: {clean_cell(row.get(column, '')).strip() or '—'}", colors)
+            for column, label, colors in WORKBENCH_SCHEDULE_CHIPS if column in row.index]
+
+
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     archive_pending = workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
     if archive_pending:
@@ -6249,10 +6558,12 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     catalog[STATUS_COLUMN] = list(dict.fromkeys([candidate.get(STATUS_COLUMN, ""),
         *[normalize_status_alias(value) for value in workbench_stage_options(candidate, current_user)]]))
     manual_options = [normalize_status_alias(value) for value in workbench_manual_stage_options(candidate, current_user)]
+    # FECHA PARA ENTREGA se muestra en la ficha sólo como texto: la calcula la hoja.
+    readonly = [column for column in ESTATUS_FORMULA_COLUMNS if column in row.index]
     fields = order_detail.detail_columns(row.index,
-        workbench_editable_columns(current_user, row.index), BUSINESS_ORDER)
+        workbench_editable_columns(current_user, row.index) | set(readonly), BUSINESS_ORDER)
     result = order_detail.render_editor(row, namespace="apparatus", id_column=ID_COLUMN,
-        columns=fields, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
+        columns=fields, readonly=readonly, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
         option_label=workbench_form_option_label, palettes=SHEET_STYLE_COLORS,
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
         expanded_catalog={STATUS_COLUMN: manual_options},
@@ -6264,7 +6575,8 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
         automatic_time_columns={"FECHA/HORA ENVÍO STEFANO"},
         format_datetime=format_sheet_datetime, now=app_now,
-        hints={STATUS_COLUMN: workbench_stage_hint(row, current_user)})
+        hints={STATUS_COLUMN: workbench_stage_hint(row, current_user),
+               **{column: FORMULA_DELIVERY_HELP for column in readonly}})
     if result:
         baseline, delta = result
         original = pd.DataFrame([baseline])
@@ -6322,6 +6634,7 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
             (display_selectbox_value(STATUS_COLUMN, row[STATUS_COLUMN]),
              SHEET_STYLE_COLORS[STATUS_COLUMN].get(row[STATUS_COLUMN], ("#EDE9FE", "#4C1D95"))),
             (signal, WORKBENCH_SIGNAL_COLORS.get(signal, WORKBENCH_SIGNAL_COLORS["⚪ Sin medición"])),
+            *workbench_schedule_chips(row),
         ], workbench_signal_detail(signal, row.get("DETALLE SEMÁFORO", "")))
         render_workbench_order_editor(row, current_user)
         if (len(selected) <= 1 and row[STATUS_COLUMN] == "LISTO P/SINTERIZADO"

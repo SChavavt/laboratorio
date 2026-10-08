@@ -102,7 +102,10 @@ etapa.
 Todos los usuarios autenticados pueden corregir las columnas provenientes de
 `ESTATUS APARATOS`, incluidas doctor, paciente, aparato y las fechas que la app
 autollena. Folio, semáforo y los cálculos exclusivos de la vista permanecen
-protegidos. El filtro Responsable
+protegidos. **Fecha para entrega** también es sólo de lectura (en la tabla y en
+la ficha): la calcula una fórmula de la hoja (`FECHA/HORA ENVÍO STEFANO` + 6
+días hábiles) y escribir en su rango la rompería, así que la app nunca la
+escribe, ni al guardar pagos ni al crear pedidos. El filtro Responsable
 elige inicialmente al usuario activo cuando su nombre existe en los datos; en
 caso contrario comienza en Todos y siempre permite cambiar la selección.
 
@@ -122,25 +125,52 @@ oscuro sobre morado claro para que su estado siga siendo legible.
 | Verde | Menos del 80% del plazo de la etapa |
 | Amarillo | Desde 80% y antes de alcanzar el plazo |
 | Rojo | Plazo agotado o alerta especial de pago atrasada |
-| Gris | Sin inicio, sin plazo válido, folio duplicado o registro de tiempo inconsistente |
+| Gris | Sin inicio, sin plazo válido, esperando al doctor, folio duplicado o registro de tiempo inconsistente |
 
 El detalle muestra el motivo del color. Se conservan las alertas especiales de
 pagos para Tiger, Leone y Distalizador; se muestra la más urgente entre la alerta
-de etapa y la alerta especial. Los plazos cuentan lunes a viernes, 24 horas por
+de etapa y la alerta especial, salvo mientras se espera al doctor
+(`REVISIÓN PLAN DOCTOR`, `REVISIÓN DISEÑO DOCTOR`, `VOBO/ACEPTACIÓN PLANEACIÓN`,
+`ESPERANDO STL PSM DOCTOR`, `ESCANEO MAL (EN REPETICIÓN)`): entonces el pedido
+queda gris aunque la hoja les asigne un tiempo, y la alerta especial sólo
+aparece en el motivo. En las etapas de Stefano (`EN PLANEACIÓN`,
+`SOLICITUD DE CAMBIOS`, `EN DISEÑO`) el plazo cuenta desde
+`FECHA/HORA ENVÍO STEFANO` cuando ese día es igual o posterior al inicio de la
+etapa (se toma el más tardío); un envío de una ronda anterior o con fecha futura
+se ignora. Semáforo, horas, plazo y límite de la fila usan ese mismo inicio. Los plazos cuentan lunes a viernes, 24 horas por
 día hábil, como el modelo existente; no representan un turno laboral de 8 horas.
 
 El flujo y sus plazos se leen de `PROCESOS POR APARATO` (misma hoja horizontal
 Fases/Tiempo por aparato que usa `PROCESOS POR PRODUCTO` en alineadores) y se
-combinan sobre `PROCESS_CONFIG`: un aparato o tiempo que ya está programado en
-el código sigue funcionando si Sheets falla o todavía no lo tiene ahí; la hoja
-sólo agrega aparatos nuevos o actualiza sus tiempos, nunca elimina lo
-programado. Un aparato con columna propia (p. ej. Hyrax o Trampa Lingual) usa
+combinan sobre `PROCESS_CONFIG`: un aparato que ya está programado en el código
+sigue funcionando si Sheets falla o todavía no lo tiene ahí. Un aparato con
+columna en la hoja usa la lista completa de esa columna (nombres, orden y
+tiempos), que reemplaza la programada. Un aparato con columna propia (p. ej. Hyrax o Trampa Lingual) usa
 esa columna; sólo si no la tiene toma el flujo de `PIEZA SINTERIZADA`. Se relee cada hora (no en cada actualización de 30 s de los
 pedidos) o al pulsar **Actualizar datos**, para no afectar el rendimiento. La
 tabla usa la duración guardada en el registro activo de `TIEMPOS_APARATOS`. No
 se inventan fechas iniciales para pedidos antiguos ni se escribe una columna de
 semáforo en Google Sheets. Los registros nuevos respetan el orden real de sus
 encabezados.
+
+## Agenda del pedido
+
+Tres columnas calculadas (sólo lectura, se ocultan con las automáticas) van
+justo después de **Límite etapa**, también para quien ya guardó un orden de
+columnas antes de que existieran. Se recalculan en cada lectura con el flujo del
+aparato en `PROCESOS POR APARATO`; no se escriben en Sheets.
+
+| Columna | Qué muestra |
+| --- | --- |
+| Siguiente etapa | La siguiente etapa obligatoria del flujo (sin las opcionales `ESCANEO MAL` y `SOLICITUD DE CAMBIOS`). |
+| Próxima fecha | Etapas de Stefano: «Regresa Stefano: vie 09/10 13:56». Espera del doctor: «Esperando doctor desde lun 05/10 (2 días hábiles)». Pagos: «Esperando pago desde …». Otras etapas con tiempo: «Vence: …». |
+| Entrega estimada | Día en que el pedido entraría a `PRODUCTO ENVIADO`: parte del vencimiento de la etapa actual (o de ahora, si ya pasó o la etapa no tiene tiempo) y suma el tiempo de cada etapa obligatoria pendiente. |
+
+El pago nunca detiene la entrega estimada (las etapas de pago suman cero, porque
+hay doctores que trabajan antes de pagar). Las esperas del doctor también suman
+cero; como la columna se recalcula, la fecha se recorre sola mientras el doctor
+no responde y lo indica con «(+ revisión doctor)». La ficha del pedido muestra
+la próxima fecha y la entrega estimada junto al semáforo.
 
 ## Pedidos visibles y guardado
 

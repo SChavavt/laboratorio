@@ -275,7 +275,7 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
                   multi_codecs=None, required=(), constrained=(), extra=None, hints=None,
-                  automatic_time_columns=(), expanded_catalog=None):
+                  automatic_time_columns=(), expanded_catalog=None, readonly=()):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
@@ -283,6 +283,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     ``hints`` pone la ayuda de un campo en su ícono (?) en vez de un texto fijo.
     ``expanded_catalog`` ofrece un segundo selector dentro del campo; abrirlo
     sólo navega y nunca añade una opción artificial a los cambios del pedido.
+    ``readonly`` son columnas que sólo se muestran como texto: nunca entran al
+    borrador ni al guardado (p. ej. una fórmula de la hoja).
     """
     identifier = str(row[id_column])
     drafts = st.session_state.setdefault(draft_key(namespace), {})
@@ -326,7 +328,10 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                     args = (namespace, identifier, column, key, equivalent, lambda value: value or "")
                     common = dict(key=key, disabled=blocked, on_change=_remember, args=args,
                                   help=(hints or {}).get(column))
-                    if column in catalog and catalog[column]:
+                    if column in readonly:
+                        st.text_input(label, value=text or "—", key=key, disabled=True,
+                                      help=common["help"])
+                    elif column in catalog and catalog[column]:
                         if column in multiple:
                             decode, encode = (multi_codecs or {}).get(column, (split_values, join_values))
                             values = decode(text, catalog[column])
@@ -419,7 +424,7 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                    use_container_width=True, on_click=clear_drafts, args=(namespace,))
     count.caption(f"{len(draft['changes'])} campos con cambios" if changed else "Sin cambios pendientes")
     if submitted:
-        changes = dict(draft["changes"])
+        changes = {column: value for column, value in draft["changes"].items() if column not in readonly}
         for column in automatic_time_columns:
             if column in changes and changes[column]:
                 parsed = parse_datetime(changes[column])

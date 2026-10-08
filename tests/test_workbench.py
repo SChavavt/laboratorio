@@ -820,13 +820,23 @@ def test_every_user_can_edit_manual_fields(user):
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])
 def test_every_user_can_correct_sheet_columns_including_automatic_fields(user):
-    original = pd.DataFrame([case(**{"FECHA PARA ENTREGA": "2026/09/20"})])
+    original = pd.DataFrame([case(**{"FECHA ENVÍO": "2026/09/20"})])
     changes = [("001", {
         "NOMBRE DOCTOR": "Otro",
         app.APARATO_COLUMN: "TIGER",
-        "FECHA PARA ENTREGA": "2026/09/21",
+        "FECHA ENVÍO": "2026/09/21",
     })]
     assert not app.validate_workbench_changes(original, original, changes, user)
+
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly", "Vero"])
+def test_nobody_edits_sheet_formula_delivery_date(user):
+    # FECHA PARA ENTREGA es una fórmula de la hoja (envío a Stefano + 6 días
+    # hábiles): escribir en su rango la rompería para todos los pedidos.
+    original = pd.DataFrame([case(**{"FECHA PARA ENTREGA": "2026/09/20"})])
+    assert "FECHA PARA ENTREGA" not in app.workbench_editable_columns(user, original.columns)
+    assert app.validate_workbench_changes(
+        original, original, [("001", {"FECHA PARA ENTREGA": "2026/09/21"})], user)
 
 
 def test_admin_access_users_see_every_responsible_by_default():
@@ -1505,3 +1515,214 @@ def test_refresh_dynamic_process_catalog_keeps_static_config_when_sheet_fails(mo
     app.refresh_dynamic_process_catalog()
 
     assert app.PROCESS_CONFIG == original_config
+
+
+# --- Agenda del pedido: siguiente etapa, próxima fecha y entrega estimada ---
+
+# Flujo de MSE tal como está hoy en PROCESOS POR APARATO (no el del código).
+LIVE_MSE_FLOW = [
+    ("ORDEN RECIBIDA", None), ("REVISIÓN DE ARCHIVOS", "<5 hrs"),
+    ("ESCANEO MAL (EN REPETICIÓN)", None), ("PAGO PLANEACIÓN", None),
+    ("EN PLANEACIÓN", "<3 dias"), ("REVISIÓN PLAN DOCTOR", None),
+    ("SOLICITUD DE CAMBIOS", "<3 dias"), ("PAGO CONFECCIÓN", None),
+    ("ELABORACIÓN PLATINA", "<1 hr"), ("EN SINTERIZADO Y HORNEADO", "<1 dia"),
+    ("LISTO P/CONFECCIÓN", "<1 dia"), ("EN CONFECCIÓN", "<3 hrs"),
+    ("CONTROL DE CALIDAD Y FOTOEVIDENCIA", "<1 hr"), ("LISTO P/EMPAQUETADO", "<1 hr"),
+    ("GENERACIÓN DE GUÍA", "<1 hr"), ("EMPACADO/LISTO P/ENVÍO", "<1 hr"),
+    ("PRODUCTO ENVIADO", "<1 hr"), ("ENVÍO DE ENCUESTA", "<3 dias"),
+]
+OCT_NOW = datetime(2026, 10, 7, 16)  # miércoles
+
+
+def _clear_flow_caches():
+    app._apparatus_components_from_text.cache_clear()
+    app._canonical_apparatus_from_text.cache_clear()
+    app._cached_process_flow.cache_clear()
+    app.apparatus_flow_catalog.cache_clear()
+
+
+@pytest.fixture
+def live_mse(monkeypatch):
+    monkeypatch.setattr(app, "PROCESS_CONFIG", {**app.PROCESS_CONFIG, "MSE": LIVE_MSE_FLOW})
+    monkeypatch.setattr(app, "app_now", lambda: OCT_NOW)
+    _clear_flow_caches()
+    yield
+    _clear_flow_caches()
+
+
+def stage_log(status, start, limit="", configured="", identifier="001"):
+    return {app.ID_COLUMN: identifier, app.STATUS_COLUMN: status, "FECHA_INICIO": start.strftime("%Y-%m-%d"),
+            "HORA_INICIO": start.strftime("%H:%M:%S"), "FECHA_FIN": "",
+            "TIEMPO_MAXIMO_HORAS": limit, "TIEMPO_CONFIGURADO": configured}
+
+
+def schedule_row(status, log_entry, **extra):
+    table = app.build_workbench_table(pd.DataFrame([case(status=status, **extra)]),
+                                      pd.DataFrame([log_entry] if log_entry else []))
+    return table.iloc[0]
+
+
+def test_planning_shows_stefano_return_and_estimated_delivery(live_mse):
+    row = schedule_row("EN PLANEACIÓN", stage_log("EN PLANEACIÓN", datetime(2026, 10, 6, 13, 56, 54),
+                                                    "72", "<3 dias"))
+    assert row["SIGUIENTE ETAPA"] == "REVISIÓN PLAN DOCTOR"
+    # Martes 06/10 13:56 + 3 días hábiles = viernes 09/10 13:56.
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: vie 09/10 13:56"
+    assert row["LÍMITE ETAPA"] == "2026-10-09 13:56:54"
+    assert row["SEMÁFORO"] == "🟢 En tiempo"
+    # Desde vie 09/10 13:56: platina +1 h (14:56), sinterizado +1 día (lun 12/10),
+    # listo p/confección +1 día (mar 13/10 14:56), confección +3 h (17:56) y
+    # calidad, empaquetado, guía y empacado +1 h c/u (21:56). Revisión del doctor
+    # y pagos suman 0; SOLICITUD DE CAMBIOS es opcional y no se cuenta.
+    assert row["ENTREGA ESTIMADA"] == "mar 13/10 (+ revisión doctor)"
+
+
+def test_stefano_return_counts_from_recorded_send_day(live_mse, monkeypatch):
+    monkeypatch.setattr(app, "app_now", lambda: datetime(2026, 10, 9, 15))
+    started = stage_log("EN PLANEACIÓN", datetime(2026, 10, 6, 13, 56, 54), "72", "<3 dias")
+    late = schedule_row("EN PLANEACIÓN", started)
+    assert late["SEMÁFORO"] == "🔴 Atrasado"
+    sent = schedule_row("EN PLANEACIÓN", started, **{"FECHA/HORA ENVÍO STEFANO": "2026/10/07 10:00"})
+    # Jime registró el envío el miércoles: regresa el lunes y aún va a tiempo.
+    assert sent["PRÓXIMA FECHA"] == "Regresa Stefano: lun 12/10 10:00"
+    assert sent["LÍMITE ETAPA"] == "2026-10-12 10:00:00"
+    assert sent["HORAS EN ETAPA"] == 53
+    assert sent["SEMÁFORO"] == "🟢 En tiempo"
+
+
+@pytest.mark.parametrize("sent", ["2026/10/01 09:00", "25 NOVIEMBRE 9:42 AM", "camilo"])
+def test_stale_future_or_garbled_stefano_send_is_ignored(live_mse, sent):
+    row = schedule_row("EN PLANEACIÓN", stage_log("EN PLANEACIÓN", datetime(2026, 10, 6, 13, 56, 54),
+                                                    "72", "<3 dias"),
+                       **{"FECHA/HORA ENVÍO STEFANO": sent})
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: vie 09/10 13:56"
+
+
+def test_doctor_wait_is_never_late_and_shows_since_when(live_mse):
+    # Aunque la hoja le diera 5 horas a la revisión, esperar al doctor no se pinta.
+    row = schedule_row("REVISIÓN PLAN DOCTOR",
+                       stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 5, 15, 21), "5", "<5 hrs"))
+    assert row["SEMÁFORO"] == "⚪ Sin medición"
+    assert "Esperando doctor" in row["DETALLE SEMÁFORO"]
+    assert row["PRÓXIMA FECHA"] == "Esperando doctor desde lun 05/10 (2 días hábiles)"
+    assert row["LÍMITE ETAPA"] == "—"
+    assert row["SIGUIENTE ETAPA"] == "PAGO CONFECCIÓN"
+    assert row["ENTREGA ESTIMADA"].endswith("(+ revisión doctor)")
+
+
+def test_doctor_wait_label_uses_singular_day(live_mse):
+    row = schedule_row("REVISIÓN PLAN DOCTOR",
+                       stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 6, 15, 0)))
+    assert row["PRÓXIMA FECHA"] == "Esperando doctor desde mar 06/10 (1 día hábil)"
+
+
+def test_payment_does_not_stop_estimated_delivery(live_mse):
+    row = schedule_row("PAGO CONFECCIÓN", stage_log("PAGO CONFECCIÓN", datetime(2026, 10, 6, 9)))
+    assert row["PRÓXIMA FECHA"] == "Esperando pago desde mar 06/10"
+    # Desde ahora (mié 07/10 16:00): platina 17:00, +1 día jue, +1 día vie 17:00,
+    # +3 h 20:00 y +4 h hábiles que cruzan el fin de semana: lunes 12/10.
+    assert row["ENTREGA ESTIMADA"] == "lun 12/10"
+
+
+def test_optional_change_request_counts_as_stefano_round(live_mse):
+    row = schedule_row("SOLICITUD DE CAMBIOS",
+                       stage_log("SOLICITUD DE CAMBIOS", datetime(2026, 10, 7, 9), "72", "<3 dias"))
+    assert row["SIGUIENTE ETAPA"] == "PAGO CONFECCIÓN"
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: lun 12/10 09:00"
+    assert row["ENTREGA ESTIMADA"] == "mié 14/10"
+
+
+def test_lab_stage_without_log_projects_from_now(live_mse):
+    row = schedule_row("LISTO P/CONFECCIÓN", None)
+    assert row["PRÓXIMA FECHA"] == "—"
+    assert row["SIGUIENTE ETAPA"] == "EN CONFECCIÓN"
+    # La etapa actual cuenta completa desde ahora: +1 día (jue 16:00), +3 h y +4 h.
+    assert row["ENTREGA ESTIMADA"] == "jue 08/10"
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("CANCELO", "—"), (app.PAUSED_STATUS, "En pausa"), ("ETAPA QUE NO EXISTE", "—"),
+])
+def test_estimated_delivery_for_closed_or_unknown_status(live_mse, status, expected):
+    timing = app.current_stage_timing("MSE", status, {}, now=OCT_NOW)
+    assert app.estimated_delivery_label("MSE", status, timing, OCT_NOW) == expected
+
+
+def test_shipped_order_shows_ship_day(live_mse):
+    timing = app.current_stage_timing("MSE", "PRODUCTO ENVIADO", {}, now=OCT_NOW)
+    assert app.estimated_delivery_label("MSE", "PRODUCTO ENVIADO", timing, OCT_NOW,
+                                        "2026/10/05") == "Enviado lun 05/10"
+    assert app.get_next_normal_status("MSE", "ENVÍO DE ENCUESTA") == ""
+
+
+def test_schedule_columns_are_read_only_and_follow_stage_limit():
+    columns = [*app.WORKBENCH_COMPUTED_COLUMNS, "PAGO", "FECHA PARA ENTREGA"]
+    editable = app.workbench_editable_columns("Admin", columns)
+    assert not editable & {*app.WORKBENCH_SCHEDULE_COLUMNS, "FECHA PARA ENTREGA"}
+    position = app.WORKBENCH_COMPUTED_COLUMNS.index("LÍMITE ETAPA")
+    assert app.WORKBENCH_COMPUTED_COLUMNS[position + 1:position + 4] == app.WORKBENCH_SCHEDULE_COLUMNS
+
+
+def test_saved_column_order_places_new_schedule_columns_after_stage_limit():
+    available = ["PAGO", "STATUS", "HORAS EN ETAPA", "LÍMITE ETAPA", *app.WORKBENCH_SCHEDULE_COLUMNS,
+                 "DETALLE SEMÁFORO", "NOMBRE DOCTOR"]
+    saved = ["PAGO", "STATUS", "LÍMITE ETAPA", "DETALLE SEMÁFORO", "NOMBRE DOCTOR", "HORAS EN ETAPA"]
+    order = app.normalize_column_order(saved, available)
+    anchor = order.index("LÍMITE ETAPA")
+    assert order[anchor + 1:anchor + 4] == app.WORKBENCH_SCHEDULE_COLUMNS
+    # Quien ya movió una columna nueva conserva su lugar.
+    moved = app.normalize_column_order([*saved, "ENTREGA ESTIMADA"], available)
+    assert moved[-1] == "ENTREGA ESTIMADA"
+
+
+def test_payment_save_never_writes_delivery_date():
+    changes = app.build_payment_estatus_changes(current_status="PAGO CONFECCIÓN", payment_status="TOTAL",
+                                                can_advance=True, today=datetime(2026, 10, 7).date())
+    assert changes == {"PAGO": "TOTAL", "FECHA PAGO CONFECCION": "2026/10/07"}
+
+
+# Otras pruebas (AppTest) reemplazan estas funciones en el módulo; se guardan
+# las originales al importar.
+ORIGINAL_UPDATE_ROW = app.update_row_by_columna_1
+ORIGINAL_APPEND_ROW = app.append_estatus_row
+
+
+def test_sheet_writers_drop_formula_delivery_column(monkeypatch):
+    writes = []
+    headers = [app.ID_COLUMN, "APARATO", "STATUS", "NOMBRE DOCTOR", "FECHA PARA ENTREGA"]
+    class Sheet:
+        def get_all_values(self):
+            return [["titulo"], headers, ["001", "MSE", "EN PLANEACIÓN", "Original", "2026/10/14"], [""]]
+        def update_cells(self, cells, **kwargs): writes.extend(cells)
+    monkeypatch.setattr(app, "get_worksheet", lambda _: Sheet())
+    monkeypatch.setattr(app, "apply_estatus_row_styles", lambda *args: None)
+    result = ORIGINAL_UPDATE_ROW("001", {"NOMBRE DOCTOR": "Otro", "FECHA PARA ENTREGA": "2026/10/20"})
+    assert result["success"] and result["protected_columns"] == ["FECHA PARA ENTREGA"]
+    assert [(cell.row, cell.col) for cell in writes] == [(3, 4)]
+    only_formula = ORIGINAL_UPDATE_ROW("001", {"FECHA PARA ENTREGA": "2026/10/20"})
+    assert not only_formula["success"] and "la calcula la hoja" in only_formula["error"]
+    writes.clear()
+    ORIGINAL_APPEND_ROW({app.ID_COLUMN: "002", "APARATO": "MSE", "FECHA PARA ENTREGA": ""})
+    assert all(cell.col != 5 for cell in writes) and writes
+
+
+def test_doctor_wait_label_says_today_on_same_day(live_mse):
+    row = schedule_row("REVISIÓN PLAN DOCTOR",
+                       stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 7, 10, 42)))
+    assert row["PRÓXIMA FECHA"] == "Esperando doctor desde mié 07/10 (hoy)"
+
+
+def test_date_only_stefano_send_shows_day_only(live_mse):
+    # Sin registro de tiempos, el envío capturado sólo con el día marca el inicio.
+    row = schedule_row("EN PLANEACIÓN", None, **{"FECHA/HORA ENVÍO STEFANO": "2026/10/06"})
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: vie 09/10"
+
+
+def test_special_payment_alert_does_not_paint_doctor_wait(live_mse, monkeypatch):
+    monkeypatch.setattr(app, "get_special_payment_sla_alert_state",
+                        lambda *args: "Atrasado - Pago planeación > 10 días hábiles sin GUÍA PSM + PSM ENVIADA")
+    waiting = schedule_row("REVISIÓN PLAN DOCTOR", stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 5, 9)))
+    assert waiting["SEMÁFORO"] == "⚪ Sin medición"
+    assert "Pago planeación" in waiting["DETALLE SEMÁFORO"]
+    working = schedule_row("EN PLANEACIÓN", stage_log("EN PLANEACIÓN", datetime(2026, 10, 7, 9), "72", "<3 dias"))
+    assert working["SEMÁFORO"] == "🔴 Atrasado"
