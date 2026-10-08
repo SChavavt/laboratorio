@@ -174,6 +174,8 @@ def test_stefano_selected_day_survives_stage_autofill(monkeypatch):
         extra_changes={'FECHA/HORA ENVÍO STEFANO': '1 septiembre 2026 09:15'},
     )
     assert app.parse_spanish_datetime(writes[0]['FECHA/HORA ENVÍO STEFANO']) == datetime(2026, 9, 1, 11, 45)
+    # Salir de planeación registra solo la entrega de Stefano.
+    assert writes[0]['FECHA/HORA ENTREGA STEFANO'] == '2026/10/07 11:45'
 
 
 def test_outsourced_work_datetime_labels_reference_stefano():
@@ -197,6 +199,14 @@ def test_outsourced_work_datetime_labels_reference_stefano():
         "FECHA/HORA ENVÍO STEFANO": "Fecha/hora envío Stefano",
         "FECHA/HORA ENTREGA STEFANO": "Fecha/hora entrega Stefano",
     }
+    # El encabezado explica que ambas se registran solas al cambiar de etapa.
+    tooltips = {column["field"]: column["headerTooltip"] for column in options["columnDefs"]}
+    assert tooltips["FECHA/HORA ENVÍO STEFANO"].startswith("Se registra sola al pasar a EN PLANEACIÓN")
+    assert "sólo si lo enviaste antes" in tooltips["FECHA/HORA ENVÍO STEFANO"]
+    assert tooltips["FECHA/HORA ENTREGA STEFANO"].startswith("Se registra sola cuando el pedido sale de")
+    # Un día guardado antes del cambio de etapa se reemplaza: se dice cuándo capturarlo.
+    for column in ("FECHA/HORA ENVÍO STEFANO", "FECHA/HORA ENTREGA STEFANO"):
+        assert "en el mismo guardado del cambio de etapa o después" in tooltips[column]
 
 
 def test_forms_file_links_are_split_deduplicated_and_kept_in_order():
@@ -1590,12 +1600,324 @@ def test_stefano_return_counts_from_recorded_send_day(live_mse, monkeypatch):
     assert sent["SEMÁFORO"] == "🟢 En tiempo"
 
 
-@pytest.mark.parametrize("sent", ["2026/10/01 09:00", "25 NOVIEMBRE 9:42 AM", "camilo"])
-def test_stale_future_or_garbled_stefano_send_is_ignored(live_mse, sent):
+@pytest.mark.parametrize("sent", ["25 NOVIEMBRE 9:42 AM", "camilo"])
+def test_future_or_garbled_stefano_send_is_ignored(live_mse, sent):
     row = schedule_row("EN PLANEACIÓN", stage_log("EN PLANEACIÓN", datetime(2026, 10, 6, 13, 56, 54),
                                                     "72", "<3 dias"),
                        **{"FECHA/HORA ENVÍO STEFANO": sent})
     assert row["PRÓXIMA FECHA"] == "Regresa Stefano: vie 09/10 13:56"
+
+
+def closed_log(status, start, end, identifier="001"):
+    return {**stage_log(status, start, identifier=identifier),
+            "FECHA_FIN": end.strftime("%Y-%m-%d"), "HORA_FIN": end.strftime("%H:%M:%S")}
+
+
+def test_back_dated_first_round_stefano_send_is_accepted(live_mse):
+    # La etapa empezó el miércoles, pero Jime eligió el martes como día de envío.
+    logs = [closed_log("PAGO PLANEACIÓN", datetime(2026, 10, 5, 9), datetime(2026, 10, 7, 9)),
+            stage_log("EN PLANEACIÓN", datetime(2026, 10, 7, 9), "72", "<3 dias")]
+    table = app.build_workbench_table(
+        pd.DataFrame([case(status="EN PLANEACIÓN", **{"FECHA/HORA ENVÍO STEFANO": "2026/10/06 10:00"})]),
+        pd.DataFrame(logs))
+    row = table.iloc[0]
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: vie 09/10 10:00"
+    assert row["LÍMITE ETAPA"] == "2026-10-09 10:00:00"
+    assert row["HORAS EN ETAPA"] == 30
+
+
+def test_date_only_send_on_stage_start_day_counts_from_stage_start(live_mse):
+    # Celdas de la hoja con formato «d mmmm» leen el envío sin hora: el mismo día
+    # en que empezó la etapa no adelanta el regreso a las 00:00.
+    started = stage_log("SOLICITUD DE CAMBIOS", datetime(2026, 10, 7, 16, 0, 47), "72", "<3 dias")
+    timing = app.current_stage_timing("MSE", "SOLICITUD DE CAMBIOS", started, "7 octubre",
+                                      now=datetime(2026, 10, 8, 9), last_stefano_end=datetime(2026, 10, 5, 12))
+    assert timing["start"] == datetime(2026, 10, 7, 16, 0, 47)
+    assert timing["deadline"] == datetime(2026, 10, 12, 16, 0, 47)
+    # Un día anterior sin hora sí es un envío capturado antes: cuenta desde ese día.
+    earlier = app.current_stage_timing("MSE", "SOLICITUD DE CAMBIOS", started, "5 octubre",
+                                       now=datetime(2026, 10, 8, 9))
+    assert earlier["start"] == datetime(2026, 10, 5)
+    row = schedule_row("EN PLANEACIÓN", stage_log("EN PLANEACIÓN", datetime(2026, 10, 7, 15, 47, 58), "72", "<3 dias"),
+                       **{"FECHA/HORA ENVÍO STEFANO": "7 octubre"})
+    assert row["LÍMITE ETAPA"] == "2026-10-12 15:47:58"
+    assert row["PRÓXIMA FECHA"] == "Regresa Stefano: lun 12/10 15:47"
+
+
+def second_round_row(sent):
+    """SOLICITUD DE CAMBIOS desde mié 07/10 09:00; la planeación cerró el lun 05/10 12:00."""
+    logs = [closed_log("EN PLANEACIÓN", datetime(2026, 10, 1, 9), datetime(2026, 10, 5, 12)),
+            # Sólo cuentan los cierres de etapas de Stefano del mismo pedido.
+            closed_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 5, 12), datetime(2026, 10, 7, 9)),
+            closed_log("EN PLANEACIÓN", datetime(2026, 10, 6, 9), datetime(2026, 10, 7, 8), identifier="002"),
+            stage_log("SOLICITUD DE CAMBIOS", datetime(2026, 10, 7, 9), "72", "<3 dias")]
+    table = app.build_workbench_table(
+        pd.DataFrame([case(status="SOLICITUD DE CAMBIOS", **{"FECHA/HORA ENVÍO STEFANO": sent})]),
+        pd.DataFrame(logs))
+    return table.iloc[0]
+
+
+@pytest.mark.parametrize("sent,expected", [
+    # Envío de la ronda anterior (o más de 5 minutos antes de su cierre): se ignora.
+    ("2026/10/01 09:00", "lun 12/10 09:00"), ("2026/10/05 11:54", "lun 12/10 09:00"),
+    # Dentro de la tolerancia del cierre o después: es el envío de esta ronda.
+    ("2026/10/05 11:55", "jue 08/10 11:55"), ("2026/10/05 11:59", "jue 08/10 11:59"),
+    ("2026/10/07 09:00", "lun 12/10 09:00"), ("2026/10/06 15:00", "vie 09/10 15:00"),
+])
+def test_stefano_send_counts_only_for_current_round(live_mse, sent, expected):
+    assert second_round_row(sent)["PRÓXIMA FECHA"] == f"Regresa Stefano: {expected}"
+
+
+# --- Envío y entrega de Stefano registrados al cambiar de etapa ---
+
+STEFANO_CLOCK = datetime(2026, 10, 7, 16, 0, 45)  # miércoles; se guarda sin segundos
+SENT = "FECHA/HORA ENVÍO STEFANO"
+RETURNED = "FECHA/HORA ENTREGA STEFANO"
+
+
+def stefano_autofill(monkeypatch, previous, new, user="Jime"):
+    monkeypatch.setattr(app, "app_now", lambda: STEFANO_CLOCK)
+    return app.get_status_datetime_autofill_changes(row=pd.Series(case(status=previous)),
+                                                    previous_status=previous, new_status=new,
+                                                    current_user=user)
+
+
+@pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
+@pytest.mark.parametrize("previous,new", [
+    ("PAGO PLANEACIÓN", "EN PLANEACIÓN"), ("REVISIÓN PLAN DOCTOR", "SOLICITUD DE CAMBIOS"),
+    ("STL PSM ENVIADO", "EN DISEÑO"), ("PAGO CONFECCIÓN", "EN DISEÑO"),
+])
+def test_entering_stefano_stage_records_send_for_any_user(monkeypatch, user, previous, new):
+    assert stefano_autofill(monkeypatch, previous, new, user) == {SENT: "2026/10/07 16:00"}
+
+
+@pytest.mark.parametrize("previous,new", [
+    ("EN PLANEACIÓN", "REVISIÓN PLAN DOCTOR"), ("SOLICITUD DE CAMBIOS", "PAGO CONFECCIÓN"),
+    ("EN DISEÑO", "PAGO CONFECCIÓN"), ("EN DISEÑO", "REVISIÓN DISEÑO DOCTOR"),
+])
+def test_leaving_stefano_stage_records_return_only(monkeypatch, previous, new):
+    assert stefano_autofill(monkeypatch, previous, new, "Lesly") == {RETURNED: "2026/10/07 16:00"}
+
+
+def test_moving_between_stefano_stages_records_return_and_new_send(monkeypatch):
+    both = {RETURNED: "2026/10/07 16:00", SENT: "2026/10/07 16:00"}
+    assert stefano_autofill(monkeypatch, "EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "Admin") == both
+    # Los nombres se comparan sin acentos ni mayúsculas, como los de la hoja.
+    assert stefano_autofill(monkeypatch, "en planeacion", "EN DISEÑO") == both
+
+
+@pytest.mark.parametrize("previous,new", [
+    ("REVISIÓN DE ARCHIVOS", "PAGO PLANEACIÓN"), ("GUÍA PSM + PSM ENVIADA", "ESPERANDO STL PSM DOCTOR"),
+    # Entrar a STL PSM ENVIADO ya no registra la entrega de Stefano.
+    ("ESPERANDO STL PSM DOCTOR", "STL PSM ENVIADO"), ("EN PLANEACIÓN", "EN PLANEACIÓN"),
+])
+def test_other_stage_changes_leave_stefano_dates_alone(monkeypatch, previous, new):
+    assert stefano_autofill(monkeypatch, previous, new) == {}
+
+
+@pytest.mark.parametrize("new", [app.PAUSED_STATUS, "CANCELO"])
+def test_pausing_or_cancelling_is_not_a_stefano_return(monkeypatch, new):
+    assert stefano_autofill(monkeypatch, "EN PLANEACIÓN", new) == {}
+
+
+def test_shipping_still_records_ship_date(monkeypatch):
+    assert stefano_autofill(monkeypatch, "EMPACADO/LISTO P/ENVÍO", "PRODUCTO ENVIADO") == {
+        "FECHA ENVÍO": "2026/10/07"}
+
+
+@pytest.fixture
+def stage_writes(live_mse, monkeypatch):
+    """advance_case_status sin Sheets: devuelve lo que escribiría en ESTATUS.
+
+    ``logs`` simula TIEMPOS_APARATOS: el cambio de etapa cierra el registro
+    activo y abre el nuevo, como register_status_change.
+    """
+    monkeypatch.setattr(app, "app_now", lambda: STEFANO_CLOCK)
+    writes, skipped, logs = [], [], []
+    monkeypatch.setattr(app, "update_row_by_columna_1", lambda identifier, changes, **kwargs:
+                        writes.append(changes) or {"success": True, "skipped_columns": list(skipped)})
+
+    def register(*, identifier, apparatus, new_status, **kwargs):
+        for entry in logs:
+            if entry[app.ID_COLUMN] == identifier and not entry["FECHA_FIN"]:
+                entry.update(FECHA_FIN=STEFANO_CLOCK.strftime("%Y-%m-%d"), HORA_FIN=STEFANO_CLOCK.strftime("%H:%M:%S"))
+        configured = app.get_time_limit(apparatus, new_status) or ""
+        hours = app.parse_time_limit_to_business_hours(configured)
+        logs.append(stage_log(new_status, STEFANO_CLOCK, f"{hours:g}" if hours else "", configured, identifier))
+
+    monkeypatch.setattr(app, "register_status_change", register)
+    monkeypatch.setattr(app, "read_sheet_df", lambda name: pd.DataFrame(logs) if name == app.SHEET_TIEMPOS
+                        else pd.DataFrame())
+    monkeypatch.setattr(app, "read_sheet_values", lambda name: [["titulo"], [app.ID_COLUMN], ["001"]])
+    monkeypatch.setattr(app, "clear_sheet_data_cache", lambda: None)
+    monkeypatch.setattr(app, "reset_workbench", lambda: None)
+    for key in ("status_change_success_message", "status_change_notes"):
+        app.st.session_state.pop(key, None)
+    yield writes, skipped, logs
+    for key in ("status_change_success_message", "status_change_notes"):
+        app.st.session_state.pop(key, None)
+
+
+def advance(previous, new, user="Jime", **kwargs):
+    return app.advance_case_status(identifier="001", row=pd.Series(case(status=previous)),
+                                   new_status=new, current_user=user, **kwargs)
+
+
+def test_entering_planning_records_send_and_confirms_return(stage_writes):
+    writes, _, _ = stage_writes
+    assert advance("PAGO PLANEACIÓN", "EN PLANEACIÓN", "Lesly")
+    assert writes == [{app.STATUS_COLUMN: "EN PLANEACIÓN", SENT: "2026/10/07 16:00"}]
+    # Miércoles 16:00 + 3 días hábiles (tiempo de EN PLANEACIÓN en la hoja).
+    note = "Envío a Stefano registrado: mié 07/10 16:00 · regresa lun 12/10 16:00"
+    assert app.st.session_state["status_change_success_message"] == (
+        f"✅ Pedido 001 actualizado: PAGO PLANEACIÓN → EN PLANEACIÓN. {note}.")
+    assert app.st.session_state["status_change_notes"] == [f"001: {note}"]
+
+
+def test_leaving_planning_confirms_stefano_return(stage_writes):
+    writes, _, _ = stage_writes
+    assert advance("EN PLANEACIÓN", "REVISIÓN PLAN DOCTOR")
+    assert writes == [{app.STATUS_COLUMN: "REVISIÓN PLAN DOCTOR", RETURNED: "2026/10/07 16:00"}]
+    assert app.st.session_state["status_change_success_message"].endswith(
+        "→ REVISIÓN PLAN DOCTOR. Entrega de Stefano registrada: mié 07/10 16:00.")
+
+
+def test_same_save_user_values_win_over_stefano_autofill(stage_writes):
+    writes, _, _ = stage_writes
+    assert advance("EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "Admin", manual_stage=True,
+                   extra_changes={SENT: "2026/10/06", RETURNED: "6 octubre 2026 09:30"})
+    # Del envío manda el día elegido con la hora del guardado; la entrega, tal cual.
+    assert writes[0][SENT] == "2026/10/06 16:00"
+    assert writes[0][RETURNED] == "6 octubre 2026 09:30"
+    # La ronda de EN PLANEACIÓN cierra con este cambio: un día anterior no cuenta
+    # para el regreso y la confirmación da el regreso que mostrará la tabla.
+    assert app.st.session_state["status_change_success_message"].endswith(
+        "Entrega de Stefano registrada: mar 06/10 09:30. "
+        "Envío a Stefano registrado: mar 06/10 16:00, pero es de una ronda anterior: "
+        "el regreso se cuenta desde el cambio de etapa · regresa lun 12/10 16:00.")
+
+
+def closed_stefano_round(identifier="001"):
+    """EN PLANEACIÓN del 01/10 al 05/10 12:00 y luego REVISIÓN PLAN DOCTOR (activa)."""
+    return [closed_log("EN PLANEACIÓN", datetime(2026, 10, 1, 9), datetime(2026, 10, 5, 12), identifier),
+            stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 5, 12), identifier=identifier)]
+
+
+@pytest.mark.parametrize("previous,new,chosen,before,expected", [
+    # La ronda anterior cierra en este mismo cambio: el martes no cuenta.
+    ("EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "2026/10/06",
+     [stage_log("EN PLANEACIÓN", datetime(2026, 10, 5, 10), "72", "<3 dias")], "lun 12/10 16:00"),
+    # Regreso manual a planeación minutos después de salir: el lunes es de la ronda que cerró.
+    ("REVISIÓN PLAN DOCTOR", "EN PLANEACIÓN", "2026/10/05",
+     [closed_log("EN PLANEACIÓN", datetime(2026, 10, 5, 10), datetime(2026, 10, 7, 15, 58, 10)),
+      stage_log("REVISIÓN PLAN DOCTOR", datetime(2026, 10, 7, 15, 58, 10))], "lun 12/10 16:00"),
+    # Primera ronda capturada con un día anterior: cuenta desde ese día.
+    ("PAGO PLANEACIÓN", "EN PLANEACIÓN", "2026/10/06",
+     [stage_log("PAGO PLANEACIÓN", datetime(2026, 10, 5, 9))], "vie 09/10 16:00"),
+    # Cambios enviados después del cierre de la planeación anterior: cuentan.
+    ("REVISIÓN PLAN DOCTOR", "SOLICITUD DE CAMBIOS", "2026/10/06", closed_stefano_round(), "vie 09/10 16:00"),
+    # Un día futuro (la tabla y la ficha lo rechazan antes) cuenta desde el cambio.
+    ("PAGO PLANEACIÓN", "EN PLANEACIÓN", "2026/10/09",
+     [stage_log("PAGO PLANEACIÓN", datetime(2026, 10, 5, 9))], "lun 12/10 16:00"),
+])
+def test_stefano_confirmation_matches_table_return(stage_writes, previous, new, chosen, before, expected):
+    writes, _, logs = stage_writes
+    logs.extend(before)
+    assert advance(previous, new, "Admin", manual_stage=True, extra_changes={SENT: chosen})
+    message = app.st.session_state["status_change_success_message"]
+    assert f"regresa {expected}." in message
+    assert ("el regreso se cuenta desde el cambio de etapa" in message) == (expected == "lun 12/10 16:00")
+    table = app.build_workbench_table(pd.DataFrame([case(status=new, **{SENT: writes[0][SENT]})]),
+                                      pd.DataFrame(logs))
+    assert table.iloc[0]["PRÓXIMA FECHA"] == f"Regresa Stefano: {expected}"
+
+
+def test_stefano_confirmation_matches_legacy_numeric_log_folio(stage_writes, monkeypatch):
+    # TIEMPOS guardó folios viejos sin el cero inicial: "1" es el pedido "001".
+    _, _, logs = stage_writes
+    logs.extend(closed_stefano_round(identifier="1"))
+    assert advance("REVISIÓN PLAN DOCTOR", "EN PLANEACIÓN", "Admin", manual_stage=True,
+                   extra_changes={SENT: "2026/10/02"})
+    assert "es de una ronda anterior" in app.st.session_state["status_change_success_message"]
+
+
+def test_stefano_confirmation_survives_unreadable_tiempos(stage_writes, monkeypatch):
+    writes, _, _ = stage_writes
+
+    def fail(name):
+        raise RuntimeError("sin conexión")
+
+    monkeypatch.setattr(app, "read_sheet_df", fail)
+    assert advance("REVISIÓN PLAN DOCTOR", "SOLICITUD DE CAMBIOS", "Admin", manual_stage=True,
+                   extra_changes={SENT: "2026/10/06"})
+    assert app.st.session_state["status_change_success_message"].endswith(
+        "Envío a Stefano registrado: mar 06/10 16:00 · regresa vie 09/10 16:00.")
+
+
+def test_future_stefano_send_day_is_rejected(live_mse):
+    source = pd.DataFrame([case(status="EN PLANEACIÓN", **{SENT: ""})])
+    future = app.validate_workbench_changes(source, source, [("001", {SENT: "2026/10/08"})], "Jime")
+    assert future == [f"001: {SENT} no puede ser futura."]
+    assert not app.validate_workbench_changes(source, source, [("001", {SENT: "2026/10/07 15:00"})], "Jime")
+    assert not app.validate_workbench_changes(source, source, [("001", {SENT: "2026/10/05"})], "Jime")
+
+
+def test_plain_stage_change_keeps_original_message(stage_writes):
+    writes, _, _ = stage_writes
+    assert advance("REVISIÓN DE ARCHIVOS", "PAGO PLANEACIÓN")
+    assert writes == [{app.STATUS_COLUMN: "PAGO PLANEACIÓN"}]
+    assert app.st.session_state["status_change_success_message"] == (
+        "✅ Pedido 001 actualizado: REVISIÓN DE ARCHIVOS → PAGO PLANEACIÓN.")
+    assert "status_change_notes" not in app.st.session_state
+
+
+def test_missing_stefano_column_is_not_confirmed(stage_writes, monkeypatch):
+    writes, skipped, _ = stage_writes
+    warnings = []
+    monkeypatch.setattr(app.st, "warning", warnings.append)
+    skipped.append(SENT)
+    assert advance("PAGO PLANEACIÓN", "EN PLANEACIÓN")
+    assert SENT in writes[0]
+    assert warnings == ["El STATUS se actualizó, pero no encontré estas columnas de fecha para "
+                        f"autollenar: {SENT}"]
+    assert "Envío a Stefano" not in app.st.session_state["status_change_success_message"]
+
+
+def test_stefano_note_omits_return_without_stage_time(live_mse):
+    note = app.stefano_stage_change_note("MSE", "ETAPA SIN TIEMPO", {SENT: "2026/10/07 16:00"})
+    assert note == "Envío a Stefano registrado: mié 07/10 16:00"
+
+
+@pytest.mark.parametrize("count", [1, 2, 7])
+def test_tracking_shows_recorded_stefano_send_once(count):
+    from streamlit.testing.v1 import AppTest
+    sample = case(status="EN PLANEACIÓN")
+    note = "Envío a Stefano registrado: mié 07/10 16:00 · regresa lun 12/10 16:00"
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import pandas as pd
+import streamlit as st
+app.require_authenticated_user = lambda: "Jime"
+app.workbench_tab_options = lambda _: ["📋 Seguimiento"]
+app.ensure_tiempos_headers = lambda: None
+app.read_sheet_df = lambda name: pd.DataFrame([{sample!r}]) if name == app.SHEET_ESTATUS else pd.DataFrame()
+app.get_latest_estefano_files = lambda _: ""
+if not st.session_state.get("noted"):
+    st.session_state["noted"] = True
+    for number in range(1, {count} + 1):
+        app.set_status_change_feedback(f"{{number:03d}}", "PAGO PLANEACIÓN", "EN PLANEACIÓN", {note!r})
+app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    # Un solo aviso aunque se cambien varios pedidos a la vez (máximo cinco líneas).
+    lines = [f"{number:03d}: {note}" for number in range(1, min(count, 5) + 1)]
+    lines += [f"… y {count - 5} más"] if count > 5 else []
+    assert [item.value for item in at.toast if "Stefano" in item.value] == ["  \n".join(lines)]
+    at.run()
+    assert not any("Stefano" in item.value for item in at.toast)
 
 
 def test_doctor_wait_is_never_late_and_shows_since_when(live_mse):

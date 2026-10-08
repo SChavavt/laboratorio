@@ -386,7 +386,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                         st.date_input(label, value=parsed.date() if parsed else None, key=key + "_date",
                                       format="DD/MM/YYYY", disabled=blocked,
                                       on_change=_remember_date_with_auto_time, args=(*dt_args, now),
-                                      help="Elige el día. La hora se registra automáticamente al guardar (Ciudad de México).")
+                                      help=(f"{common['help']} " if common["help"] else "Elige el día. ")
+                                      + "La hora se registra automáticamente al guardar (Ciudad de México).")
                         st.button("Ahora", key=key + "_now", disabled=blocked, use_container_width=True,
                                   on_click=_now, args=(*dt_args, now))
                     elif column in datetime_columns and (not text or parse_datetime(text) is not None):

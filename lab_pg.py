@@ -31,7 +31,7 @@ import order_detail
 from grid_interactions import response_frame
 import dropdown_fields
 from copy import deepcopy
-from workbench_grid import BUSINESS_ORDER, build_grid_options, render_grid
+from workbench_grid import BUSINESS_ORDER, STEFANO_COLUMN_HELP, build_grid_options, render_grid
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -1679,7 +1679,14 @@ DOCTOR_WAIT_STATUSES = (
     "ESPERANDO STL PSM DOCTOR", "ESCANEO MAL (EN REPETICIÓN)",
 )
 DOCTOR_WAIT_STATE = "Esperando doctor"
+# La app registra solas ambas columnas al cambiar de etapa: el envío al entrar a
+# una etapa de Stefano y la entrega al salir de ella.
 STEFANO_SENT_COLUMN = "FECHA/HORA ENVÍO STEFANO"
+STEFANO_RETURNED_COLUMN = "FECHA/HORA ENTREGA STEFANO"
+# Un envío anterior al cierre de la ronda previa de Stefano es de esa ronda. La
+# tolerancia absorbe los minutos truncados del envío y los segundos entre la
+# escritura en ESTATUS y el cierre del registro de tiempos.
+STEFANO_ROUND_TOLERANCE = timedelta(minutes=5)
 # La entrega estimada es el momento en que el pedido entra a esta etapa.
 DELIVERY_TARGET_STATUS = "PRODUCTO ENVIADO"
 
@@ -1742,17 +1749,60 @@ def stage_time_limit(
     return configured, hours
 
 
+def stefano_sent_problem(
+    sent: datetime | None, *, now: datetime | None = None, last_stefano_end: datetime | None = None,
+) -> str:
+    """Por qué un envío a Stefano no cuenta para su regreso; "" si cuenta.
+
+    No cuenta si no se entiende, si es posterior a ``now`` (p. ej. texto viejo
+    sin año) o si es de una ronda pasada: anterior al cierre del último registro
+    de Stefano del pedido (``last_stefano_end``) menos STEFANO_ROUND_TOLERANCE.
+    La tabla y la confirmación del cambio de etapa usan esta misma regla.
+    """
+
+    if sent is None:
+        return "no se entiende"
+    if now is not None and sent > now:
+        return "es una fecha futura"
+    if last_stefano_end is not None and sent < last_stefano_end - STEFANO_ROUND_TOLERANCE:
+        return "es de una ronda anterior"
+    return ""
+
+
+def latest_stefano_closes(logs: pd.DataFrame) -> dict[str, datetime]:
+    """Cierre más reciente de una etapa de Stefano por pedido, en una sola pasada.
+
+    ``logs`` son registros de TIEMPOS con encabezados canónicos y folios ya
+    resueltos; un envío anterior a ese cierre es de una ronda pasada.
+    """
+
+    ends: dict[str, datetime] = {}
+    if not {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
+        return ends
+    roles = {status: stage_role(status) for status in logs[STATUS_COLUMN].unique()}
+    closed = logs[logs["FECHA_FIN"].str.strip().ne("") & logs[STATUS_COLUMN].map(roles).eq("planner")]
+    for identifier, fecha, hora in zip(closed[ID_COLUMN], closed["FECHA_FIN"],
+                                       closed.get("HORA_FIN", pd.Series("", index=closed.index))):
+        end = parse_start_datetime(fecha, hora)
+        if end and (identifier not in ends or end > ends[identifier]):
+            ends[identifier] = end
+    return ends
+
+
 def current_stage_timing(
     apparatus: str, status: str, log: dict[str, Any] | None, stefano_sent: Any = "",
     *, use_stefano_sent: bool = True, now: datetime | None = None,
+    last_stefano_end: datetime | None = None,
 ) -> dict[str, Any]:
     """Inicio efectivo, plazo y vencimiento de la etapa actual, sin leer Sheets.
 
-    En las etapas de Stefano se cuenta desde FECHA/HORA ENVÍO STEFANO (el día
-    que Jime registra el envío) cuando ese día es igual o posterior al inicio
-    de la etapa: se toma el más tardío de ambos. Un envío anterior al inicio es
-    de una ronda pasada y se ignora; sin inicio registrado, basta el envío.
-    Un envío posterior a ``now`` (p. ej. texto viejo sin año) también se ignora.
+    En las etapas de Stefano manda FECHA/HORA ENVÍO STEFANO, que la app registra
+    sola al entrar a la etapa: se cuenta desde ese envío aunque sea anterior al
+    inicio de la etapa (un envío capturado con otro día). Un envío sin hora (sólo
+    el día) del mismo día en que empezó la etapa se cuenta desde ese inicio. Se
+    ignora, y se cuenta desde el inicio del registro activo, cuando
+    stefano_sent_problem lo descarta (no se entiende, es futuro o es de una ronda
+    pasada según ``last_stefano_end``).
     """
 
     log = log or {}
@@ -1761,9 +1811,13 @@ def current_stage_timing(
     start = log_start
     if role == "planner" and use_stefano_sent:
         sent = parse_spanish_datetime(stefano_sent)
-        if sent is not None and (now is None or sent <= now) and (
-                log_start is None or sent.date() >= log_start.date()):
-            start = max(sent, log_start) if log_start else sent
+        # Un envío sin hora (celda sólo con el día) del mismo día del inicio no dice
+        # la hora: se cuenta desde ese inicio. Un día anterior sí es un envío previo.
+        if (sent is not None and log_start is not None and sent.time() == datetime.min.time()
+                and sent.date() == log_start.date()):
+            sent = log_start
+        if not stefano_sent_problem(sent, now=now, last_stefano_end=last_stefano_end):
+            start = sent
     time_text, hours = stage_time_limit(apparatus, status, log)
     deadline = add_business_time_dt(start, time_text) if start and time_text else None
     return {"role": role, "log_start": log_start, "start": start,
@@ -4745,17 +4799,55 @@ def append_recent_selected_case(cases_df: pd.DataFrame, key: str) -> tuple[pd.Da
     return pd.concat([pd.DataFrame([selected_row]), cases_df], ignore_index=True), True
 
 
-def set_status_change_feedback(identifier: str, previous_status: str, new_status: str) -> None:
-    """Guarda confirmación persistente para que sobreviva al rerun de Streamlit."""
+def set_status_change_feedback(
+    identifier: str, previous_status: str, new_status: str, note: str = ""
+) -> None:
+    """Guarda confirmación persistente para que sobreviva al rerun de Streamlit.
+
+    ``note`` confirma lo que la app registró sola (envío/entrega de Stefano);
+    Seguimiento también la muestra en un aviso flotante (status_change_notes).
+    """
 
     st.session_state["status_change_success_message"] = (
         f"✅ Pedido {identifier} actualizado: {previous_status or 'Sin STATUS'} → {new_status}."
+        + (f" {note}." if note else "")
     )
+    if note:
+        st.session_state["status_change_notes"] = [
+            *st.session_state.get("status_change_notes", []), f"{identifier}: {note}"]
+
+
+def stefano_stage_change_note(
+    apparatus: str, new_status: str, recorded: dict[str, Any], *, sent_problem: str = "",
+) -> str:
+    """Confirma el envío/entrega de Stefano registrados al cambiar de etapa.
+
+    ``recorded`` son las columnas de Stefano escritas en ese cambio. El regreso
+    se calcula con el tiempo de la nueva etapa; sin tiempo se omite. Con
+    ``sent_problem`` (ver stefano_sent_problem) la tabla no contará desde ese
+    envío sino desde el cambio de etapa (ahora), y la nota lo dice.
+    """
+
+    parts = []
+    returned = parse_spanish_datetime(recorded.get(STEFANO_RETURNED_COLUMN, ""))
+    if returned:
+        parts.append(f"Entrega de Stefano registrada: {format_short_datetime(returned)}")
+    sent = parse_spanish_datetime(recorded.get(STEFANO_SENT_COLUMN, ""))
+    if sent:
+        back = add_business_time_dt(app_now() if sent_problem else sent,
+                                    get_time_limit(apparatus, new_status))
+        parts.append(f"Envío a Stefano registrado: {format_short_datetime(sent)}"
+                     + (f", pero {sent_problem}: el regreso se cuenta desde el cambio de etapa"
+                        if sent_problem else "")
+                     + (f" · regresa {format_short_datetime(back)}" if back else ""))
+    return ". ".join(parts)
 
 
 def render_status_change_feedback() -> None:
     """Muestra el último cambio de STATUS confirmado hasta que el usuario lo cierre."""
 
+    # El mensaje ya incluye lo registrado para Stefano; no se repite en Seguimiento.
+    st.session_state.pop("status_change_notes", None)
     message = st.session_state.get("status_change_success_message")
     if not message:
         return
@@ -4827,27 +4919,57 @@ def get_status_datetime_autofill_changes(
     new_status: str,
     current_user: str,
 ) -> dict[str, str]:
-    """Autollena fechas clave al cambiar STATUS según las reglas de cada columna."""
+    """Autollena fechas clave al cambiar STATUS según las reglas de cada columna.
+
+    Para cualquier usuario: entrar a una etapa de Stefano (EN PLANEACIÓN,
+    SOLICITUD DE CAMBIOS o EN DISEÑO) desde otra etapa registra el envío a
+    Stefano, y salir de ella registra su entrega. Entre dos etapas de Stefano se
+    registran ambas (regresó y se volvió a enviar). Pausar o cancelar no es una
+    entrega de Stefano. Lo que el usuario captura en el mismo guardado prevalece
+    (ver advance_case_status).
+    """
 
     now_value = format_sheet_datetime(app_now())
     changes: dict[str, str] = {}
 
-    # Estas fechas deben reflejar el último evento real del flujo,
+    # Estas fechas deben reflejar el último evento real del flujo (cada ronda),
     # por eso se actualizan aunque ya tuvieran un valor previo.
-    if (
-        current_user == "Jime"
-        and previous_status in {"EN PLANEACIÓN", "SOLICITUD DE CAMBIOS", "EN DISEÑO"}
-        and new_status in {"REVISIÓN DISEÑO DOCTOR", "PAGO CONFECCIÓN"}
-    ):
-        changes["FECHA/HORA ENVÍO STEFANO"] = now_value
-
-    if new_status == "STL PSM ENVIADO":
-        changes["FECHA/HORA ENTREGA STEFANO"] = now_value
+    if normalize_text(normalize_status_alias(previous_status)) != normalize_text(
+            normalize_status_alias(new_status)):
+        not_returned = {normalize_text(PAUSED_STATUS), normalize_text("CANCELO")}
+        if (stage_role(previous_status) == "planner"
+                and normalize_text(normalize_status_alias(new_status)) not in not_returned):
+            changes[STEFANO_RETURNED_COLUMN] = now_value
+        if stage_role(new_status) == "planner":
+            changes[STEFANO_SENT_COLUMN] = now_value
 
     if new_status == "PRODUCTO ENVIADO":
         changes["FECHA ENVÍO"] = format_sheet_date(app_today())
 
     return changes
+
+
+def chosen_stefano_sent_problem(identifier: str, previous_status: str, sent_value: Any) -> str:
+    """stefano_sent_problem para el envío elegido en el mismo cambio de etapa.
+
+    Al salir de otra etapa de Stefano su ronda cierra con este mismo cambio. Si
+    no, se lee TIEMPOS justo después de register_status_change, que la deja en
+    caché (sin otra llamada a Sheets); si falla, se confirma lo escrito.
+    """
+
+    now = app_now()
+    if stage_role(previous_status) == "planner":
+        last_end = now
+    else:
+        try:
+            logs = canonical_workbench_df(read_sheet_df(SHEET_TIEMPOS))
+            if ID_COLUMN in logs:
+                # Folios viejos están en TIEMPOS sin el cero inicial ("12791").
+                logs[ID_COLUMN] = logs[ID_COLUMN].map(apparatus_log_identifier_resolver())
+            last_end = latest_stefano_closes(logs).get(identifier)
+        except Exception:
+            last_end = None
+    return stefano_sent_problem(parse_spanish_datetime(sent_value), now=now, last_stefano_end=last_end)
 
 
 def advance_case_status(
@@ -4895,22 +5017,21 @@ def advance_case_status(
             f"{display_field_label(ESTATUS_PRINT_DATE_COLUMN)}."
         )
         return False
-    estatus_changes = {**extra_changes, STATUS_COLUMN: new_status}
-    estatus_changes.update(
-        get_status_datetime_autofill_changes(
-            row=row,
-            previous_status=previous_status,
-            new_status=new_status,
-            current_user=current_user,
-        )
+    autofill = get_status_datetime_autofill_changes(
+        row=row,
+        previous_status=previous_status,
+        new_status=new_status,
+        current_user=current_user,
     )
-    # La fecha elegida para Stefano prevalece sobre el autollenado de la etapa.
-    stefano_column = "FECHA/HORA ENVÍO STEFANO"
-    if stefano_column in extra_changes:
-        selected = parse_spanish_datetime(extra_changes[stefano_column])
-        estatus_changes[stefano_column] = (
+    # Lo que el usuario captura en el mismo guardado prevalece sobre el
+    # autollenado de la etapa.
+    estatus_changes = {**autofill, **extra_changes, STATUS_COLUMN: new_status}
+    # Del envío a Stefano elegido se toma el día y la hora del guardado.
+    if STEFANO_SENT_COLUMN in extra_changes:
+        selected = parse_spanish_datetime(extra_changes[STEFANO_SENT_COLUMN])
+        estatus_changes[STEFANO_SENT_COLUMN] = (
             format_sheet_datetime(datetime.combine(selected.date(), app_now().time()))
-            if selected else extra_changes[stefano_column]
+            if selected else extra_changes[STEFANO_SENT_COLUMN]
         )
     result = update_row_by_columna_1(identifier, estatus_changes, expected_values=expected_values)
     if not result["success"]:
@@ -4937,9 +5058,19 @@ def advance_case_status(
         new_status=new_status,
         change_comment=comment,
     )
+    # Un envío elegido en el mismo guardado se confirma con la regla de la tabla.
+    sent_problem = ""
+    if STEFANO_SENT_COLUMN in extra_changes and STEFANO_SENT_COLUMN in autofill:
+        sent_problem = chosen_stefano_sent_problem(
+            identifier, previous_status, estatus_changes[STEFANO_SENT_COLUMN])
     clear_sheet_data_cache()
     reset_workbench()
-    set_status_change_feedback(identifier, previous_status, new_status)
+    # Se confirma lo que quedó escrito para Stefano (autollenado o capturado).
+    skipped = set(result.get("skipped_columns", []))
+    note = stefano_stage_change_note(apparatus, new_status, {
+        column: estatus_changes[column] for column in (STEFANO_RETURNED_COLUMN, STEFANO_SENT_COLUMN)
+        if column in autofill and column not in skipped}, sent_problem=sent_problem)
+    set_status_change_feedback(identifier, previous_status, new_status, note)
     st.success(st.session_state["status_change_success_message"])
     return True
 
@@ -5964,6 +6095,8 @@ def build_workbench_table(
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
         active_logs = dict(tuple(logs[logs["FECHA_FIN"].str.strip().eq("")].groupby(ID_COLUMN)))
+    # Un envío anterior al último cierre de Stefano es de una ronda pasada.
+    last_stefano_end = latest_stefano_closes(logs)
     lookup = {row[ID_COLUMN]: row.to_dict() for _, row in cases.iterrows()}
     computed = []
     now = app_now()
@@ -5985,7 +6118,8 @@ def build_workbench_table(
         # Con registros contradictorios no se mide desde el envío a Stefano:
         # el aviso gris debe seguir visible hasta corregirlos.
         timing = current_stage_timing(apparatus, status, log, case.get(STEFANO_SENT_COLUMN, ""),
-                                      use_stefano_sent=not timing_issue, now=now)
+                                      use_stefano_sent=not timing_issue, now=now,
+                                      last_stefano_end=last_stefano_end.get(identifier))
         stage_state = timing_issue or stage_timing_state(timing, has_log=bool(log), now=now)
         start = timing["start"]
         special_state = get_special_payment_sla_alert_state(case, lookup)
@@ -6282,6 +6416,10 @@ def validate_workbench_changes(
                 errors.append(f"{identifier}: fecha no reconocida en {column}.")
             if column in DATETIME_TEXT_COLUMNS and value and parse_spanish_datetime(value) is None:
                 errors.append(f"{identifier}: fecha/hora no reconocida en {column}.")
+            # Un envío futuro no contaría para el regreso de Stefano.
+            if (column == STEFANO_SENT_COLUMN and value
+                    and (parsed := parse_spanish_datetime(value)) and parsed.date() > app_today()):
+                errors.append(f"{identifier}: {STEFANO_SENT_COLUMN} no puede ser futura.")
         apparatus = canonical_apparatus_value(
             delta.get(APARATO_COLUMN, row.get(APARATO_COLUMN, ""))
         )
@@ -6573,10 +6711,10 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
                                       lambda values: canonical_apparatus_value(" + ".join(values)))},
         equivalent=values_equivalent_for_column, parse_date=parse_simple_date, format_date=format_sheet_date,
         datetime_columns=DATETIME_TEXT_COLUMNS, parse_datetime=parse_spanish_datetime,
-        automatic_time_columns={"FECHA/HORA ENVÍO STEFANO"},
+        automatic_time_columns={STEFANO_SENT_COLUMN},
         format_datetime=format_sheet_datetime, now=app_now,
         hints={STATUS_COLUMN: workbench_stage_hint(row, current_user),
-               **{column: FORMULA_DELIVERY_HELP for column in readonly}})
+               **STEFANO_COLUMN_HELP, **{column: FORMULA_DELIVERY_HELP for column in readonly}})
     if result:
         baseline, delta = result
         original = pd.DataFrame([baseline])
@@ -6962,6 +7100,12 @@ def render_workbench(current_user: str) -> None:
             st.toast("Guardado: " + ", ".join(saved), icon="✅")
         if errors:
             st.session_state["workbench_save_errors"] = errors
+    # Envío/entrega de Stefano que la app registró sola al cambiar de etapa: un
+    # solo aviso aunque se hayan cambiado varios pedidos a la vez.
+    notes = st.session_state.pop("status_change_notes", [])
+    if notes:
+        shown = notes[:5] + ([f"… y {len(notes) - 5} más"] if len(notes) > 5 else [])
+        st.toast("  \n".join(shown), icon="🚚", duration="long")
     if "nuevo" in USER_VISIBLE_TABS.get(current_user, []):
         with st.expander("➕ Nuevo pedido", expanded=False,
                          key="apparatus_new_order_expander", on_change="rerun") as new_order:

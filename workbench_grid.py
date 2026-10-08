@@ -7,6 +7,16 @@ from st_aggrid import AgGrid, JsCode
 from grid_interactions import COLLECT_ROWS, configure_selection, response_frame
 
 BUSINESS_ORDER = ["APARATO", "STATUS", "NOMBRE DOCTOR", "NOMBRE PACIENTE", "DETALLE COMENTARIOS"]
+# Ayuda de las fechas de Stefano que la app registra sola; la ficha (lab_pg) la reutiliza.
+STEFANO_COLUMN_HELP = {
+    "FECHA/HORA ENVÍO STEFANO": "Se registra sola al pasar a EN PLANEACIÓN, SOLICITUD DE CAMBIOS o "
+                                "EN DISEÑO; elige otro día sólo si lo enviaste antes, en el mismo "
+                                "guardado del cambio de etapa o después (si lo guardas antes, el "
+                                "cambio de etapa lo reemplaza). De aquí se cuenta el regreso de Stefano.",
+    "FECHA/HORA ENTREGA STEFANO": "Se registra sola cuando el pedido sale de EN PLANEACIÓN, "
+                                  "SOLICITUD DE CAMBIOS o EN DISEÑO; si fue otro día, captúrala en el "
+                                  "mismo guardado del cambio de etapa o después.",
+}
 
 
 @lru_cache(maxsize=1)
@@ -140,6 +150,7 @@ def build_grid_options(grid, *, editable, automatic, stage_options, select_optio
         "ENTREGA ESTIMADA": "Salida proyectada (entrada a PRODUCTO ENVIADO): suma el tiempo de las "
                             "etapas pendientes. El pago no la detiene; las esperas del doctor la mueven.",
         "FECHA PARA ENTREGA": "La calcula la hoja: envío a Stefano + 6 días hábiles. Sólo lectura.",
+        **STEFANO_COLUMN_HELP,
     }
     widths = {"SELECCIONAR": 58, "Columna 1": 74, "SEMÁFORO": 112, "APARATO": 126,
               "STATUS": 150, "NOMBRE DOCTOR": 118, "NOMBRE PACIENTE": 118,

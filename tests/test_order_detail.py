@@ -591,6 +591,9 @@ def test_stefano_shipping_only_asks_for_day_and_uses_save_time(monkeypatch, exis
     assert not any('FECHA/HORA ENVÍO STEFANO' in item.key for item in at.time_input)
     assert button(at, '💾 Guardar este pedido').disabled
     calendar = next(item for item in at.date_input if 'ENVÍO STEFANO' in item.label)
+    # La ayuda (?) avisa que se registra sola al pasar a una etapa de Stefano.
+    assert calendar.help.startswith('Se registra sola al pasar a EN PLANEACIÓN')
+    assert calendar.help.endswith('La hora se registra automáticamente al guardar (Ciudad de México).')
     calendar.set_value(date(2026, 9, 1)).run()
     clock[0] = datetime(2026, 10, 7, 11, 45)
     button(at, '💾 Guardar este pedido').click().run()
