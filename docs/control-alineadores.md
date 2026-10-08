@@ -63,6 +63,16 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
   todavía no existe.
 - Las pausas opcionales siguen siendo `BORRADOR TITAN`,
   `SOLICITUD DE CAMBIOS` e `IMPRESIÓN EN PAUSA`.
+- **STATUS** ofrece la etapa actual, la siguiente, las pausas y Cancelado. Para
+  correcciones, Admin, Jime y Lesly tienen además **Ver todas las etapas…**,
+  igual que en Aparatos: en la tabla abre el segundo nivel del mismo menú (con
+  «← Volver a etapas sugeridas») y en la ficha abre **Etapa del flujo** debajo de
+  STATUS. Muestra todo el flujo del producto, sus pausas y Cancelado. Abrir la
+  lista no modifica el pedido; la etapa elegida se guarda con **Guardar cambios**
+  o **Guardar este pedido**, y la bitácora la registra como "Cambio manual de
+  etapa desde STATUS (todas las etapas).". Un salto que no se eligió desde esa
+  lista se sigue rechazando, y los pedidos enviados se reactivan desde el
+  histórico de Enviados.
 - Los pedidos enviados o cancelados permanecen en Sheets y se ocultan de la mesa
   activa.
 - Debajo de la tabla de Seguimiento (y de Seguimiento Polanco) está el desplegable
