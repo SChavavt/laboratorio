@@ -4015,7 +4015,7 @@ def render_nuevo_pedido_tab() -> None:
 
         with first_row_cols[0]:
             aparato = st.selectbox(
-                display_field_label("APARATO"),
+                display_field_label("APARATO", required=True),
                 build_display_selectbox_options("APARATO", APARATO_OPTIONS, ""),
                 key=f"nuevo_pedido_aparato_{form_version}",
             )
@@ -4060,6 +4060,10 @@ def render_nuevo_pedido_tab() -> None:
         submitted = st.form_submit_button("💾 Guardar nuevo pedido")
 
     if not submitted:
+        return
+    # Sin aparato no hay flujo: el pedido quedaría sin etapa ni registro de tiempos.
+    if not clean_display_value(aparato):
+        st.error("Elige el APARATO: con él se asigna la etapa inicial y empieza a contar su tiempo.")
         return
 
     try:
@@ -6426,11 +6430,16 @@ def validate_workbench_changes(
             delta.get(APARATO_COLUMN, row.get(APARATO_COLUMN, ""))
         )
         previous_status = normalize_status_alias(row.get(STATUS_COLUMN, ""))
-        flow_statuses = {
-            normalize_text(flow_status)
-            for flow_status, _ in get_process_flow(apparatus)
-        }
-        if APARATO_COLUMN in delta and normalize_text(previous_status) not in flow_statuses:
+        flow = [flow_status for flow_status, _ in get_process_flow(apparatus)]
+        # Un pedido creado sin aparato no tiene etapa: no hay nada que conservar,
+        # pero debe iniciar su flujo en el mismo guardado para abrir su tiempo.
+        if APARATO_COLUMN in delta and not previous_status:
+            if STATUS_COLUMN not in delta and flow:
+                errors.append(
+                    f"{identifier}: el pedido no tiene etapa; elige también su etapa inicial ({flow[0]})."
+                )
+        elif APARATO_COLUMN in delta and normalize_text(previous_status) not in {
+                normalize_text(flow_status) for flow_status in flow}:
             errors.append(
                 f"{identifier}: la etapa actual {previous_status} no existe en la combinación {apparatus}."
             )
@@ -6440,7 +6449,8 @@ def validate_workbench_changes(
         allowed = (get_manual_stage_statuses(apparatus, previous_status, current_user) if row_manual
                    else get_allowed_next_statuses(apparatus, previous_status, current_user))
         if not reactivate and new_status not in allowed:
-            errors.append(f"{identifier}: {previous_status} → {new_status} no pertenece a su siguiente etapa permitida.")
+            errors.append(f"{identifier}: {previous_status or 'Sin etapa'} → {new_status} "
+                          "no pertenece a su siguiente etapa permitida.")
         elif not is_transition_allowed_for_user(current_user, previous_status, new_status, apparatus):
             errors.append(f"{identifier}: tu usuario no puede realizar este cambio de etapa.")
         elif transition_requires_print_mark(
