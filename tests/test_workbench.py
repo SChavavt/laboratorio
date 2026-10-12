@@ -318,6 +318,72 @@ def test_manual_stage_save_records_its_own_comment(monkeypatch):
     assert logs[0]['new_status'] == 'ORDEN RECIBIDA'
 
 
+def test_case_without_stage_takes_its_apparatus_and_initial_stage_together():
+    # Un pedido creado sin aparato queda sin etapa: al elegir el aparato debe
+    # poder iniciar su flujo en el mismo guardado.
+    source = pd.DataFrame([case(status='', apparatus='')])
+    start = [('001', {'APARATO': 'MSE', 'STATUS': 'ORDEN RECIBIDA'})]
+    assert app.validate_workbench_changes(source, source, start, 'Jime') == []
+    only_apparatus = app.validate_workbench_changes(source, source, [('001', {'APARATO': 'MSE'})], 'Jime')
+    assert only_apparatus == ['001: el pedido no tiene etapa; elige también su etapa inicial (ORDEN RECIBIDA).']
+    skipped = app.validate_workbench_changes(source, source, [('001', {'APARATO': 'MSE', 'STATUS': 'EN PLANEACIÓN'})], 'Jime')
+    assert skipped == ['001: Sin etapa → EN PLANEACIÓN no pertenece a su siguiente etapa permitida.']
+    # Con etapa guardada se sigue exigiendo que exista en la nueva combinación.
+    staged = pd.DataFrame([case(status='EN DISEÑO', apparatus='TIGER')])
+    assert app.validate_workbench_changes(staged, staged, [('001', {'APARATO': 'MSE'})], 'Jime') == [
+        '001: la etapa actual EN DISEÑO no existe en la combinación MSE.']
+
+
+def test_case_without_stage_records_the_start_of_its_initial_stage(monkeypatch):
+    source = pd.DataFrame([case(status='', apparatus='')])
+    edited = source.copy()
+    edited.loc[0, 'APARATO'] = 'MSE'
+    edited.loc[0, 'STATUS'] = app.display_selectbox_value('STATUS', 'ORDEN RECIBIDA')
+    writes, logs = [], []
+    monkeypatch.setattr(app, 'clear_sheet_data_cache', lambda: None)
+    monkeypatch.setattr(app, 'reset_workbench', lambda: None)
+    monkeypatch.setattr(app, 'read_sheet_df', lambda _: source)
+    monkeypatch.setattr(app, 'update_row_by_columna_1', lambda identifier, changes, **kwargs:
+                        writes.append(changes) or {'success': True, 'skipped_columns': []})
+    monkeypatch.setattr(app, 'register_status_change', lambda **kwargs: logs.append(kwargs))
+    assert app.save_workbench_changes(source, edited, 'Jime') == (['001'], [])
+    assert writes[0]['APARATO'] == 'MSE' and writes[0]['STATUS'] == 'ORDEN RECIBIDA'
+    assert (logs[0]['apparatus'], logs[0]['previous_status'], logs[0]['new_status']) == ('MSE', '', 'ORDEN RECIBIDA')
+
+
+def test_new_order_requires_apparatus_to_start_its_stage():
+    from streamlit.testing.v1 import AppTest
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import lab_pg as app
+import streamlit as st
+from unittest.mock import patch
+calls = st.session_state.setdefault("calls", [])
+with patch.multiple(
+    app,
+    get_current_user=lambda: "Jime",
+    generate_unique_columna_1_id=lambda: "12102026-001",
+    append_estatus_row=lambda row: calls.append(("row", row)) or 5,
+    register_status_change=lambda **kwargs: calls.append(("log", kwargs)),
+    clear_sheet_data_cache=lambda: None,
+    reset_workbench=lambda: None,
+):
+    app.render_nuevo_pedido_tab()
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["calls"] == []
+    assert any("Elige el APARATO" in item.value for item in at.error)
+    at.selectbox(key="nuevo_pedido_aparato_0").set_value(app.display_selectbox_value("APARATO", "MSE"))
+    at.button[0].click().run()
+    assert not at.exception
+    (_, row), (_, log_entry) = at.session_state["calls"]
+    assert (row["APARATO"], row[app.STATUS_COLUMN]) == ("MSE", "ORDEN RECIBIDA")
+    assert (log_entry["previous_status"], log_entry["new_status"]) == ("", "ORDEN RECIBIDA")
+
+
 def test_status_submenu_saves_manual_and_regular_rows_together_with_normal_field_edits(monkeypatch):
     source = pd.DataFrame([case('001'), case('002')])
     edited = source.copy()
