@@ -172,7 +172,7 @@ def test_normal_stage_only_offers_next_stage_pauses_and_cancel(definitions):
         "CONVENC.", "POR HACER SETUP", definitions
     )
     assert options[:2] == ["POR HACER SETUP", "EN PLANEACIÓN"]
-    assert options[2:-1] == list(app.PAUSE_STATUSES)
+    assert options[2:-1] == list(definitions["CONVENCIONAL"].pauses)
     assert options[-1] == "CANCELADO"
     assert "CASO APROBADO" not in options
 
@@ -195,6 +195,75 @@ def test_pause_options_are_specific_to_each_product(definitions):
     assert "IMPRESIÓN EN PAUSA" in options
     assert "BORRADOR TITAN" not in options
     assert "SOLICITUD DE CAMBIOS" not in options
+
+
+@pytest.mark.parametrize("pause", [
+    "FALTA DE PAGO DE PLANEACIÓN",
+    "FALTA DE PAGO DE IMPRESIÓN",
+])
+def test_payment_holds_are_optional_product_pauses(pause):
+    values = [*PROCESS_VALUES, [pause, "<1 dia"], [pause.lower(), "<2 dias"]]
+    definitions = app.parse_process_matrix(values)
+    conventional = definitions["CONVENCIONAL"]
+    assert conventional.pauses.count(pause) == 1
+    assert pause not in conventional.normal_statuses
+    assert app.next_normal_status("CONVENC.", "POR HACER SETUP", definitions) == "EN PLANEACIÓN"
+    assert pause in app.get_allowed_next_statuses("CONVENC.", "POR HACER SETUP", definitions)
+    assert pause in app.get_manual_stage_statuses("CONVENC.", "POR HACER SETUP", definitions, "Jime")
+    assert pause not in app.get_allowed_next_statuses("RETENEDORES", "REVISIÓN DE ARCHIVOS", definitions)
+    assert app.get_time_limit("CONVENC.", pause, definitions) is None
+    assert app.process_phase_order("CONVENC.", pause, definitions) == "PAUSA"
+
+    resumed = app.get_allowed_next_statuses("CONVENC.", pause, definitions)
+    assert "EN PLANEACIÓN" in resumed
+    assert "EN IMPRESIÓN" in resumed
+    assert app.get_allowed_next_statuses("CONVENC.", "ENVIADO", definitions) == ["ENVIADO"]
+
+    table = app.build_tracking_table(
+        pd.DataFrame([order(status=pause)]),
+        pd.DataFrame([log(status=pause, hours=5)]),
+        definitions,
+        now=NOW,
+    )
+    assert table.iloc[0]["SEMÁFORO"] == "🟣 En pausa"
+    assert table.iloc[0]["PLAZO HORAS"] is None
+    assert table.iloc[0]["HORAS EN ETAPA"] == 5
+    assert app.status_display_value(pause, definitions) == f"⏸️ {pause}"
+    assert app.status_palette_value(pause) == app.status_palette_value("BORRADOR TITAN")
+    normal, pauses = app.board_stage_order(definitions)
+    assert pause not in normal
+    assert pause in pauses
+
+
+@pytest.mark.parametrize("product,has_planning", [
+    ("Convencional", True),
+    ("Graphy", True),
+    ("Retenedores", False),
+    ("Modelos", False),
+    ("Setup", True),
+    ("Guarda", True),
+    ("Guía", True),
+])
+def test_payment_pauses_follow_planning_and_printing_product_scope(product, has_planning):
+    planning = "FALTA DE PAGO DE PLANEACIÓN"
+    printing = "FALTA DE PAGO DE IMPRESIÓN"
+    values = [*PROCESS_VALUES, [
+        planning, "", planning, "", "", "", "", "",
+        planning, "", planning, "", planning, "",
+    ], [printing, ""] * 7]
+    definitions = app.parse_process_matrix(values)
+    definition = app.get_process_definition(product, definitions)
+    assert (planning in definition.pauses) == has_planning
+    assert printing in definition.pauses
+    assert planning not in definition.normal_statuses
+    assert printing not in definition.normal_statuses
+    for options in (
+        app.get_allowed_next_statuses(product, "REVISIÓN DE ARCHIVOS", definitions),
+        app.get_manual_stage_statuses(product, "REVISIÓN DE ARCHIVOS", definitions, "Jime"),
+        app.get_reactivation_statuses(product, "ENVIADO", definitions),
+    ):
+        assert (planning in options) == has_planning
+        assert printing in options
 
 
 def test_cancel_alias_and_sent_orders_are_archived(definitions):

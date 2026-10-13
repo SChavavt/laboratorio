@@ -61,8 +61,21 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
 - `PROCESOS POR PRODUCTO` es la fuente de verdad para etapas y plazos.
 - `TIEMPOS_ALINEADORES` registra cada cambio y se crea al primer arranque si
   todavía no existe.
-- Las pausas opcionales siguen siendo `BORRADOR TITAN`,
-  `SOLICITUD DE CAMBIOS` e `IMPRESIÓN EN PAUSA`.
+- Las pausas opcionales son `BORRADOR TITAN`, `SOLICITUD DE CAMBIOS`,
+  `IMPRESIÓN EN PAUSA`, `FALTA DE PAGO DE PLANEACIÓN` y
+  `FALTA DE PAGO DE IMPRESIÓN`. Sólo se ofrecen cuando están incluidas en
+  la columna del producto en `PROCESOS POR PRODUCTO`; las celdas de Tiempo
+  correspondientes deben quedar vacías. No son pasos obligatorios ni tienen
+  plazo de producción. El semáforo las muestra como **En pausa**, se registra
+  su duración y, al resolverlas, se puede elegir la etapa donde reanudar.
+- Para habilitar las dos pausas de pago, primero desplegar el código que las
+  reconoce y después agregarlas a `PROCESOS POR PRODUCTO` para los productos
+  correspondientes. Así se evita tratarlas como etapas normales en una versión
+  anterior de la app.
+- La pausa `FALTA DE PAGO DE PLANEACIÓN` corresponde a Convencional, Graphy,
+  Setup, Guarda y Guía. Retenedores y Modelos sólo llevan impresión, por lo que
+  no deben ofrecer esa pausa. `FALTA DE PAGO DE IMPRESIÓN` corresponde a los
+  siete productos, incluidos Retenedores y Modelos.
 - **STATUS** ofrece la etapa actual, la siguiente, las pausas y Cancelado. Para
   correcciones, Admin, Jime y Lesly tienen además **Ver todas las etapas…**,
   igual que en Aparatos: en la tabla abre el segundo nivel del mismo menú (con
