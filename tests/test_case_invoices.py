@@ -3,11 +3,13 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 import sys
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import Mock
 
+from botocore.exceptions import ClientError, EndpointConnectionError
 import pandas as pd
 import pytest
+from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,6 +121,163 @@ def test_pdf_links_are_temporary_inline_or_download_and_scoped_to_the_case(store
     assert download['Params']['ResponseContentDisposition'].startswith('attachment;')
     with pytest.raises(ValueError, match='no pertenece'):
         store.url('alineadores', '001', file)
+
+
+@pytest.mark.parametrize('layout', ['root', 'section', 'blank_root'])
+def test_storage_reads_existing_secrets_and_signs_v4_with_optional_session_token(monkeypatch, layout):
+    config = dict(zip(invoices.AWS_KEYS, ['test-key', 'test-secret', 'us-east-1', 'test-bucket']))
+    config['aws_session_token'] = 'test-session'
+    secrets = config if layout == 'root' else {'aws': config}
+    if layout == 'blank_root':
+        secrets.update({key: '  ' for key in config})
+    monkeypatch.setattr(invoices.st, 'secrets', secrets)
+    client = Mock()
+    monkeypatch.setattr(invoices.boto3, 'client', client)
+    invoices.get_store.clear()
+    try:
+        store = invoices.get_store()
+        assert store.bucket == 'test-bucket'
+        args = client.call_args.kwargs
+        assert args['aws_access_key_id'] == 'test-key'
+        assert args['aws_secret_access_key'] == 'test-secret'
+        assert args['aws_session_token'] == 'test-session'
+        assert args['region_name'] == 'us-east-1'
+        assert args['config'].signature_version == 's3v4'
+    finally:
+        invoices.get_store.clear()
+
+
+def test_storage_config_reports_only_missing_key_names_and_never_creates_a_client(monkeypatch):
+    monkeypatch.setattr(invoices.st, 'secrets', {'aws_access_key_id': 'PRIVATE_VALUE', 'aws': {'aws_region': 'us-east-1'}})
+    client = Mock()
+    monkeypatch.setattr(invoices.boto3, 'client', client)
+    invoices.get_store.clear()
+    try:
+        with pytest.raises(invoices.StorageConfigurationError) as error:
+            invoices.get_store()
+        assert error.value.missing == ('aws_secret_access_key', 's3_bucket_name')
+        assert 'PRIVATE_VALUE' not in ' '.join(invoices.storage_error(error.value, 'consultar'))
+        client.assert_not_called()
+    finally:
+        invoices.get_store.clear()
+
+
+def test_storage_handles_absent_secrets_file(monkeypatch):
+    secrets = Mock()
+    secrets.get.side_effect = StreamlitSecretNotFoundError('PRIVATE_PATH')
+    monkeypatch.setattr(invoices.st, 'secrets', secrets)
+    invoices.get_store.clear()
+    try:
+        with pytest.raises(invoices.StorageConfigurationError) as error:
+            invoices.get_store()
+        assert error.value.missing == invoices.AWS_KEYS
+        assert 'PRIVATE_PATH' not in str(error.value)
+    finally:
+        invoices.get_store.clear()
+
+
+@pytest.mark.parametrize('session_token', ['', 'test-session'])
+def test_real_s3_client_generates_v4_pdf_link_without_network(monkeypatch, session_token):
+    config = dict(zip(invoices.AWS_KEYS, ['test-key', 'test-secret', 'us-east-1', 'test-bucket']))
+    config['aws_session_token'] = session_token
+    monkeypatch.setattr(invoices.st, 'secrets', {'aws': config})
+    invoices.get_store.clear()
+    try:
+        store = invoices.get_store()
+        invoice = invoices.Invoice('facturas/aparatos/001/file/factura.pdf', 'factura.pdf', 10)
+        query = parse_qs(urlparse(store.url('aparatos', '001', invoice)).query)
+        assert query['X-Amz-Algorithm'] == ['AWS4-HMAC-SHA256']
+        assert query['X-Amz-Expires'] == ['1800']
+        assert query.get('X-Amz-Security-Token', []) == ([session_token] if session_token else [])
+        assert query['response-content-disposition'][0].startswith('inline;')
+    finally:
+        invoices.get_store.clear()
+
+
+@pytest.mark.parametrize('code,hint', [
+    ('AccessDenied', 's3:ListBucket'), ('InvalidAccessKeyId', 'claves'),
+    ('ExpiredToken', 'aws_session_token'), ('NoSuchBucket', 's3_bucket_name'),
+    ('AuthorizationHeaderMalformed', 'aws_region'), ('UnknownError', 'registros'),
+])
+def test_storage_errors_identify_the_action_without_exposing_aws_response(code, hint):
+    error = ClientError({'Error': {'Code': code, 'Message': 'PRIVATE_RESPONSE'}}, 'ListObjectsV2')
+    text = ' '.join(invoices.storage_error(error, 'consultar'))
+    assert hint in text and 'PRIVATE_RESPONSE' not in text
+    if code == 'AccessDenied':
+        assert 's3:PutObject' in invoices.storage_error(error, 'guardar')[1]
+
+
+SECTION_SCRIPT = f'''
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+import streamlit as st
+import case_invoices as invoices
+invoices.render_section('aparatos', '001', st.session_state.get('user', 'Jime'),
+                        verify_case=lambda: None, rerun=st.rerun)
+'''
+
+
+@pytest.mark.parametrize('user', ['Jime', 'Admin'])
+def test_denied_listing_does_not_claim_order_is_empty_and_can_confirm_successful_upload(store, monkeypatch, user):
+    listing = Mock(side_effect=ClientError({'Error': {'Code': 'AccessDenied', 'Message': 'PRIVATE_RESPONSE'}}, 'ListObjectsV2'))
+    monkeypatch.setattr(invoices, 'list_invoices', listing)
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15)
+    at.session_state['user'] = user
+    at.run()
+    assert not at.exception and len(at.file_uploader) == 1
+    assert any('permiso para consultar' in item.value for item in at.warning)
+    assert not any('todavía no tiene' in item.value for item in at.caption)
+    assert any('s3:ListBucket' in item.value for item in at.caption) == (user == 'Admin')
+    assert not any('PRIVATE_RESPONSE' in item.value for item in at.warning)
+    at.file_uploader[0].set_value(('factura.pdf', PDF, 'application/pdf')).run()
+    next(button for button in at.button if button.label == 'Guardar facturas').click().run()
+    assert not at.exception and len(store.list('aparatos', '001')) == 1
+    assert any('1 factura(s) guardada(s)' in item.value for item in at.success)
+    assert any('consulta falló' in item.value for item in at.caption)
+    assert not at.file_uploader[0].value
+    listing.side_effect = None
+    listing.return_value = store.list('aparatos', '001')
+    next(button for button in at.button if button.label == 'Actualizar facturas').click().run()
+    listing.clear.assert_called_with('aparatos', '001')
+    assert not at.exception and not at.warning
+    assert len(at.get('link_button')) == 2
+
+
+def test_missing_config_blocks_upload_with_safe_admin_instructions(monkeypatch):
+    monkeypatch.setattr(invoices, 'get_store', Mock(side_effect=invoices.StorageConfigurationError(('s3_bucket_name',))))
+    listing = Mock()
+    monkeypatch.setattr(invoices, 'list_invoices', listing)
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15)
+    at.session_state['user'] = 'Admin'
+    at.run()
+    assert not at.exception and not at.file_uploader
+    assert any('s3_bucket_name' in item.value for item in at.caption)
+    assert not any('todavía no tiene' in item.value for item in at.caption)
+    listing.assert_not_called()
+
+
+def test_connection_failure_does_not_render_an_empty_order(store, monkeypatch):
+    listing = Mock(side_effect=EndpointConnectionError(endpoint_url='https://PRIVATE_ENDPOINT'))
+    monkeypatch.setattr(invoices, 'list_invoices', listing)
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15).run()
+    assert not at.exception
+    assert any('conectar al almacenamiento' in item.value for item in at.warning)
+    assert not any('PRIVATE_ENDPOINT' in item.value for item in at.warning)
+    assert not any('todavía no tiene' in item.value for item in at.caption)
+
+
+def test_denied_upload_reports_write_permission_and_keeps_selection_for_retry(store, monkeypatch):
+    store.client.put_object = Mock(side_effect=ClientError({'Error': {'Code': 'AccessDenied', 'Message': 'PRIVATE_RESPONSE'}}, 'PutObject'))
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15)
+    at.session_state['user'] = 'Admin'
+    at.run()
+    at.file_uploader[0].set_value(('factura.pdf', PDF, 'application/pdf')).run()
+    next(button for button in at.button if button.label == 'Guardar facturas').click().run()
+    assert not at.exception and not at.success
+    assert any('s3:PutObject' in item.value for item in at.error)
+    assert not any('PRIVATE_RESPONSE' in item.value for item in at.error)
+    assert at.file_uploader[0].value
+    assert store.client.objects == {}
 
 
 @pytest.mark.parametrize('query', ['jose', 'José Martín', 'LOPEZ', '001', 'jose lopez'])
