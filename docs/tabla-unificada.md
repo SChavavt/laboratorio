@@ -111,6 +111,67 @@ leer/escribir archivos (`s3:GetObject`, `s3:PutObject`) bajo el prefijo `factura
 No se habilitan permisos públicos al subir las facturas. Estos permisos y la
 configuración real del bucket se comprueban en el entorno desplegado.
 
+### Si no se pueden consultar las facturas
+
+Un fallo de consulta **no confirma que haya una factura subida ni que se haya
+perdido**. La app diferencia una lista vacía de una consulta fallida y conserva
+la confirmación de los archivos que S3 sí aceptó. Si el cliente S3 está
+configurado, se puede adjuntar aunque falle la consulta: guardar y listar son
+operaciones con permisos distintos. Para ver archivos ya guardados hay que
+restablecer la consulta y pulsar **Actualizar facturas**.
+
+El aviso identifica configuración incompleta, permisos denegados, credenciales
+rechazadas, bucket inexistente, región incorrecta o conexión fallida. **Admin**
+ve también la clave o permiso que hay que revisar; no se muestran valores de
+Secrets ni la respuesta completa de AWS.
+
+1. En el despliegue de Streamlit, abrir **Settings → Secrets** y comprobar las
+   cuatro claves anteriores en la raíz o en `[aws]`. Las claves vacías en la raíz
+   no ocultan valores válidos de `[aws]`. Si se usan credenciales temporales,
+   añadir también `aws_session_token`. Confirmar que `aws_region` corresponde al
+   bucket. Tras cambiar Secrets, reiniciar la app para renovar el cliente S3.
+2. Si aparece **AccessDenied** al consultar, revisar la política de la identidad
+   IAM cuyas claves usa la app y cualquier restricción de la política del bucket.
+   Subir comprobantes bajo `pagos/` o archivos bajo `estefano/` no garantiza
+   permiso para listar o leer `facturas/`. `s3:ListBucket` se concede sobre el
+   ARN del **bucket**; `s3:GetObject` y `s3:PutObject`, sobre los **objetos**.
+   Una política adicional limitada a facturas puede ser:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": "s3:ListBucket",
+         "Resource": "arn:aws:s3:::NOMBRE_DEL_BUCKET",
+         "Condition": {"StringLike": {"s3:prefix": ["facturas/*"]}}
+       },
+       {
+         "Effect": "Allow",
+         "Action": ["s3:GetObject", "s3:PutObject"],
+         "Resource": "arn:aws:s3:::NOMBRE_DEL_BUCKET/facturas/*"
+       }
+     ]
+   }
+   ```
+
+   Sustituir `NOMBRE_DEL_BUCKET` por el bucket configurado y añadir esta política
+   a la identidad existente, conservando sus otros permisos. No habilitar
+   acceso público. Si hay un `Deny` explícito, un `Allow` adicional no lo anula.
+   Si los objetos usan una clave KMS propia, revisar también los permisos sobre
+   esa clave para subir y abrir los PDFs.
+3. Para confirmar una factura concreta, buscar en la consola S3 el prefijo
+   `facturas/aparatos/<folio>/` (o `alineadores`/`polanco` según su origen).
+   Usar el folio exacto; no el nombre del doctor o paciente. Después, con la
+   identidad de la app, verificar la lista y abrir/descargar un PDF mediante
+   sus enlaces temporales, firmados con Signature Version 4. Generar un enlace
+   no prueba por sí solo que AWS autorice `s3:GetObject`.
+
+La configuración del despliegue y la política IAM no viven en este repositorio:
+las pruebas locales simuladas no confirman los permisos reales ni la existencia
+de una factura en producción.
+
 La interfaz usa acentos morados y turquesa, contadores con los colores del
 semáforo y las etiquetas originales con emojis en las etapas y desplegables.
 Los emojis son sólo presentación: Sheets recibe siempre el valor canónico.

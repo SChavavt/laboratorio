@@ -1,9 +1,11 @@
 """Facturas PDF por orden; el vínculo vive en S3 y no modifica Google Sheets."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+import logging
 from pathlib import PurePosixPath
 from typing import Any, Callable
 from urllib.parse import quote, unquote
@@ -11,12 +13,60 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError, HTTPClientError
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
 CASE_TYPES = {"aparatos": "Aparatos", "alineadores": "Alineadores", "polanco": "Polanco"}
 ALLOWED_USERS = frozenset({"Admin", "Jime", "Lesly", "Vero"})
 SERVICE_SECTION = "📋 Servicio y archivos"
 TIMEZONE = ZoneInfo("America/Mexico_City")
+AWS_KEYS = ("aws_access_key_id", "aws_secret_access_key", "aws_region", "s3_bucket_name")
+LOGGER = logging.getLogger(__name__)
+
+
+class StorageConfigurationError(ValueError):
+    def __init__(self, missing: tuple[str, ...]):
+        super().__init__("Falta configurar el almacenamiento de facturas de la app.")
+        self.missing = missing
+
+
+def storage_error(error: Exception, operation: str) -> tuple[str, str]:
+    """Mensajes seguros: nunca mostrar la respuesta AWS ni valores de Secrets."""
+    if isinstance(error, StorageConfigurationError):
+        return ("Falta configurar el almacenamiento de facturas. Pide al administrador revisar la configuración de la app.",
+                "Configura en Streamlit Secrets, en la raíz o en [aws]: " + ", ".join(error.missing) + ".")
+    if isinstance(error, ClientError):
+        code = error.response.get("Error", {}).get("Code", "")
+        if code in {"AccessDenied", "AllAccessDisabled"}:
+            permission = "s3:ListBucket" if operation == "consultar" else "s3:PutObject"
+            return (f"La app no tiene permiso para {operation} las facturas. Pide al administrador revisar el acceso al almacenamiento.",
+                    f"AWS rechazó la operación ({code}). Revisa {permission} para el prefijo facturas/; "
+                    "para abrir los PDFs también se necesita s3:GetObject.")
+        if code in {"InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken", "TokenRefreshRequired"}:
+            return ("AWS rechazó las credenciales del almacenamiento. Pide al administrador revisar las claves de la app.",
+                    f"AWS: {code}. Revisa las claves en Streamlit Secrets y aws_session_token si son temporales.")
+        if code == "NoSuchBucket":
+            return ("No se encontró el almacenamiento configurado. Pide al administrador revisar la configuración de la app.",
+                    "AWS: NoSuchBucket. Revisa s3_bucket_name en Streamlit Secrets.")
+        if code in {"PermanentRedirect", "IncorrectEndpoint", "AuthorizationHeaderMalformed", "IllegalLocationConstraintException"}:
+            return ("La ubicación del almacenamiento no coincide con la configuración de la app.",
+                    f"AWS: {code}. Revisa que aws_region sea la región del bucket configurado.")
+    if isinstance(error, (BotoConnectionError, HTTPClientError)):
+        return ("No se pudo conectar al almacenamiento de facturas. Intenta actualizar las facturas en unos momentos.",
+                "Revisa la conexión de la app a S3 y la región configurada.")
+    return (f"No se pudieron {operation} las facturas. Intenta de nuevo; si continúa, avisa al administrador.",
+            "Revisa los registros del despliegue y la configuración de S3.")
+
+
+def show_storage_error(error: Exception, operation: str, current_user: str) -> None:
+    message, detail = storage_error(error, operation)
+    # La clase de error ayuda a localizar el fallo sin registrar secretos ni datos de la orden.
+    LOGGER.warning("Invoice storage operation %s failed (%s)", operation, type(error).__name__)
+    st.warning(message)
+    if current_user == "Admin":
+        st.caption(detail)
 
 
 def case_prefix(case_type: str, identifier: str) -> str:
@@ -87,8 +137,11 @@ class InvoiceStore:
                                        Metadata={"uploaded_by": current_user, "order_id": quote(str(identifier).strip(), safe=''),
                                                  "case_type": case_type})
                 saved.append(name)
-            except Exception:
-                errors.append(f"No se pudo adjuntar {name}. Vuelve a intentar guardar las facturas.")
+            except Exception as exc:
+                message, detail = storage_error(exc, "guardar")
+                LOGGER.warning("Invoice storage operation guardar failed (%s)", type(exc).__name__)
+                errors.append(f"No se pudo adjuntar {name}. {message}" +
+                              (f" {detail}" if current_user == "Admin" else ""))
         return saved, errors
 
     def url(self, case_type: str, identifier: str, invoice: Invoice, *, download: bool = False) -> str:
@@ -103,13 +156,22 @@ class InvoiceStore:
 
 @st.cache_resource(show_spinner=False)
 def get_store() -> InvoiceStore:
-    keys = ("aws_access_key_id", "aws_secret_access_key", "aws_region", "s3_bucket_name")
-    aws = st.secrets.get("aws", {})
-    config = {key: st.secrets.get(key, aws.get(key, "")) for key in keys}
-    if not all(config.values()):
-        raise ValueError("Falta configurar el almacenamiento de facturas de la app.")
+    try:
+        aws = st.secrets.get("aws", {})
+        aws = aws if isinstance(aws, Mapping) else {}
+        config = {}
+        for key in (*AWS_KEYS, "aws_session_token"):
+            root = str(st.secrets.get(key, "") or "").strip()
+            config[key] = root or str(aws.get(key, "") or "").strip()
+    except (StreamlitSecretNotFoundError, FileNotFoundError):
+        raise StorageConfigurationError(AWS_KEYS) from None
+    missing = tuple(key for key in AWS_KEYS if not config[key])
+    if missing:
+        raise StorageConfigurationError(missing)
+    credentials = {"aws_session_token": config["aws_session_token"]} if config["aws_session_token"] else {}
     return InvoiceStore(boto3.client("s3", aws_access_key_id=config["aws_access_key_id"],
-                                    aws_secret_access_key=config["aws_secret_access_key"], region_name=config["aws_region"]),
+                                    aws_secret_access_key=config["aws_secret_access_key"], region_name=config["aws_region"],
+                                    config=Config(signature_version="s3v4"), **credentials),
                         config["s3_bucket_name"])
 
 
@@ -131,19 +193,29 @@ def render_section(case_type: str, identifier: str, current_user: str, *,
             rerun()
     version_key = f"invoice_version_{token}"
     feedback_key = f"invoice_feedback_{token}"
-    for message in st.session_state.pop(feedback_key, {}).get("errors", []):
+    feedback = st.session_state.pop(feedback_key, {})
+    if feedback.get("saved"):
+        st.success(f"{len(feedback['saved'])} factura(s) guardada(s) en esta orden.")
+    for message in feedback.get("errors", []):
         st.error(message)
     try:
         store = get_store()
-        invoices = list_invoices(case_type, identifier)
-    except Exception:
-        st.warning("No se pudieron consultar las facturas. Revisa la configuración de almacenamiento de la app.")
+    except Exception as exc:
+        show_storage_error(exc, "consultar", current_user)
+        st.caption("La consulta falló; no se puede comprobar qué facturas tiene esta orden.")
         return
-    if not invoices:
+    try:
+        invoices = list_invoices(case_type, identifier)
+    except Exception as exc:
+        show_storage_error(exc, "consultar", current_user)
+        st.caption("La consulta falló; no se puede comprobar qué facturas tiene esta orden. "
+                   "Si ya guardaste una factura, actualiza la lista cuando se restablezca el acceso.")
+        invoices = None
+    if invoices == []:
         st.caption("Esta orden todavía no tiene facturas adjuntas.")
-    else:
+    elif invoices:
         st.caption(f"{len(invoices)} factura(s) adjunta(s)")
-    for invoice in invoices:
+    for invoice in invoices or []:
         with st.container(horizontal=True, vertical_alignment="center"):
             st.write(invoice.name)
             if invoice.modified:
@@ -160,13 +232,13 @@ def render_section(case_type: str, identifier: str, current_user: str, *,
         except ValueError as exc:
             st.error(str(exc))
             return
-        except Exception:
-            st.error("No se pudieron guardar las facturas. Intenta de nuevo.")
+        except Exception as exc:
+            show_storage_error(exc, "guardar", current_user)
             return
         if saved:
             list_invoices.clear(case_type, identifier)
             st.toast(f"{len(saved)} factura(s) adjunta(s) a la orden {identifier}.", icon="🧾")
-        st.session_state[feedback_key] = {"errors": errors}
+        st.session_state[feedback_key] = {"saved": saved, "errors": errors}
         if not errors:
             st.session_state[version_key] = version + 1
         rerun()
