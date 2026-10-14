@@ -29,6 +29,36 @@ def javascript(js):
     return js.js_code.replace('::JSCODE::', '')
 
 
+def test_partial_sheets_cannot_drop_active_sellers_or_reintroduce_aliases_and_santiago():
+    catalog = {'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', ' santiago ',
+                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', ''],
+               'SERVICIO': ['NO APLICA ', 'Foto, lateral']}
+    result = dropdown.with_app_vendors(catalog)
+    assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN', 'IGNACIO']
+    assert result['SERVICIO'] == catalog['SERVICIO']
+    assert catalog['VENDEDOR'][0] == 'JIMENA'
+    assert dropdown.with_app_vendors({})['VENDEDOR'] == list(dropdown.APP_VENDORS)
+
+
+def test_grid_resolves_historical_vendor_aliases_without_duplicate_choices_or_false_changes():
+    import lab_pg as lab
+    catalog = dropdown.with_app_vendors({'VENDEDOR': ['JIMENA', 'ALEX']})
+    source = pd.DataFrame([{'id': '001', 'VENDEDOR': 'JIMENA'}, {'id': '002', 'VENDEDOR': 'ALEX'}])
+    options = {'context': {}, 'columnDefs': [{'field': 'VENDEDOR', 'editable': True}]}
+    spec = dropdown.decorate_grid(options, catalog, source)['context']['dropdowns']['VENDEDOR']
+    assert spec['aliases'] == {'JIMENA': 'JIME', 'ALEX': 'ALEJANDRO'}
+    assert 'JIMENA' not in spec['values'] and 'ALEX' not in spec['values']
+    for old, new in spec['aliases'].items():
+        assert lab.values_equivalent_for_column('VENDEDOR', old, new)
+        assert align.values_equivalent('VENDEDOR', old, new)
+    for id_column, changes in ((lab.ID_COLUMN, lab.workbench_changes),
+                              (align.ID_COLUMN, lambda a, b: align.grid_changes(a, b, {}))):
+        original = source.rename(columns={'id': id_column})
+        displayed = original.copy()
+        displayed['VENDEDOR'] = displayed['VENDEDOR'].map(dropdown.canonical_vendor)
+        assert changes(original, displayed) == []
+
+
 def test_compound_values_preserve_native_spaces_and_commas_inside_options():
     options = ['STLs', 'TOMO', 'NO APLICA ', 'Foto, lateral']
     assert dropdown.split_values('STLs, NO APLICA , Foto, lateral', options) == ['STLs', 'NO APLICA ', 'Foto, lateral']

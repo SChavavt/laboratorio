@@ -681,6 +681,8 @@ def values_equivalent(column: str, old_value: Any, new_value: Any) -> bool:
         return status_key(old_text) == status_key(new_text)
     if column == PRODUCT_COLUMN:
         return product_key(old_text) == product_key(new_text)
+    if column == "VENDEDOR":
+        return dropdown_fields.canonical_vendor(old_value) == dropdown_fields.canonical_vendor(new_value)
     if column in DATE_COLUMNS or column.startswith("FECHA"):
         old_date, new_date = parse_simple_date(old_text), parse_simple_date(new_text)
         if old_date is not None and new_date is not None:
@@ -2451,6 +2453,8 @@ def grid_cell_value(
         return canonical_status(value, configured_statuses(definitions))
     if column == PRODUCT_COLUMN:
         return strip_visual_prefix(value)
+    if column == "VENDEDOR":
+        return dropdown_fields.canonical_vendor(value)
     return clean_cell(value).strip()
 
 
@@ -2815,7 +2819,27 @@ def get_order_form_catalog() -> dict[str, list[str]]:
     if catalogs is None:
         catalogs = read_order_form_catalogs(configured_spreadsheet_id())
         st.session_state["aligners_form_catalogs"] = catalogs
-    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}))
+    apparatus_vendors = st.session_state.get("aligners_apparatus_vendors")
+    if apparatus_vendors is None:
+        try:
+            apparatus_vendors = read_apparatus_vendor_catalog(st.secrets["gsheets"]["sheet_id"])
+        except Exception:
+            # El catálogo base sigue disponible si Aparatos no está configurado
+            # o su hoja no responde. Actualizar datos reintenta esta consulta.
+            apparatus_vendors = []
+        st.session_state["aligners_apparatus_vendors"] = apparatus_vendors
+    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}), apparatus_vendors)
+
+
+@st.cache_data(ttl=3600)
+def read_apparatus_vendor_catalog(spreadsheet_id: str) -> list[str]:
+    spreadsheet = get_spreadsheet_by_id(spreadsheet_id)
+    metadata = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
+        "includeGridData": "true", "ranges": "'ESTATUS APARATOS'!A2:AI12",
+        "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)),data(startRow,rowData(values(formattedValue,dataValidation))))",
+    }))
+    catalogs = order_detail.parse_sheet_catalogs(metadata, canonical_column_name)
+    return catalogs.get("ESTATUS APARATOS", {}).get("VENDEDOR", [])
 
 
 def tracking_form_catalog() -> dict:
@@ -2840,7 +2864,8 @@ def order_dropdown_palettes(catalog):
 
 
 def new_order_option_label(column: str, value: str) -> str:
-    text = clean_cell(value).strip()
+    text = (dropdown_fields.canonical_vendor(value) if column == "VENDEDOR"
+            else clean_cell(value).strip())
     icon = NEW_ORDER_OPTION_ICONS.get(column, {}).get(normalize_text(text))
     if not icon:
         icon = "👤" if column == "VENDEDOR" else NEW_ORDER_FIELD_ICONS.get(column, "🔹")
@@ -3674,7 +3699,9 @@ def render_workbench(current_user: str) -> None:
             key=tracking_key("aligners_refresh"),
         ):
             st.session_state.pop("aligners_form_catalogs", None)
+            st.session_state.pop("aligners_apparatus_vendors", None)
             read_order_form_catalogs.clear(configured_spreadsheet_id())
+            read_apparatus_vendor_catalog.clear()
             clear_sheet_data_cache()
             reset_workbench()
             rerun_active_tab()

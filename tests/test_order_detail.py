@@ -40,6 +40,41 @@ def test_fields_start_with_pinned_business_columns_and_exclude_computed_and_tota
     assert detail.detail_columns(columns, align.aligners_editable_columns(columns), ALIGNERS_PINNED) == [*ALIGNERS_PINNED, 'SERVICIO', 'FECHA ENVÍO_2']
 
 
+@pytest.mark.parametrize('module', ['lab_pg', 'alineadores_pg'])
+@pytest.mark.parametrize('historic,canonical', [('JIMENA', 'JIME'), ('ALEX', 'ALEJANDRO')])
+def test_vendor_editor_shows_one_name_and_keeps_history_when_another_field_is_saved(module, historic, canonical):
+    at = AppTest.from_string(f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+import streamlit as st
+import pandas as pd
+import dropdown_fields as dropdown
+import order_detail as detail
+import {module} as app
+catalog = dropdown.with_app_vendors({{'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', 'SANTIAGO']}})
+row = pd.Series({{'id': '001', 'NOMBRE DOCTOR': 'Doctora anterior', 'VENDEDOR': {historic!r}}})
+result = detail.render_editor(row, namespace='vendor_demo', id_column='id',
+    columns=['NOMBRE DOCTOR', 'VENDEDOR'], catalog=catalog,
+    labels={{'NOMBRE DOCTOR': 'Doctor', 'VENDEDOR': 'VENDEDOR'}},
+    option_label=lambda c, v: v, palettes={{}},
+    parse_date=lambda value: None, format_date=lambda value: str(value),
+    equivalent=app.{'values_equivalent_for_column' if module == 'lab_pg' else 'values_equivalent'})
+if result:
+    st.session_state['saved'] = result
+''').run()
+    assert not at.exception
+    vendor = next(item for item in at.selectbox if item.label == 'VENDEDOR')
+    assert vendor.value == canonical
+    assert vendor.options.count(canonical) == 1
+    assert all(value not in vendor.options for value in ['JIMENA', 'ALEX', 'SANTIAGO'])
+    next(item for item in at.text_input if item.label == 'Doctor').input('Doctora corregida').run()
+    next(item for item in at.button if 'Guardar este pedido' in item.label).click().run()
+    assert not at.exception
+    baseline, delta = at.session_state['saved']
+    assert baseline['VENDEDOR'] == historic
+    assert delta == {'NOMBRE DOCTOR': 'Doctora corregida'}
+
+
 def test_catalog_reads_unused_values_and_cell_validation_without_private_row_values():
     metadata = {'sheets': [{'properties': {'title': 'Pedidos'}, 'tables': [{
         'range': {'startRowIndex': 1}, 'columnProperties': [{'columnName': 'SERVICIO',

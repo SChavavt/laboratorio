@@ -368,20 +368,7 @@ PROCESS_STATUS_VALUES = [
     "CANCELO",
 ]
 
-VENDEDOR_OPTIONS = [
-    "ALEJANDRO",
-    "ANA KAREN",
-    "BLANCA",
-    "CASSANDRA",
-    "DANIELA",
-    "SOFI",
-    "MICHELLE",
-    "KAREN JACQUIE",
-    "NORMA",
-    "PAULINA",
-    "SANTIAGO",
-    *dropdown_fields.APP_VENDORS,
-]
+VENDEDOR_OPTIONS = list(dropdown_fields.APP_VENDORS)
 
 SERVICIO_OPTIONS = [
     "PLANEACIÓN COMPLETA",
@@ -465,6 +452,7 @@ VENDEDOR_DISPLAY = {
     "KAREN JACQUIE": "👩 KAREN JACQUIE",
     "NORMA": "👩 NORMA",
     "PAULINA": "👩 PAULINA",
+    # Sólo para mostrar pedidos históricos; no se ofrece en el catálogo activo.
     "SANTIAGO": "👨 SANTIAGO",
     "JIME": "👩 JIME",
     "LESLY": "👩 LESLY",
@@ -962,6 +950,8 @@ def display_selectbox_value(column: str, value: str) -> str:
         )
     if canonical_column == STATUS_COLUMN:
         cleaned_value = normalize_status_alias(cleaned_value)
+    if canonical_column == "VENDEDOR":
+        cleaned_value = dropdown_fields.canonical_vendor(cleaned_value)
     if not cleaned_value:
         return ""
     display_options = DISPLAY_OPTIONS_BY_COLUMN.get(canonical_column, {})
@@ -1117,6 +1107,9 @@ def values_equivalent_for_column(column: str, old_value: Any, new_value: Any) ->
 
     if canonical_column == APARATO_COLUMN:
         return canonical_apparatus_value(old_value) == canonical_apparatus_value(new_value)
+
+    if canonical_column == "VENDEDOR":
+        return dropdown_fields.canonical_vendor(old_value) == dropdown_fields.canonical_vendor(new_value)
 
     if canonical_column in DATE_COLUMNS:
         old_date = parse_simple_date(old_text)
@@ -4033,7 +4026,7 @@ def render_nuevo_pedido_tab() -> None:
         with second_row_cols[0]:
             vendedor = st.selectbox(
                 display_field_label("VENDEDOR"),
-                build_display_selectbox_options("VENDEDOR", VENDEDOR_OPTIONS, ""),
+                build_display_selectbox_options("VENDEDOR", get_workbench_form_catalog()["VENDEDOR"], ""),
                 key=f"nuevo_pedido_vendedor_{form_version}",
             )
         with second_row_cols[1]:
@@ -6329,6 +6322,8 @@ def workbench_cell_value(column: str, value: Any) -> str:
         return normalize_status_alias(text)
     if column == APARATO_COLUMN:
         return canonical_apparatus_value(text)
+    if column == "VENDEDOR":
+        return dropdown_fields.canonical_vendor(text)
     return clean_display_value(text) if column in DISPLAY_OPTIONS_BY_COLUMN else text
 
 
@@ -6659,7 +6654,7 @@ def get_workbench_form_catalog() -> dict:
             st.warning("No se pudieron consultar las listas de Sheets. Se usarán las opciones disponibles en la app.")
         st.session_state["apparatus_form_catalog"] = dropdown_fields.with_app_vendors(
             {**SELECTBOX_OPTIONS_BY_COLUMN, **catalog})
-    return st.session_state["apparatus_form_catalog"]
+    return dropdown_fields.with_app_vendors(st.session_state["apparatus_form_catalog"])
 
 
 def workbench_batch_stages(selected: pd.DataFrame, current_user: str) -> list[str]:
