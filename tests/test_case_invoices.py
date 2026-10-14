@@ -1,8 +1,10 @@
 """Facturas y búsqueda con S3/Sheets simulados; no realizan llamadas de red."""
+from dataclasses import make_dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 import sys
+import pickle
 from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import Mock
 
@@ -10,6 +12,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 import pandas as pd
 import pytest
 from streamlit.errors import StreamlitSecretNotFoundError
+from streamlit.runtime.caching.cache_errors import CacheError
 from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +111,50 @@ def test_retry_after_partial_failure_keeps_all_files_once(store):
     assert saved == ['uno.pdf', 'tres.pdf'] and len(errors) == 1
     saved, errors = store.upload('aparatos', '001', files, 'Lesly', lambda: None)
     assert not errors and len(saved) == 3 and len(store.list('aparatos', '001')) == 3
+
+
+def legacy_invoice_class():
+    """La clase previa a una recarga ya no coincide con case_invoices.Invoice."""
+    return make_dataclass('Invoice', [('key', str), ('name', str), ('size', int), ('modified', object, None)],
+                          namespace={'__module__': 'case_invoices'})
+
+
+def test_cached_listing_survives_invoice_class_reload_and_preserves_dates_and_refresh(store, monkeypatch):
+    legacy = legacy_invoice_class()
+    modified = datetime.fromisoformat('2026-10-14T10:42:00-06:00')
+    old_invoice = legacy('facturas/aparatos/001/file/factura.pdf', 'Factura México.pdf', 42, modified)
+    with pytest.raises(pickle.PicklingError):
+        pickle.dumps([old_invoice])
+    listing = Mock(return_value=[old_invoice])
+    monkeypatch.setattr(store, 'list', listing)
+    first = invoices.list_invoices('aparatos', '001')
+    assert first == [invoices.Invoice(old_invoice.key, old_invoice.name, old_invoice.size, modified)]
+    assert invoices.list_invoices('aparatos', '001') == first
+    listing.assert_called_once_with('aparatos', '001')
+    listing.return_value = [legacy('facturas/aparatos/001/second/sin-fecha.pdf', 'sin-fecha.pdf', 10)]
+    invoices.list_invoices.clear('aparatos', '001')
+    assert invoices.list_invoices('aparatos', '001')[0].modified is None
+    assert listing.call_count == 2
+
+
+def test_cached_listing_does_not_mix_orders_or_origins_and_refreshes_only_selected_case(store, monkeypatch):
+    for case_type, identifier in [('aparatos', '001'), ('aparatos', '002'), ('polanco', '001')]:
+        store.upload(case_type, identifier, [Upload(case_type + identifier + '.pdf')], 'Jime', lambda: None)
+    listing = Mock(wraps=store.list)
+    monkeypatch.setattr(store, 'list', listing)
+    for case_type, identifier in [('aparatos', '001'), ('aparatos', '002'), ('polanco', '001')]:
+        [invoice] = invoices.list_invoices(case_type, identifier)
+        assert invoice.key.startswith(invoices.case_prefix(case_type, identifier))
+    invoices.list_invoices.clear('aparatos', '001')
+    for case_type, identifier in [('aparatos', '001'), ('aparatos', '002'), ('polanco', '001')]:
+        invoices.list_invoices(case_type, identifier)
+    assert listing.call_count == 4
+
+
+def test_cache_failure_is_identified_without_revealing_exception_contents():
+    message, detail = invoices.storage_error(CacheError('PRIVATE_CACHE_CONTENT'), 'consultar')
+    assert 'preparar la lista' in message and 'caché (CacheError)' in detail
+    assert 'PRIVATE_CACHE_CONTENT' not in message + detail
 
 
 def test_pdf_links_are_temporary_inline_or_download_and_scoped_to_the_case(store):
@@ -216,6 +263,25 @@ import case_invoices as invoices
 invoices.render_section('aparatos', '001', st.session_state.get('user', 'Jime'),
                         verify_case=lambda: None, rerun=st.rerun)
 '''
+
+
+def test_upload_after_module_reload_shows_saved_pdf_and_links_instead_of_listing_warning(store, monkeypatch):
+    legacy = legacy_invoice_class()
+    original_list = store.list
+    monkeypatch.setattr(store, 'list', lambda case_type, identifier: [
+        legacy(invoice.key, invoice.name, invoice.size, invoice.modified)
+        for invoice in original_list(case_type, identifier)])
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15).run()
+    assert not at.exception and not at.warning
+    at.file_uploader[0].set_value(('factura.pdf', PDF, 'application/pdf')).run()
+    next(button for button in at.button if button.label == 'Guardar facturas').click().run()
+    assert not at.exception and not at.warning
+    assert any('1 factura(s) guardada(s)' in item.value for item in at.success)
+    assert any(item.value == 'factura.pdf' for item in at.markdown)
+    assert len(at.get('link_button')) == 2
+    assert any('08/10/2026 10:00' in item.value for item in at.caption)
+    assert len(store.client.objects) == 1
+    assert not at.file_uploader[0].value
 
 
 @pytest.mark.parametrize('user', ['Juan', 'Paula'])
