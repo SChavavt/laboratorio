@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from streamlit.testing.v1 import AppTest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,6 +14,19 @@ import alineadores_pg as app
 
 
 ROOT = str(Path(__file__).resolve().parents[1])
+
+
+@pytest.fixture(autouse=True)
+def restore_editor_overrides():
+    # AppTest comparte los módulos con pytest; sus simulaciones deben terminar
+    # con cada caso para que otras pruebas ejecuten el backend real.
+    original = {name: getattr(app, name)
+                for name in ('get_order_form_catalog', 'save_workbench_changes')}
+    yield
+    for name, value in original.items():
+        setattr(app, name, value)
+
+
 SHIPMENT_HEADERS = ["TEMP. SUP", "TEMP. INF", "NO. ALIN SUP", "NO. ALIN INF", "Total",
                     "FECHA PAGO IMPRESIÓN", "FECHA ENVÍO"]
 # Fila 2 real de ALINEADORES (nuevo): plan R:V, ocho envíos W:BZ y un Total suelto en CA.

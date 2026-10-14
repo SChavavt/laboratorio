@@ -82,6 +82,22 @@ def definitions():
                                     ['REVISIÓN DE ARCHIVOS', '<1 dia'], ['ENVIADO', '']])
 
 
+@pytest.mark.parametrize('user', ['Juan', 'Paula'])
+@pytest.mark.parametrize('sheet_name', [app.SHEET_ORDERS, app.SHEET_POLANCO])
+def test_limited_users_create_orders_with_initial_timer_only_in_selected_sheet(sheets, user, sheet_name):
+    app.st.session_state['aligners_order_sheet'] = sheet_name
+    identifier, warning = app.create_order({app.PRODUCT_COLUMN: 'Graphy',
+        'NOMBRE DOCTOR': 'Doctor nuevo', 'NOMBRE PACIENTE': 'Paciente nuevo'}, user, definitions())
+    assert not warning
+    assert sheets[sheet_name].values[-1][0] == identifier
+    assert sheets[sheet_name].values[-1][1] == 'REVISIÓN DE ARCHIVOS'
+    times = sheets[app.current_times_sheet()].values
+    assert len(times) == 2
+    assert times[-1][app.TIMES_HEADERS.index('USUARIO')] == user
+    other = app.SHEET_POLANCO if sheet_name == app.SHEET_ORDERS else app.SHEET_ORDERS
+    assert len(sheets[other].values) == 3
+
+
 def test_polanco_edit_and_create_never_write_other_sheet(sheets):
     before = copy.deepcopy(sheets[app.SHEET_ORDERS].values)
     app.st.session_state['aligners_order_sheet'] = app.SHEET_POLANCO

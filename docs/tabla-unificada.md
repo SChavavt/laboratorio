@@ -2,7 +2,7 @@
 
 `lab_pg.py` mantiene el flujo de procesos y muestra una sola tabla operativa en
 **Seguimiento**, seguida de **Buscar casos** y **Recibidos de Forms**. **Nuevo pedido**
-se abre desde Seguimiento. Admin, Jime, Lesly y Vero pueden consultar Buscar casos;
+se abre desde Seguimiento. Admin, Jime, Lesly, Vero, Juan y Paula pueden consultar Buscar casos;
 Vero conserva también su pestaña **Confección y Calidad**.
 Jime también atiende las etapas de planeación y diseño que antes correspondían a
 Estefano; Estefano ya no aparece como usuario de acceso.
@@ -14,7 +14,7 @@ se publica ninguna contraseña ni hash en el repositorio.
 
 Antes de desplegar esta versión, abre la app en Streamlit Cloud y entra a
 **Settings → Secrets**. Conserva las secciones existentes de Google Sheets y
-AWS, y agrega los cuatro hashes con esta estructura:
+AWS, y configura los hashes con esta estructura:
 
 ```toml
 [auth.passwords]
@@ -22,18 +22,45 @@ Admin = "HASH_PBKDF2_DE_ADMIN"
 Jime = "HASH_PBKDF2_DE_JIME"
 Lesly = "HASH_PBKDF2_DE_LESLY"
 Vero = "HASH_PBKDF2_DE_VERO"
+Juan = "HASH_PBKDF2_DE_JUAN"
+Paula = "HASH_PBKDF2_DE_PAULA"
 ```
 
-Los valores deben ser los hashes PBKDF2 completos que ya usaba la aplicación.
-Si falta alguno, el acceso muestra exactamente qué usuario falta configurar.
+Conserva los hashes PBKDF2 completos de los usuarios existentes y agrega los de
+las contraseñas que defina el administrador para Juan y Paula. Los valores del
+ejemplo son marcadores: no deben guardarse literalmente como credenciales.
+También se aceptan contraseñas directamente en Streamlit Secrets. En la sección
+`[auth.passwords]` existente puedes agregar las siguientes dos líneas, cambiando
+el texto entre comillas por las contraseñas que elijas:
+
+```toml
+Juan = "TU_CONTRASEÑA_PARA_JUAN"
+Paula = "TU_CONTRASEÑA_PARA_PAULA"
+```
+
+Guarda los Secrets desde la configuración de la app. Conserva las entradas de
+Admin, Jime, Lesly y Vero, y no repitas el encabezado `[auth.passwords]` si ya
+existe. Los nombres `Juan` y `Paula` distinguen mayúsculas de minúsculas.
+
+Si falta alguno, el acceso muestra qué usuario falta configurar; los usuarios
+que ya tienen contraseña pueden seguir entrando. Un usuario sin contraseña
+configurada no aparece en el selector ni puede iniciar sesión.
 `Estefano` no debe agregarse porque dejó de ser usuario de la app.
+
+Juan y Paula tienen acceso de **consulta y alta de pedidos** en Aparatos,
+Alineadores y Polanco. Pueden buscar casos, consultar Forms, archivos, facturas,
+historiales y Guías, y registrar pedidos nuevos con su etapa y medición iniciales.
+Los pedidos existentes son de sólo lectura: no pueden editar campos, cambiar
+etapas, pausar, cancelar, reactivar, registrar impresión, autorizar pagos,
+reparar mediciones, adjuntar archivos/facturas ni solicitar guías. La aplicación
+valida este permiso antes de escribir, además de bloquear los controles.
 
 ## Operación
 
 1. Busca por folio, doctor, paciente o aparato. Puedes filtrar por responsable,
    semáforo, aparato, etapa, vendedor y pago, u ordenar por urgencia.
 2. Edita las celdas habilitadas. **Guardar cambios** valida todos los pedidos
-   modificados antes de comenzar las escrituras. Para todos los usuarios, el
+   modificados antes de comenzar las escrituras. Para los usuarios con edición, el
    selector muestra la etapa actual, la siguiente y las alternativas previstas
    para esa etapa en el flujo del aparato. También ofrece cancelar o pausar
    cuando el usuario tiene permiso. Se rechazan saltos a otras etapas sin haberlas

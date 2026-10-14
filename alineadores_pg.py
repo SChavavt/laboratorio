@@ -29,6 +29,7 @@ import forms_notices
 import order_detail
 import case_invoices
 import case_search
+from user_permissions import APP_USERS, VIEW_AND_CREATE_USERS, can_edit_orders, can_create_orders
 from grid_interactions import response_frame
 import dropdown_fields
 from order_identifiers import identifier_resolver
@@ -77,8 +78,6 @@ STATUS_COLUMN = "STATUS"
 PRODUCT_COLUMN = "PRODUCTO"
 APP_TIMEZONE_NAME = "America/Mexico_City"
 APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
-
-APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
 
 PAUSE_STATUSES = (
     "BORRADOR TITAN",
@@ -948,14 +947,16 @@ def require_authenticated_user() -> str | None:
             st.rerun()
         return current_user
 
-    missing = missing_user_passwords()
+    configured_passwords = get_user_passwords()
+    missing = missing_user_passwords(configured_passwords)
     if missing:
-        st.error("Falta configurar la contraseña de: " + ", ".join(missing) + ".")
+        st.warning("Falta configurar la contraseña de: " + ", ".join(missing) + ".")
         st.info(
             "Usa los mismos hashes de la app de aparatos en Streamlit Secrets, "
             "dentro de [auth.passwords]."
         )
-        return None
+        if not configured_passwords:
+            return None
 
     st.subheader("🔐 Acceso requerido")
     st.caption(
@@ -963,7 +964,7 @@ def require_authenticated_user() -> str | None:
         "Después de entrar quedará recordado en el link."
     )
     with st.form("aligners_login_form"):
-        username = st.selectbox("Usuario", list(APP_USERS))
+        username = st.selectbox("Usuario", list(configured_passwords))
         password = st.text_input("Contraseña", type="password")
         submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
     if submitted:
@@ -1944,6 +1945,8 @@ def register_status_change(
 ) -> None:
     """Cierra la etapa anterior y abre la nueva medición en TIEMPOS_ALINEADORES."""
 
+    if current_user in VIEW_AND_CREATE_USERS and clean_cell(previous_status).strip():
+        raise ValueError("Tu usuario no tiene permiso para modificar pedidos existentes.")
     ensure_times_headers()
     configured = configured_statuses(definitions)
     previous = canonical_status(previous_status, configured)
@@ -2509,6 +2512,8 @@ def validate_delta(
     current_user: str = "",
 ) -> list[str]:
     """``manual_stage`` valida contra todas las etapas del producto (ver get_manual_stage_statuses)."""
+    if current_user in VIEW_AND_CREATE_USERS:
+        return ["Tu usuario no tiene permiso para editar pedidos."]
     errors: list[str] = []
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
     if manual_stage and reactivate:
@@ -2568,7 +2573,7 @@ def save_workbench_changes(
     multiple = dropdown_fields.multiple_columns(select_catalog or {}, source, MULTI_SELECT_COLUMNS)
     order_detail.restore_catalog_values(changes, select_catalog, multiple)
 
-    if current_user not in APP_USERS:
+    if not can_edit_orders(current_user):
         return [], ["Tu usuario no tiene permiso para editar pedidos."]
     if source[ID_COLUMN].duplicated().any():
         return [], ["Hay números de orden duplicados; corrige la hoja antes de guardar."]
@@ -2646,6 +2651,8 @@ def initialize_order_timer(
     current_user: str,
     definitions: dict[str, ProcessDefinition],
 ) -> None:
+    if not can_edit_orders(current_user):
+        raise ValueError("Tu usuario no tiene permiso para reparar la medición de pedidos.")
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
     status = canonical_status(row.get(STATUS_COLUMN, ""), configured_statuses(definitions))
     product = clean_cell(row.get(PRODUCT_COLUMN, "")).strip()
@@ -2736,13 +2743,13 @@ def build_grid_configuration(
         },
         "SEMÁFORO": ALERT_COLORS,
     }
+    editable_columns = ({STATUS_COLUMN} & set(grid.columns)
+                        if reactivate else aligners_editable_columns(grid.columns))
+    if current_user in VIEW_AND_CREATE_USERS:
+        editable_columns = set()
     options = build_aligners_grid_options(
         grid,
-        editable=(
-            {STATUS_COLUMN} & set(grid.columns)
-            if reactivate
-            else aligners_editable_columns(grid.columns)
-        ),
+        editable=editable_columns,
         automatic=AUTOMATIC_COLUMNS,
         stage_options=stages,
         select_options=selections,
@@ -2883,6 +2890,8 @@ def _create_order(values: dict[str, Any], current_user: str,
                   definitions: dict[str, ProcessDefinition], *,
                   catalog: dict[str, list[str]] | None = None) -> tuple[str, str]:
     """Añade una orden en la hoja activa y reporta por separado un fallo de bitácora."""
+    if not can_create_orders(current_user):
+        raise ValueError("Tu usuario no tiene permiso para agregar pedidos.")
     row = {key: prepare_sheet_value(value).strip() for key, value in values.items()}
     if catalog is not None:
         for column in NEW_ORDER_SELECT_COLUMNS:
@@ -3478,6 +3487,7 @@ def render_case_search(current_user: str) -> None:
 def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: dict) -> None:
     from aligners_grid import BUSINESS_ORDER
 
+    view_only = not can_edit_orders(current_user)
     namespace = tracking_key("aligners")
     try:
         catalog = dict(get_order_form_catalog())
@@ -3489,12 +3499,13 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         *get_allowed_next_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""), definitions)]))
     manual_options = get_manual_stage_statuses(candidate.get(PRODUCT_COLUMN, ""), candidate.get(STATUS_COLUMN, ""),
                                                definitions, current_user)
-    fields = order_detail.detail_columns(tracking_columns(row.index),
-        aligners_editable_columns(row.index) if current_user in APP_USERS else set(), BUSINESS_ORDER)
+    fields = order_detail.detail_columns(row.index if view_only else tracking_columns(row.index),
+        aligners_editable_columns(row.index), BUSINESS_ORDER)
     # Plan y envíos no van en la tabla ni como campos sueltos: tienen su desplegable.
     plan, shipments = shipment_layout(row.index)
     in_shipments = set(block_columns(plan, shipments))
-    fields = [column for column in fields if column not in in_shipments]
+    if not view_only:
+        fields = [column for column in fields if column not in in_shipments]
     identifier = str(row[ID_COLUMN])
     status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
     labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
@@ -3509,12 +3520,12 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         columns=fields, catalog=catalog, labels=labels,
         option_label=lambda column, value: status_display_value(value, definitions) if column == STATUS_COLUMN else new_order_option_label(column, value),
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
-        expanded_catalog={STATUS_COLUMN: manual_options},
+        expanded_catalog={STATUS_COLUMN: manual_options}, view_only=view_only,
         palettes=palettes, multiple=dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]), MULTI_SELECT_COLUMNS),
         equivalent=values_equivalent, parse_date=parse_simple_date,
         format_date=lambda value: value.isoformat(), now=app_now,
         extra=(lambda: render_shipments_section(namespace, identifier, plan, shipments))
-        if shipments and current_user in APP_USERS else None,
+        if shipments and can_edit_orders(current_user) else None,
         section_extras={case_invoices.SERVICE_SECTION: lambda: case_invoices.render_section(
             invoice_case_type(), identifier, current_user,
             verify_case=lambda: verify_invoice_case(invoice_case_type(), identifier), rerun=rerun_active_tab)},
@@ -3558,7 +3569,7 @@ def render_case_actions(
     if len(selected) > 1:
         st.markdown(f"### Pedidos seleccionados · {len(selected)}")
     form_pending = bool(order_detail.pending_count(namespace))
-    if len(selected) > 1 and not form_pending:
+    if len(selected) > 1 and not form_pending and can_edit_orders(current_user):
         with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
             options = aligners_batch_stages(selected, definitions)
             target = st.selectbox("Etapa para todos", options, index=None,
@@ -3597,7 +3608,7 @@ def render_case_actions(
                     "inicia la medición",
                 ]
             )
-            if not form_pending and repairable and get_process_definition(product, definitions) is not None:
+            if can_edit_orders(current_user) and not form_pending and repairable and get_process_definition(product, definitions) is not None:
                 st.caption("Úsalo si falta el inicio o hay registros inconsistentes. Mantiene la etapa actual, "
                            "cierra las mediciones abiertas e inicia una nueva desde ahora. "
                            "No recupera el tiempo transcurrido anteriormente; la acción queda en el historial.")
@@ -3692,6 +3703,8 @@ def render_workbench(current_user: str) -> None:
         for error in errors:
             st.error(error)
 
+    if not can_edit_orders(current_user):
+        st.caption("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
     with st.expander("➕ Nueva orden", expanded=False,
                      key=tracking_key("aligners_new_expander"), on_change="rerun") as new_order:
         if new_order.open:
@@ -3784,13 +3797,14 @@ def render_active_orders(
         disabled=pending_before_grid,
         key=tracking_key("aligners_hide_automatic"),
     )
-    visibility[1].markdown(
+    legend = (
         '<div class="align-column-legend"><span class="readonly">🔒 Fijas: No. Orden, Semáforo y columnas principales</span>'
         '<span class="editable">✎ Editable manual</span>'
         '<span class="auto-editable">✎⚙ Editable automática</span>'
-        '<span class="automatic">⚙ Cálculo automático</span></div>',
-        unsafe_allow_html=True,
+        '<span class="automatic">⚙ Cálculo automático</span></div>'
     )
+    visibility[1].markdown(legend if can_edit_orders(current_user) else
+        '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
     st.caption(
         f"{len(filtered)} de {len(table)} pedidos · Cada fila sólo ofrece su siguiente etapa normal, "
         "las pausas aplicables y Cancelado. En una pausa se habilitan las etapas para reanudar."
@@ -3852,7 +3866,7 @@ def render_active_orders(
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not changes or sent_pending or form_pending,
+        disabled=not can_edit_orders(current_user) or not changes or sent_pending or form_pending,
         use_container_width=True,
         key=tracking_key("aligners_save"),
         help=(
@@ -3972,7 +3986,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
         st.session_state[tracking_key("aligners_sent_editor_key")] = key
         st.session_state[tracking_key("aligners_sent_editor_baseline")] = grid.copy()
 
-        options = build_grid_configuration(grid, source_grid, definitions, reactivate=True)
+        options = build_grid_configuration(grid, source_grid, definitions, reactivate=True, current_user=current_user)
         order_detail.lock_grid(options, bool(order_detail.pending_count(tracking_key("aligners"))))
         edited = render_aligners_grid(grid, options, key)
         baseline, reactivated = without_repeated_orders(grid, edited)
@@ -3987,7 +4001,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
             "Guardar y reactivar",
             type="primary",
             # Guardar reconstruye ambas tablas; no debe borrar ediciones de arriba.
-            disabled=not changes or main_pending,
+            disabled=not can_edit_orders(current_user) or not changes or main_pending,
             use_container_width=True,
             key=tracking_key("aligners_sent_save"),
         ):

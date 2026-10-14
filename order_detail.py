@@ -275,7 +275,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                   datetime_columns=(), parse_datetime=None, format_datetime=None,
                   now=datetime.now, blocked=False, multiple=(), primary=(),
                   multi_codecs=None, required=(), constrained=(), extra=None, hints=None,
-                  automatic_time_columns=(), expanded_catalog=None, readonly=(), section_extras=None):
+                  automatic_time_columns=(), expanded_catalog=None, readonly=(), section_extras=None,
+                  view_only=False):
     """Devuelve baseline/delta sólo al pulsar Guardar; cada campo conserva su nombre real.
 
     ``extra`` dibuja secciones propias de la vista sobre el mismo borrador, antes
@@ -287,16 +288,22 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
     cuando se abre, sin mezclarlas con los cambios de los campos.
     ``readonly`` son columnas que sólo se muestran como texto: nunca entran al
     borrador ni al guardado (p. ej. una fórmula de la hoja).
+    ``view_only`` muestra todos los campos como texto, sin borrador ni acciones
+    de guardado; las secciones extra deben respetar los permisos del usuario.
     """
     identifier = str(row[id_column])
-    drafts = st.session_state.setdefault(draft_key(namespace), {})
-    draft = drafts.setdefault(identifier, {"baseline": row.to_dict(), "changes": {}})
+    if view_only:
+        readonly = columns
+        draft = {"baseline": row.to_dict(), "changes": {}}
+    else:
+        drafts = st.session_state.setdefault(draft_key(namespace), {})
+        draft = drafts.setdefault(identifier, {"baseline": row.to_dict(), "changes": {}})
     if not draft["changes"]:
         draft["baseline"] = row.to_dict()
     version = st.session_state.get(f"order_detail_version_{namespace}", 0)
     baseline_values = json.dumps({column: draft["baseline"].get(column, "") for column in columns},
                                  sort_keys=True, default=str, ensure_ascii=False)
-    token = hashlib.sha256(f"{namespace}:{identifier}:{version}:{baseline_values}".encode()).hexdigest()[:16]
+    token = hashlib.sha256(f"{namespace}:{identifier}:{version}:{view_only}:{baseline_values}".encode()).hexdigest()[:16]
     primary_fields = [column for column in primary if column in columns]
     groups = {}
     for column in columns:
@@ -429,6 +436,8 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
         with folded:
             extra()
     st.html("<style>" + SECTIONS_CSS + "".join(styles) + "</style>")
+    if view_only:
+        return None
     save, discard, count = st.columns([1.4, 1.4, 2], vertical_alignment="center")
     changed = bool(draft["changes"])
     submitted = save.button("💾 Guardar este pedido", key=f"detail_save_{token}", type="primary",

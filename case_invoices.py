@@ -17,9 +17,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError, HTTPClientError
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
+from user_permissions import APP_USERS, ORDER_EDIT_USERS, can_edit_orders
 
 CASE_TYPES = {"aparatos": "Aparatos", "alineadores": "Alineadores", "polanco": "Polanco"}
-ALLOWED_USERS = frozenset({"Admin", "Jime", "Lesly", "Vero"})
+ALLOWED_USERS = ORDER_EDIT_USERS
+VIEW_USERS = frozenset(APP_USERS)
 SERVICE_SECTION = "📋 Servicio y archivos"
 TIMEZONE = ZoneInfo("America/Mexico_City")
 AWS_KEYS = ("aws_access_key_id", "aws_secret_access_key", "aws_region", "s3_bucket_name")
@@ -183,7 +185,7 @@ def list_invoices(case_type: str, identifier: str) -> list[Invoice]:
 def render_section(case_type: str, identifier: str, current_user: str, *,
                    verify_case: Callable[[], None], rerun: Callable[[], None]) -> None:
     """Guardar facturas sólo actualiza archivos; los borradores de la ficha se conservan."""
-    if current_user not in ALLOWED_USERS:
+    if current_user not in VIEW_USERS:
         return
     token = sha256(f"{case_type}\0{identifier}".encode()).hexdigest()[:16]
     with st.container(horizontal=True, vertical_alignment="center"):
@@ -222,6 +224,8 @@ def render_section(case_type: str, identifier: str, current_user: str, *,
                 st.caption(invoice.modified.astimezone(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
             st.link_button("Abrir PDF", store.url(case_type, identifier, invoice), icon="📄")
             st.link_button("Descargar PDF", store.url(case_type, identifier, invoice, download=True), icon="⬇️")
+    if not can_edit_orders(current_user):
+        return
     version = st.session_state.get(version_key, 0)
     uploads = st.file_uploader("Adjuntar facturas PDF", type=["pdf"], accept_multiple_files=True,
                                key=f"invoice_upload_{token}_{version}",

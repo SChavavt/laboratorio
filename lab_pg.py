@@ -34,6 +34,7 @@ from copy import deepcopy
 from workbench_grid import BUSINESS_ORDER, STEFANO_COLUMN_HELP, build_grid_options, render_grid
 import case_invoices
 import case_search
+from user_permissions import APP_USERS, VIEW_AND_CREATE_USERS, can_edit_orders
 
 # ==============================
 # 🔧 CONFIGURACIÓN
@@ -131,12 +132,13 @@ LAB_WORKSPACE_DETAILS = {
         "badge": "📋 GUÍAS DE ENVÍO",
     },
 }
-APP_USERS = ("Admin", "Jime", "Lesly", "Vero")
 USER_VISIBLE_TABS = {
     "Admin": ["nuevo", "estefano"],
     "Jime": ["nuevo", "estefano"],
     "Lesly": ["nuevo", "estefano"],
     "Vero": ["vero"],
+    "Juan": ["nuevo", "estefano"],
+    "Paula": ["nuevo", "estefano"],
 }
 PAYMENT_STATUSES = {"PAGO PLANEACIÓN", "PAGO CONFECCIÓN"}
 # Los perfiles globales conservan acceso a todas las áreas y excepción de pagos.
@@ -2069,16 +2071,18 @@ def require_authenticated_user() -> str | None:
             st.rerun()
         return authenticated_user
 
-    missing_users = missing_user_passwords()
+    configured_passwords = get_user_passwords()
+    missing_users = missing_user_passwords(configured_passwords)
     if missing_users:
-        st.error(
+        st.warning(
             "Falta configurar la contraseña de: " + ", ".join(missing_users) + "."
         )
         st.info(
             "Agrega sus hashes en Streamlit Cloud → Settings → Secrets, "
             "dentro de la sección [auth.passwords]."
         )
-        return None
+        if not configured_passwords:
+            return None
 
     st.subheader("🔐 Acceso requerido")
     st.caption(
@@ -2086,7 +2090,7 @@ def require_authenticated_user() -> str | None:
         "Después de entrar, el usuario queda guardado en el link para la próxima vez."
     )
     with st.form("login_form"):
-        username = st.selectbox("Usuario", list(APP_USERS))
+        username = st.selectbox("Usuario", list(configured_passwords))
         password = st.text_input("Contraseña", type="password")
         submitted = st.form_submit_button("🔓 Entrar y guardar usuario en link")
 
@@ -2108,7 +2112,9 @@ def get_current_user() -> str:
 def user_can_edit_tab(current_user: str, tab_owner: str) -> bool:
     """Admin, Jime y Lesly pueden editar todo; el resto solo su pestaña."""
 
-    return current_user in ADMIN_ACCESS_USERS or current_user == tab_owner
+    return current_user not in VIEW_AND_CREATE_USERS and (
+        current_user in ADMIN_ACCESS_USERS or current_user == tab_owner
+    )
 
 
 def get_user_operational_statuses(current_user: str) -> list[str]:
@@ -2162,6 +2168,8 @@ def is_transition_allowed_for_user(
 ) -> bool:
     """Valida si el usuario tiene permiso operativo para cambiar STATUS."""
 
+    if current_user in VIEW_AND_CREATE_USERS:
+        return False
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
     if (current_user in ADMIN_ACCESS_USERS or previous_status == new_status
@@ -2334,6 +2342,8 @@ def transition_requires_print_mark(
 def mark_case_for_printing(identifier: str, row: pd.Series, current_user: str) -> dict[str, Any]:
     """Guarda trazabilidad de impresión en ESTATUS APARATOS y TIEMPOS_APARATOS."""
 
+    if not can_edit_orders(current_user):
+        return {"success": False, "message": "Tu usuario no tiene permiso para registrar impresiones."}
     now = app_now()
     printed_at = now.strftime("%Y-%m-%d %H:%M:%S")
     estatus_result = update_row_by_columna_1(
@@ -2432,6 +2442,8 @@ def validate_status_change(
 ) -> tuple[bool, str]:
     """Aplica flujo, permisos y bloqueo por pagos antes de guardar STATUS."""
 
+    if current_user in VIEW_AND_CREATE_USERS:
+        return False, "El usuario actual no tiene permiso para modificar pedidos."
     previous_status = normalize_status_alias(previous_status)
     new_status = normalize_status_alias(new_status)
     if manual_stage and from_sent_archive:
@@ -2753,6 +2765,8 @@ def read_user_column_order(current_user: str, available_columns: Any) -> list[st
 
 def save_user_column_order(current_user: str, order: list[str], available_columns: Any) -> tuple[bool, str]:
     """Crea o actualiza una fila por usuario sin mezclar sus preferencias."""
+    if not can_edit_orders(current_user):
+        return False, "Tu usuario tiene acceso de sólo lectura."
     normalized = normalize_column_order(order, available_columns)
     try:
         worksheet = get_user_preferences_worksheet()
@@ -3965,6 +3979,9 @@ def render_warning_feedback(message_key: str, clear_button_key: str) -> None:
 
 
 def render_nuevo_pedido_tab() -> None:
+    if "nuevo" not in USER_VISIBLE_TABS.get(get_current_user(), []):
+        st.error("Tu usuario no tiene permiso para agregar pedidos.")
+        return
     st.subheader("➕ Nuevo pedido")
     st.caption(
         "Captura los datos principales en ESTATUS APARATOS. "
@@ -5256,9 +5273,9 @@ def render_estefano_forms_review(can_edit: bool) -> None:
             f"#{number}" for number in sorted(new_numbers, reverse=True)
         ))
     selected_response = st.selectbox(
-        "📌 Selecciona una respuesta para usar su link de Drive",
+        "📌 Selecciona una respuesta para usar su link de Drive" if can_edit else
+        "📌 Selecciona una respuesta para consultar",
         options=response_options,
-        disabled=not can_edit,
         key="forms_response_selector_estefano",
     )
     forms_notices.remember_selection("forms_response_selector_estefano", selected_response)
@@ -5427,7 +5444,7 @@ def render_estefano_tab(current_user: str) -> None:
     """
     st.subheader("📥 Recibidos de Forms")
     can_edit = user_can_edit_tab(current_user, "Jime")
-    if not can_edit:
+    if not can_edit and current_user not in VIEW_AND_CREATE_USERS:
         st.warning("Solo el usuario asignado puede modificar esta pestaña.")
     render_estefano_forms_review(can_edit)
 
@@ -6070,7 +6087,7 @@ def workbench_signal_rank(signal: str) -> int:
 
 def workbench_default_owner(current_user: str, owners: Any) -> str:
     """Los perfiles globales ven todos los responsables desde el primer render."""
-    if current_user in ADMIN_ACCESS_USERS:
+    if current_user in ADMIN_ACCESS_USERS or current_user in VIEW_AND_CREATE_USERS:
         return "Todos"
     current_key = normalize_text(current_user)
     return next(
@@ -6161,7 +6178,7 @@ def workbench_editable_columns(current_user: str, available_columns: Any = ()) -
     Las columnas que calcula una fórmula de la hoja (FECHA PARA ENTREGA) se
     protegen igual que los cálculos de la vista: nadie las edita.
     """
-    if current_user not in APP_USERS:
+    if not can_edit_orders(current_user):
         return set()
     protected = {"SELECCIONAR", ID_COLUMN, *WORKBENCH_COMPUTED_COLUMNS, *ESTATUS_FORMULA_COLUMNS}
     return set(available_columns) - protected
@@ -6172,7 +6189,7 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
     current = normalize_status_alias(row.get(STATUS_COLUMN, ""))
     apparatus = row.get(APARATO_COLUMN, "")
     options = [current]
-    if current_user in APP_USERS:
+    if can_edit_orders(current_user):
         options.extend(
             target
             for target in get_allowed_next_statuses(apparatus, current, current_user)
@@ -6188,6 +6205,8 @@ def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
 
 def workbench_manual_stage_options(row: pd.Series, current_user: str) -> list[str]:
     """Lista completa para el segundo nivel de STATUS, con las reglas de impresión."""
+    if not can_edit_orders(current_user):
+        return []
     return [display_selectbox_value(STATUS_COLUMN, value)
             for value in get_manual_stage_statuses(row.get(APARATO_COLUMN, ""), row[STATUS_COLUMN], current_user)
             if not transition_requires_print_mark(current_user, row[STATUS_COLUMN], value, row)]
@@ -6361,6 +6380,8 @@ def validate_workbench_changes(
     ``manual_stage_ids`` identifica las filas elegidas desde la lista completa;
     sus otros campos siguen las mismas validaciones que una edición normal.
     """
+    if changes and not can_edit_orders(current_user):
+        return ["Tu usuario no tiene permiso para editar pedidos."]
     errors = []
     manual_stage_ids = set(manual_stage_ids or ())
     if (manual_stage or manual_stage_ids) and reactivate:
@@ -6473,6 +6494,8 @@ def save_workbench_changes(original: pd.DataFrame, edited: pd.DataFrame, current
         return [], [str(exc)]
     if not changes:
         return [], []
+    if not can_edit_orders(current_user):
+        return [], ["Tu usuario no tiene permiso para editar pedidos."]
     manual_targets = edited.attrs.get("manualStageTargets", {})
     manual_ids = {str(identifier) for identifier, delta in changes
                   if STATUS_COLUMN in delta and str(identifier) in manual_targets
@@ -6537,6 +6560,8 @@ def pause_workbench_cases(
     selected_ids: Any, original: pd.DataFrame, current_user: str
 ) -> tuple[list[str], list[str]]:
     """Archiva en pausa una selección, comprobando antes la versión de la hoja."""
+    if not can_edit_orders(current_user):
+        return [], ["Tu usuario no tiene permiso para pausar pedidos."]
     identifiers = list(dict.fromkeys(clean_cell(value).strip() for value in selected_ids if clean_cell(value).strip()))
     if not identifiers:
         return [], []
@@ -6709,6 +6734,7 @@ def workbench_schedule_chips(row: pd.Series) -> list[tuple[str, tuple[str, str]]
 
 
 def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
+    view_only = not can_edit_orders(current_user)
     archive_pending = workbench_sent_pending_count() > 0 or bool(st.session_state.get("workbench_paused_pending"))
     if archive_pending:
         st.caption("Guarda o descarta primero los cambios pendientes en Enviados o Pausados.")
@@ -6721,13 +6747,13 @@ def render_workbench_order_editor(row: pd.Series, current_user: str) -> None:
     # FECHA PARA ENTREGA se muestra en la ficha sólo como texto: la calcula la hoja.
     readonly = [column for column in ESTATUS_FORMULA_COLUMNS if column in row.index]
     fields = order_detail.detail_columns(row.index,
-        workbench_editable_columns(current_user, row.index) | set(readonly), BUSINESS_ORDER)
+        workbench_editable_columns("Admin" if view_only else current_user, row.index) | set(readonly), BUSINESS_ORDER)
     result = order_detail.render_editor(row, namespace="apparatus", id_column=ID_COLUMN,
         columns=fields, readonly=readonly, catalog=catalog, labels=FIELD_LABEL_DISPLAY,
         option_label=workbench_form_option_label, palettes=SHEET_STYLE_COLORS,
         primary=BUSINESS_ORDER, required=(STATUS_COLUMN,), constrained=(STATUS_COLUMN,),
         expanded_catalog={STATUS_COLUMN: manual_options},
-        blocked=archive_pending,
+        blocked=archive_pending, view_only=view_only,
         multiple={APARATO_COLUMN, *dropdown_fields.multiple_columns(catalog, pd.DataFrame([row]))},
         multi_codecs={APARATO_COLUMN: (lambda value, _: apparatus_components(value),
                                       lambda values: canonical_apparatus_value(" + ".join(values)))},
@@ -6770,7 +6796,7 @@ def render_workbench_case_actions(selected: pd.DataFrame, current_user: str, pen
     if len(selected) > 1:
         st.markdown(f"### Pedidos seleccionados · {len(selected)}")
     form_pending = bool(order_detail.pending_count("apparatus"))
-    if len(selected) > 1 and not form_pending:
+    if len(selected) > 1 and not form_pending and can_edit_orders(current_user):
         with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
             options = workbench_batch_stages(selected, current_user)
             target = st.selectbox("Etapa para todos", options, index=None,
@@ -6977,7 +7003,7 @@ def render_paused_workbench(
             "Guardar y reactivar",
             key="save_paused_workbench",
             type="primary",
-            disabled=(not status_changes or bool(invalid) or bool(order_detail.pending_count("apparatus"))
+            disabled=(not can_edit_orders(current_user) or not status_changes or bool(invalid) or bool(order_detail.pending_count("apparatus"))
                       or workbench_sent_pending_count() > 0),
         ):
             saved, errors = save_workbench_changes(grid, edited, current_user)
@@ -7152,7 +7178,9 @@ def render_workbench(current_user: str) -> None:
     if table.empty:
         st.info("No hay pedidos activos para mostrar.")
     # Siempre ocupa el mismo espacio: editar una celda no empuja la tabla.
-    bar_text = (f"✏️ {pending_count} pedidos con cambios · Guarda o descarta para habilitar los filtros."
+    bar_text = ("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura."
+                if not can_edit_orders(current_user) else
+                f"✏️ {pending_count} pedidos con cambios · Guarda o descarta para habilitar los filtros."
                 if pending else "✨ Marca un pedido en Abrir para editarlo en una ficha amplia debajo de la tabla.")
     bar_class = "is-pending" if pending else "is-ready"
     st.markdown(f'<div class="lab-edit-bar {bar_class}" role="status">{bar_text}</div>', unsafe_allow_html=True)
@@ -7202,16 +7230,20 @@ def render_workbench(current_user: str) -> None:
         "Ocultar automáticas", disabled=pending, key="workbench_hide_automatic",
         help="Oculta las columnas que la app llena o calcula; Folio permanece visible.",
     )
-    visibility[1].markdown(
+    legend = (
         '<div class="lab-column-legend"><span class="readonly">🔒 Fijas: Folio, Semáforo y columnas principales</span>'
         '<span class="editable">✎ Editable manual</span>'
         '<span class="auto-editable">✎⚙ Editable automática</span>'
-        '<span class="automatic">⚙ Cálculo automático</span></div>',
-        unsafe_allow_html=True,
+        '<span class="automatic">⚙ Cálculo automático</span></div>'
     )
-    st.caption(f"{len(filtered)} de {len(table)} pedidos · Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
+    visibility[1].markdown(legend if can_edit_orders(current_user) else
+        '<div class="lab-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
+    st.caption(f"{len(filtered)} de {len(table)} pedidos · " + (
+               "Marca un pedido en Abrir para consultar su ficha, archivos e historial."
+               if not can_edit_orders(current_user) else
+               "Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "
                "En las fechas, elige calendario o Ahora; después pulsa Guardar cambios. "
-               "Para personalizar la tabla, arrastra un encabezado y pulsa Guardar orden cuando se active.")
+               "Para personalizar la tabla, arrastra un encabezado y pulsa Guardar orden cuando se active."))
     if not filtered.empty:
         grid = workbench_display_df(filtered)
         grid.insert(0, "SELECCIONAR", grid[ID_COLUMN].isin(st.session_state.get("workbench_selected_ids", [])))
@@ -7254,7 +7286,7 @@ def render_workbench(current_user: str) -> None:
         sent_pending = workbench_sent_pending_count() > 0
         paused_pending = bool(st.session_state.get("workbench_paused_pending"))
         save_col, discard_col, count_col, pause_col, order_col = st.columns([1.2, 1.2, 1.5, 1.7, 1.2])
-        if save_col.button("Guardar cambios", type="primary", disabled=not changes or form_pending or sent_pending or paused_pending,
+        if save_col.button("Guardar cambios", type="primary", disabled=not can_edit_orders(current_user) or not changes or form_pending or sent_pending or paused_pending,
                            use_container_width=True,
                            help="Primero guarda o descarta los cambios de Enviados o Pausados." if sent_pending or paused_pending else None):
             st.session_state.pop("workbench_save_errors", None)
@@ -7276,7 +7308,7 @@ def render_workbench(current_user: str) -> None:
             rerun_active_tab()
         normalized_current_order = normalize_column_order(current_order, grid.columns)
         effective_saved_order = saved_order or initial_order
-        if order_col.button("Guardar orden", disabled=pending or normalized_current_order == effective_saved_order,
+        if order_col.button("Guardar orden", disabled=not can_edit_orders(current_user) or pending or normalized_current_order == effective_saved_order,
                             use_container_width=True,
                             help="Se activa después de mover una columna y guarda el acomodo en PREFERENCIAS APP sólo para tu usuario."):
             ok, message = save_user_column_order(current_user, normalized_current_order, grid.columns)
@@ -7287,7 +7319,7 @@ def render_workbench(current_user: str) -> None:
                 st.error(message)
         if pause_col.button(
             "Confección en pausa",
-            disabled=bool(changes) or form_pending or sent_pending or selected.empty,
+            disabled=not can_edit_orders(current_user) or bool(changes) or form_pending or sent_pending or selected.empty,
             use_container_width=True,
             help="Archiva temporalmente todos los pedidos marcados en la columna Abrir.",
         ):
