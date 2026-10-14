@@ -148,9 +148,18 @@ operaciones con permisos distintos. Para ver archivos ya guardados hay que
 restablecer la consulta y pulsar **Actualizar facturas**.
 
 El aviso identifica configuración incompleta, permisos denegados, credenciales
-rechazadas, bucket inexistente, región incorrecta o conexión fallida. **Admin**
-ve también la clave o permiso que hay que revisar; no se muestran valores de
-Secrets ni la respuesta completa de AWS.
+rechazadas, bucket inexistente, región incorrecta, conexión fallida o un fallo
+de la caché de la app. **Admin** ve también la clave, permiso o tipo de error
+que hay que revisar; no se muestran valores de Secrets ni la respuesta completa
+de AWS.
+
+La caché de 30 segundos guarda los metadatos de las facturas como valores
+básicos y reconstruye los objetos de presentación al leerlos. Así, recargar
+el módulo no impide mostrar una consulta que S3 sí completó por un error de
+serialización de `Invoice` (`UnserializableReturnValueError`). Guardar y
+**Actualizar facturas** invalidan la caché sólo de la orden correspondiente.
+Esta corrección actúa sobre la presentación; no cambia las claves ni los PDFs
+almacenados en S3.
 
 1. En el despliegue de Streamlit, abrir **Settings → Secrets** y comprobar las
    cuatro claves anteriores en la raíz o en `[aws]`. Las claves vacías en la raíz

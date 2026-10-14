@@ -17,6 +17,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError, HTTPClientError
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
+from streamlit.runtime.caching.cache_errors import CacheError, UnserializableReturnValueError
 from user_permissions import APP_USERS, ORDER_EDIT_USERS, can_edit_orders
 
 CASE_TYPES = {"aparatos": "Aparatos", "alineadores": "Alineadores", "polanco": "Polanco"}
@@ -36,6 +37,9 @@ class StorageConfigurationError(ValueError):
 
 def storage_error(error: Exception, operation: str) -> tuple[str, str]:
     """Mensajes seguros: nunca mostrar la respuesta AWS ni valores de Secrets."""
+    if isinstance(error, (CacheError, UnserializableReturnValueError)):
+        return ("La app no pudo preparar la lista de facturas. Intenta actualizar las facturas.",
+                f"Fallo de caché ({type(error).__name__}). Si continúa, reinicia la app y revisa los registros del despliegue.")
     if isinstance(error, StorageConfigurationError):
         return ("Falta configurar el almacenamiento de facturas. Pide al administrador revisar la configuración de la app.",
                 "Configura en Streamlit Secrets, en la raíz o en [aws]: " + ", ".join(error.missing) + ".")
@@ -59,7 +63,7 @@ def storage_error(error: Exception, operation: str) -> tuple[str, str]:
         return ("No se pudo conectar al almacenamiento de facturas. Intenta actualizar las facturas en unos momentos.",
                 "Revisa la conexión de la app a S3 y la región configurada.")
     return (f"No se pudieron {operation} las facturas. Intenta de nuevo; si continúa, avisa al administrador.",
-            "Revisa los registros del despliegue y la configuración de S3.")
+            f"Tipo de error: {type(error).__name__}. Revisa los registros del despliegue y la configuración de S3.")
 
 
 def show_storage_error(error: Exception, operation: str, current_user: str) -> None:
@@ -178,8 +182,22 @@ def get_store() -> InvoiceStore:
 
 
 @st.cache_data(ttl=30, show_spinner=False)
+def _list_invoice_rows(case_type: str, identifier: str) -> list[tuple[str, str, int, str | None]]:
+    # Streamlit serializa la caché con pickle. Una Invoice creada antes de una
+    # recarga puede tener una clase distinta de la registrada en sys.modules.
+    # Guardar sólo valores básicos evita perder una consulta S3 que sí funcionó.
+    return [(invoice.key, invoice.name, invoice.size,
+             invoice.modified.isoformat() if invoice.modified else None)
+            for invoice in get_store().list(case_type, identifier)]
+
+
 def list_invoices(case_type: str, identifier: str) -> list[Invoice]:
-    return get_store().list(case_type, identifier)
+    return [Invoice(key, name, size, datetime.fromisoformat(modified) if modified else None)
+            for key, name, size, modified in _list_invoice_rows(case_type, identifier)]
+
+
+# Conserva la invalidación por orden usada al guardar y al actualizar la lista.
+list_invoices.clear = _list_invoice_rows.clear
 
 
 def render_section(case_type: str, identifier: str, current_user: str, *,
