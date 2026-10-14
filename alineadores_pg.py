@@ -2819,27 +2819,7 @@ def get_order_form_catalog() -> dict[str, list[str]]:
     if catalogs is None:
         catalogs = read_order_form_catalogs(configured_spreadsheet_id())
         st.session_state["aligners_form_catalogs"] = catalogs
-    apparatus_vendors = st.session_state.get("aligners_apparatus_vendors")
-    if apparatus_vendors is None:
-        try:
-            apparatus_vendors = read_apparatus_vendor_catalog(st.secrets["gsheets"]["sheet_id"])
-        except Exception:
-            # El catálogo base sigue disponible si Aparatos no está configurado
-            # o su hoja no responde. Actualizar datos reintenta esta consulta.
-            apparatus_vendors = []
-        st.session_state["aligners_apparatus_vendors"] = apparatus_vendors
-    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}), apparatus_vendors)
-
-
-@st.cache_data(ttl=3600)
-def read_apparatus_vendor_catalog(spreadsheet_id: str) -> list[str]:
-    spreadsheet = get_spreadsheet_by_id(spreadsheet_id)
-    metadata = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
-        "includeGridData": "true", "ranges": "'ESTATUS APARATOS'!A2:AI12",
-        "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)),data(startRow,rowData(values(formattedValue,dataValidation))))",
-    }))
-    catalogs = order_detail.parse_sheet_catalogs(metadata, canonical_column_name)
-    return catalogs.get("ESTATUS APARATOS", {}).get("VENDEDOR", [])
+    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}))
 
 
 def tracking_form_catalog() -> dict:
@@ -2864,7 +2844,7 @@ def order_dropdown_palettes(catalog):
 
 
 def new_order_option_label(column: str, value: str) -> str:
-    text = (dropdown_fields.canonical_vendor(value) if column == "VENDEDOR"
+    text = (dropdown_fields.vendor_display_name(value) if column == "VENDEDOR"
             else clean_cell(value).strip())
     icon = NEW_ORDER_OPTION_ICONS.get(column, {}).get(normalize_text(text))
     if not icon:
@@ -3699,9 +3679,7 @@ def render_workbench(current_user: str) -> None:
             key=tracking_key("aligners_refresh"),
         ):
             st.session_state.pop("aligners_form_catalogs", None)
-            st.session_state.pop("aligners_apparatus_vendors", None)
             read_order_form_catalogs.clear(configured_spreadsheet_id())
-            read_apparatus_vendor_catalog.clear()
             clear_sheet_data_cache()
             reset_workbench()
             rerun_active_tab()

@@ -41,7 +41,8 @@ def test_fields_start_with_pinned_business_columns_and_exclude_computed_and_tota
 
 
 @pytest.mark.parametrize('module', ['lab_pg', 'alineadores_pg'])
-@pytest.mark.parametrize('historic,canonical', [('JIMENA', 'JIME'), ('ALEX', 'ALEJANDRO')])
+@pytest.mark.parametrize('historic,canonical', [('JIMENA', 'JIME'), ('ALEX', 'ALEJANDRO'),
+    ('KAREN JACKIE', 'KAREN JACQUIE'), ('KAREN JAQUIE', 'KAREN JACQUIE'), ('KAREN ORTEGA', 'ANA KAREN')])
 def test_vendor_editor_shows_one_name_and_keeps_history_when_another_field_is_saved(module, historic, canonical):
     at = AppTest.from_string(f'''
 import sys
@@ -51,12 +52,13 @@ import pandas as pd
 import dropdown_fields as dropdown
 import order_detail as detail
 import {module} as app
-catalog = dropdown.with_app_vendors({{'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', 'SANTIAGO']}})
+catalog = dropdown.with_app_vendors({{'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', 'SANTIAGO',
+    'KAREN JACKIE', 'KAREN JACQUIE', 'KAREN ORTEGA', 'ANA KAREN']}})
 row = pd.Series({{'id': '001', 'NOMBRE DOCTOR': 'Doctora anterior', 'VENDEDOR': {historic!r}}})
 result = detail.render_editor(row, namespace='vendor_demo', id_column='id',
     columns=['NOMBRE DOCTOR', 'VENDEDOR'], catalog=catalog,
     labels={{'NOMBRE DOCTOR': 'Doctor', 'VENDEDOR': 'VENDEDOR'}},
-    option_label=lambda c, v: v, palettes={{}},
+    option_label=app.{'workbench_form_option_label' if module == 'lab_pg' else 'new_order_option_label'}, palettes={{}},
     parse_date=lambda value: None, format_date=lambda value: str(value),
     equivalent=app.{'values_equivalent_for_column' if module == 'lab_pg' else 'values_equivalent'})
 if result:
@@ -65,8 +67,11 @@ if result:
     assert not at.exception
     vendor = next(item for item in at.selectbox if item.label == 'VENDEDOR')
     assert vendor.value == canonical
-    assert vendor.options.count(canonical) == 1
-    assert all(value not in vendor.options for value in ['JIMENA', 'ALEX', 'SANTIAGO'])
+    labeler = lab.workbench_form_option_label if module == 'lab_pg' else align.new_order_option_label
+    assert vendor.options == ['— Sin dato —', *[labeler('VENDEDOR', value) for value in lab.VENDEDOR_OPTIONS]]
+    assert vendor.options.count(labeler('VENDEDOR', canonical)) == 1
+    assert any(value.endswith('Karen Jacquie') for value in vendor.options)
+    assert any(value.endswith('Ana Karen') for value in vendor.options)
     next(item for item in at.text_input if item.label == 'Doctor').input('Doctora corregida').run()
     next(item for item in at.button if 'Guardar este pedido' in item.label).click().run()
     assert not at.exception
