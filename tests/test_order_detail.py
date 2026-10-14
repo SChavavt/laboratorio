@@ -70,8 +70,9 @@ if result:
     labeler = lab.workbench_form_option_label if module == 'lab_pg' else align.new_order_option_label
     assert vendor.options == ['— Sin dato —', *[labeler('VENDEDOR', value) for value in lab.VENDEDOR_OPTIONS]]
     assert vendor.options.count(labeler('VENDEDOR', canonical)) == 1
-    assert any(value.endswith('Karen Jacquie') for value in vendor.options)
-    assert any(value.endswith('Ana Karen') for value in vendor.options)
+    assert any(value.endswith('KAREN JACQUIE') for value in vendor.options)
+    assert any(value.endswith('ANA KAREN') for value in vendor.options)
+    assert all(label.isupper() for label in vendor.options[1:])
     next(item for item in at.text_input if item.label == 'Doctor').input('Doctora corregida').run()
     next(item for item in at.button if 'Guardar este pedido' in item.label).click().run()
     assert not at.exception

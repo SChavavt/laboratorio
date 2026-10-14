@@ -31,11 +31,11 @@ def javascript(js):
 
 def test_partial_sheets_cannot_drop_active_sellers_or_reintroduce_aliases_and_santiago():
     catalog = {'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', ' santiago ',
-                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', '',
+                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', ' Ignacio ', '👤 IGNACIO', '',
                             'KAREN JACQUIE', 'KAREN JACKIE', ' Karen Jaquie ', 'KAREN ORTEGA', 'Ana Karen'],
                'SERVICIO': ['NO APLICA ', 'Foto, lateral']}
     result = dropdown.with_app_vendors(catalog)
-    assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN', 'IGNACIO']
+    assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN']
     assert result['SERVICIO'] == catalog['SERVICIO']
     assert catalog['VENDEDOR'][0] == 'JIMENA'
     assert dropdown.with_app_vendors({})['VENDEDOR'] == list(dropdown.APP_VENDORS)
@@ -63,7 +63,7 @@ def test_grid_resolves_historical_vendor_aliases_without_duplicate_choices_or_fa
         assert changes(original, displayed) == []
 
 
-@pytest.mark.parametrize('canonical,label', [('KAREN JACQUIE', 'Karen Jacquie'), ('ANA KAREN', 'Ana Karen')])
+@pytest.mark.parametrize('canonical,label', [('KAREN JACQUIE', 'KAREN JACQUIE'), ('ANA KAREN', 'ANA KAREN')])
 def test_vendor_names_display_and_roundtrip_with_the_requested_spelling(canonical, label):
     import lab_pg as lab
     assert lab.display_selectbox_value('VENDEDOR', canonical) == '👩 ' + label

@@ -7,19 +7,18 @@ from pathlib import Path
 
 from st_aggrid import JsCode
 
-# Lista original de Aparatos, sin Santiago. Alineadores y Polanco también
+# Lista original de Aparatos, sin vendedores inactivos. Alineadores y Polanco también
 # ofrecen estos vendedores; sus opciones de Sheets no amplían Aparatos.
 APP_VENDORS = (
     "ALEJANDRO", "ANA KAREN", "BLANCA", "CASSANDRA", "DANIELA", "SOFI",
     "MICHELLE", "KAREN JACQUIE", "NORMA", "PAULINA", "JIME", "LESLY",
 )
-INACTIVE_VENDORS = frozenset({"SANTIAGO"})
+INACTIVE_VENDORS = frozenset({"SANTIAGO", "IGNACIO"})
 VENDOR_ALIASES = {
     "JIMENA": "JIME", "ALEX": "ALEJANDRO",
     "KAREN ORTEGA": "ANA KAREN",
     "KAREN JACKIE": "KAREN JACQUIE", "KAREN JAQUIE": "KAREN JACQUIE",
 }
-VENDOR_DISPLAY_NAMES = {"KAREN JACQUIE": "Karen Jacquie", "ANA KAREN": "Ana Karen"}
 
 
 def canonical_vendor(value):
@@ -31,8 +30,7 @@ def canonical_vendor(value):
 
 
 def vendor_display_name(value):
-    canonical = canonical_vendor(value)
-    return VENDOR_DISPLAY_NAMES.get(canonical, canonical)
+    return canonical_vendor(value)
 
 
 def with_app_vendors(catalog):
