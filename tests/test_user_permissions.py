@@ -166,6 +166,13 @@ def test_existing_users_keep_edit_access():
     assert not can_edit_orders('Invitado') and not can_create_orders('Invitado')
 
 
+@pytest.mark.parametrize('module', [lab, align])
+def test_direct_passwords_in_secrets_support_accents_and_enye(module):
+    password = 'Contraseña-de-prueba-ÁÉñ'
+    assert module.password_matches(password, password)
+    assert not module.password_matches('Contrasena-de-prueba-ÁÉñ', password)
+
+
 @pytest.mark.parametrize('user', ['Juan', 'Paula'])
 def test_limited_users_can_select_and_consult_any_forms_response(user):
     script = f'''

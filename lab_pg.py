@@ -1946,7 +1946,7 @@ def password_matches(password: str, stored_value: str) -> bool:
         except (TypeError, ValueError):
             return False
         return hmac.compare_digest(candidate, expected)
-    return hmac.compare_digest(password, stored_value)
+    return hmac.compare_digest(password.encode("utf-8"), stored_value.encode("utf-8"))
 
 
 def get_query_param_value(key: str) -> str:
