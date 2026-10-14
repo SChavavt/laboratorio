@@ -149,12 +149,19 @@ def test_vendor_catalog_contains_only_active_sellers():
     assert [value for value in app.VENDEDOR_DISPLAY if value != "SANTIAGO"] == app.VENDEDOR_OPTIONS
 
 
-def test_sheet_vendor_list_also_offers_jime_and_lesly(monkeypatch):
+@pytest.mark.parametrize("cached", [False, True])
+def test_apparatus_keeps_original_vendors_even_with_sheet_extras_or_an_old_cache(monkeypatch, cached):
     app.st.session_state.pop("apparatus_form_catalog", None)
-    monkeypatch.setattr(app, "read_workbench_form_catalog", lambda _: {"VENDEDOR": ["NORMA", "LESLY"]})
+    sheet_catalog = {"VENDEDOR": ["NORMA", "LESLY", "JUAN", "KAREN ORTEGA", "KAREN JACKIE", "SANTIAGO"],
+                     "SERVICIO": ["NO APLICA "]}
+    monkeypatch.setattr(app, "read_workbench_form_catalog", lambda _: sheet_catalog)
     monkeypatch.setattr(app.st, "secrets", {"gsheets": {"sheet_id": "demo"}})
+    if cached:
+        app.st.session_state["apparatus_form_catalog"] = sheet_catalog
     try:
-        assert app.get_workbench_form_catalog()["VENDEDOR"] == app.VENDEDOR_OPTIONS
+        catalog = app.get_workbench_form_catalog()
+        assert catalog["VENDEDOR"] == app.VENDEDOR_OPTIONS
+        assert catalog["SERVICIO"] == ["NO APLICA "]
     finally:
         app.st.session_state.pop("apparatus_form_catalog", None)
 
@@ -352,7 +359,8 @@ def test_case_without_stage_records_the_start_of_its_initial_stage(monkeypatch):
     assert (logs[0]['apparatus'], logs[0]['previous_status'], logs[0]['new_status']) == ('MSE', '', 'ORDEN RECIBIDA')
 
 
-def test_new_order_requires_apparatus_to_start_its_stage():
+@pytest.mark.parametrize("vendor", ["ANA KAREN", "KAREN JACQUIE"])
+def test_new_order_keeps_original_vendor_choices_and_requires_apparatus(vendor):
     from streamlit.testing.v1 import AppTest
     script = f'''
 import sys
@@ -364,6 +372,7 @@ calls = st.session_state.setdefault("calls", [])
 with patch.multiple(
     app,
     get_current_user=lambda: "Jime",
+    get_workbench_form_catalog=lambda: {{"VENDEDOR": [*app.VENDEDOR_OPTIONS, "JUAN", "KAREN ORTEGA", "KAREN JACKIE"]}},
     generate_unique_columna_1_id=lambda: "12102026-001",
     append_estatus_row=lambda row: calls.append(("row", row)) or 5,
     register_status_change=lambda **kwargs: calls.append(("log", kwargs)),
@@ -373,6 +382,10 @@ with patch.multiple(
     app.render_nuevo_pedido_tab()
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
+    seller = at.selectbox(key="nuevo_pedido_vendedor_0")
+    assert seller.options == ["", *[app.display_selectbox_value("VENDEDOR", value) for value in app.VENDEDOR_OPTIONS]]
+    assert "👩 Karen Jacquie" in seller.options and "👩 Ana Karen" in seller.options
+    seller.set_value(app.display_selectbox_value("VENDEDOR", vendor))
     at.button[0].click().run()
     assert not at.exception
     assert at.session_state["calls"] == []
@@ -382,6 +395,7 @@ with patch.multiple(
     assert not at.exception
     (_, row), (_, log_entry) = at.session_state["calls"]
     assert (row["APARATO"], row[app.STATUS_COLUMN]) == ("MSE", "ORDEN RECIBIDA")
+    assert row["VENDEDOR"] == vendor
     assert (log_entry["previous_status"], log_entry["new_status"]) == ("", "ORDEN RECIBIDA")
 
 

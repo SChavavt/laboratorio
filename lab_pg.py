@@ -443,13 +443,13 @@ STATUS_DISPLAY = {
 
 VENDEDOR_DISPLAY = {
     "ALEJANDRO": "👨 ALEJANDRO",
-    "ANA KAREN": "👩 ANA KAREN",
+    "ANA KAREN": "👩 " + dropdown_fields.vendor_display_name("ANA KAREN"),
     "BLANCA": "👩 BLANCA",
     "CASSANDRA": "👩 CASSANDRA",
     "DANIELA": "👩 DANIELA",
     "SOFI": "👩 SOFI",
     "MICHELLE": "👩 MICHELLE",
-    "KAREN JACQUIE": "👩 KAREN JACQUIE",
+    "KAREN JACQUIE": "👩 " + dropdown_fields.vendor_display_name("KAREN JACQUIE"),
     "NORMA": "👩 NORMA",
     "PAULINA": "👩 PAULINA",
     # Sólo para mostrar pedidos históricos; no se ofrece en el catálogo activo.
@@ -859,6 +859,9 @@ def clean_display_value(value: Any) -> str:
     """Quita el emoji de una opción visual antes de guardar en Google Sheets."""
 
     text = clean_cell(value).strip()
+    vendor_values = {label: name for name, label in VENDEDOR_DISPLAY.items()}
+    if text in vendor_values:
+        return vendor_values[text]
     display_values = {
         display_value
         for display_options in DISPLAY_OPTIONS_BY_COLUMN.values()
@@ -4026,7 +4029,7 @@ def render_nuevo_pedido_tab() -> None:
         with second_row_cols[0]:
             vendedor = st.selectbox(
                 display_field_label("VENDEDOR"),
-                build_display_selectbox_options("VENDEDOR", get_workbench_form_catalog()["VENDEDOR"], ""),
+                build_display_selectbox_options("VENDEDOR", VENDEDOR_OPTIONS, ""),
                 key=f"nuevo_pedido_vendedor_{form_version}",
             )
         with second_row_cols[1]:
@@ -4067,7 +4070,7 @@ def render_nuevo_pedido_tab() -> None:
         return
 
     clean_aparato = clean_display_value(aparato)
-    clean_vendedor = clean_display_value(vendedor)
+    clean_vendedor = dropdown_fields.canonical_vendor(vendedor)
     clean_servicio = clean_display_value(servicio)
     clean_archivos_recibidos = clean_display_value(archivos_recibidos)
 
@@ -6652,9 +6655,10 @@ def get_workbench_form_catalog() -> dict:
         except Exception:
             catalog = {}
             st.warning("No se pudieron consultar las listas de Sheets. Se usarán las opciones disponibles en la app.")
-        st.session_state["apparatus_form_catalog"] = dropdown_fields.with_app_vendors(
-            {**SELECTBOX_OPTIONS_BY_COLUMN, **catalog})
-    return dropdown_fields.with_app_vendors(st.session_state["apparatus_form_catalog"])
+        st.session_state["apparatus_form_catalog"] = {**SELECTBOX_OPTIONS_BY_COLUMN, **catalog}
+    # Aparatos mantiene su lista original. Tampoco reutilizar opciones añadidas
+    # por la versión anterior que puedan seguir guardadas en esta sesión.
+    return {**st.session_state["apparatus_form_catalog"], "VENDEDOR": list(VENDEDOR_OPTIONS)}
 
 
 def workbench_batch_stages(selected: pd.DataFrame, current_user: str) -> list[str]:

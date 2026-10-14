@@ -7,14 +7,19 @@ from pathlib import Path
 
 from st_aggrid import JsCode
 
-# Catálogo base de Aparatos, compartido con Alineadores y Polanco. Las listas
-# parciales de Sheets lo complementan, nunca lo reemplazan.
+# Lista original de Aparatos, sin Santiago. Alineadores y Polanco también
+# ofrecen estos vendedores; sus opciones de Sheets no amplían Aparatos.
 APP_VENDORS = (
     "ALEJANDRO", "ANA KAREN", "BLANCA", "CASSANDRA", "DANIELA", "SOFI",
     "MICHELLE", "KAREN JACQUIE", "NORMA", "PAULINA", "JIME", "LESLY",
 )
 INACTIVE_VENDORS = frozenset({"SANTIAGO"})
-VENDOR_ALIASES = {"JIMENA": "JIME", "ALEX": "ALEJANDRO"}
+VENDOR_ALIASES = {
+    "JIMENA": "JIME", "ALEX": "ALEJANDRO",
+    "KAREN ORTEGA": "ANA KAREN",
+    "KAREN JACKIE": "KAREN JACQUIE", "KAREN JAQUIE": "KAREN JACQUIE",
+}
+VENDOR_DISPLAY_NAMES = {"KAREN JACQUIE": "Karen Jacquie", "ANA KAREN": "Ana Karen"}
 
 
 def canonical_vendor(value):
@@ -25,9 +30,14 @@ def canonical_vendor(value):
     return VENDOR_ALIASES.get(text, text)
 
 
-def with_app_vendors(catalog, extra_vendors=()):
+def vendor_display_name(value):
+    canonical = canonical_vendor(value)
+    return VENDOR_DISPLAY_NAMES.get(canonical, canonical)
+
+
+def with_app_vendors(catalog):
     values = [canonical_vendor(value) for value in
-              (*APP_VENDORS, *extra_vendors, *catalog.get("VENDEDOR", ()))]
+              (*APP_VENDORS, *catalog.get("VENDEDOR", ()))]
     return {**catalog, "VENDEDOR": list(dict.fromkeys(
         value for value in values if value and value not in INACTIVE_VENDORS))}
 

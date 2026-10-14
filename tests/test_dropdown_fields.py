@@ -31,7 +31,8 @@ def javascript(js):
 
 def test_partial_sheets_cannot_drop_active_sellers_or_reintroduce_aliases_and_santiago():
     catalog = {'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', ' santiago ',
-                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', ''],
+                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', '',
+                            'KAREN JACQUIE', 'KAREN JACKIE', ' Karen Jaquie ', 'KAREN ORTEGA', 'Ana Karen'],
                'SERVICIO': ['NO APLICA ', 'Foto, lateral']}
     result = dropdown.with_app_vendors(catalog)
     assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN', 'IGNACIO']
@@ -42,12 +43,15 @@ def test_partial_sheets_cannot_drop_active_sellers_or_reintroduce_aliases_and_sa
 
 def test_grid_resolves_historical_vendor_aliases_without_duplicate_choices_or_false_changes():
     import lab_pg as lab
-    catalog = dropdown.with_app_vendors({'VENDEDOR': ['JIMENA', 'ALEX']})
-    source = pd.DataFrame([{'id': '001', 'VENDEDOR': 'JIMENA'}, {'id': '002', 'VENDEDOR': 'ALEX'}])
+    historical = ['JIMENA', 'ALEX', 'KAREN JACKIE', 'KAREN JAQUIE', 'KAREN ORTEGA']
+    catalog = dropdown.with_app_vendors({'VENDEDOR': historical})
+    source = pd.DataFrame([{'id': str(i), 'VENDEDOR': value} for i, value in enumerate(historical)])
     options = {'context': {}, 'columnDefs': [{'field': 'VENDEDOR', 'editable': True}]}
     spec = dropdown.decorate_grid(options, catalog, source)['context']['dropdowns']['VENDEDOR']
-    assert spec['aliases'] == {'JIMENA': 'JIME', 'ALEX': 'ALEJANDRO'}
-    assert 'JIMENA' not in spec['values'] and 'ALEX' not in spec['values']
+    assert spec['aliases'] == {'JIMENA': 'JIME', 'ALEX': 'ALEJANDRO',
+                              'KAREN JACKIE': 'KAREN JACQUIE', 'KAREN JAQUIE': 'KAREN JACQUIE',
+                              'KAREN ORTEGA': 'ANA KAREN'}
+    assert not set(historical) & set(spec['values'])
     for old, new in spec['aliases'].items():
         assert lab.values_equivalent_for_column('VENDEDOR', old, new)
         assert align.values_equivalent('VENDEDOR', old, new)
@@ -57,6 +61,14 @@ def test_grid_resolves_historical_vendor_aliases_without_duplicate_choices_or_fa
         displayed = original.copy()
         displayed['VENDEDOR'] = displayed['VENDEDOR'].map(dropdown.canonical_vendor)
         assert changes(original, displayed) == []
+
+
+@pytest.mark.parametrize('canonical,label', [('KAREN JACQUIE', 'Karen Jacquie'), ('ANA KAREN', 'Ana Karen')])
+def test_vendor_names_display_and_roundtrip_with_the_requested_spelling(canonical, label):
+    import lab_pg as lab
+    assert lab.display_selectbox_value('VENDEDOR', canonical) == '👩 ' + label
+    assert lab.clean_display_value('👩 ' + label) == canonical
+    assert align.new_order_option_label('VENDEDOR', canonical) == '👤 ' + label
 
 
 def test_compound_values_preserve_native_spaces_and_commas_inside_options():

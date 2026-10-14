@@ -320,22 +320,46 @@ def test_native_table_catalog_includes_unused_options_and_keeps_raw_values():
 def test_catalog_is_read_once_and_scoped_to_each_sheet(sheets, monkeypatch):
     calls = []
     monkeypatch.setattr(app, 'configured_spreadsheet_id', lambda: 'demo')
-    monkeypatch.setattr(app.st, 'secrets', {'gsheets': {'sheet_id': 'aparatos'}})
-    def read_apparatus(identifier):
-        calls.append(identifier)
-        return ['ALEX', ' santiago ', 'VENDEDOR APARATOS']
-    monkeypatch.setattr(app, 'read_apparatus_vendor_catalog', read_apparatus)
     def read(identifier):
         calls.append(identifier)
-        return {app.SHEET_ORDERS: FORM_CATALOG,
+        return {app.SHEET_ORDERS: {**FORM_CATALOG, 'VENDEDOR': [
+                    'JIMENA', 'MICHELLE', 'KAREN JACQUIE', 'KAREN JACKIE', 'KAREN ORTEGA', 'ANA KAREN', 'JUAN']},
                 app.SHEET_POLANCO: {**FORM_CATALOG, 'VENDEDOR': ['POLANCO DEMO']}}
     monkeypatch.setattr(app, 'read_order_form_catalogs', read)
-    assert app.get_order_form_catalog()['VENDEDOR'] == [*app.dropdown_fields.APP_VENDORS, 'VENDEDOR APARATOS']
+    assert app.get_order_form_catalog()['VENDEDOR'] == [*app.dropdown_fields.APP_VENDORS, 'JUAN']
     app.st.session_state['aligners_order_sheet'] = app.SHEET_POLANCO
     assert app.get_order_form_catalog()['VENDEDOR'] == [
-        *app.dropdown_fields.APP_VENDORS, 'VENDEDOR APARATOS', 'POLANCO DEMO']
+        *app.dropdown_fields.APP_VENDORS, 'POLANCO DEMO']
     app.get_order_form_catalog()
-    assert calls == ['demo', 'aparatos']
+    assert calls == ['demo']
+
+
+def test_new_aligner_form_shows_each_karen_once_with_the_requested_name():
+    from streamlit.testing.v1 import AppTest
+    catalog = {**FORM_CATALOG, 'VENDEDOR': [
+        'JIMENA', 'JUAN', 'MICHELLE', 'IGNACIO', 'LESLY', 'ALEX', 'JIME',
+        'KAREN JACQUIE', 'KAREN ORTEGA', 'KAREN JACKIE', 'ANA KAREN', 'SANTIAGO']}
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+from unittest.mock import patch
+import alineadores_pg as app
+with patch.multiple(app,
+    configured_spreadsheet_id=lambda: 'demo',
+    read_order_form_catalogs=lambda _: {{app.SHEET_ORDERS: {catalog!r}}}):
+    app.render_new_order('Jime', {{'definitions': {{}}}})
+'''
+    at = AppTest.from_string(script).run()
+    assert not at.exception
+    vendor = next(item for item in at.selectbox if 'VENDEDOR' in item.label)
+    assert vendor.options == [app.new_order_option_label('VENDEDOR', value)
+                              for value in (*app.dropdown_fields.APP_VENDORS, 'JUAN', 'IGNACIO')]
+    assert vendor.options.count('👤 Karen Jacquie') == 1
+    assert vendor.options.count('👤 Ana Karen') == 1
+    assert len(set(vendor.options)) == len(vendor.options)
+    vendor.select('ANA KAREN').run()
+    assert not at.exception
+    assert next(item for item in at.selectbox if 'VENDEDOR' in item.label).value == 'ANA KAREN'
 
 
 def test_invalid_dropdown_value_is_rejected_before_writing(sheets):
