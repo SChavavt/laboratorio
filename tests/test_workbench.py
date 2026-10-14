@@ -359,8 +359,9 @@ def test_case_without_stage_records_the_start_of_its_initial_stage(monkeypatch):
     assert (logs[0]['apparatus'], logs[0]['previous_status'], logs[0]['new_status']) == ('MSE', '', 'ORDEN RECIBIDA')
 
 
+@pytest.mark.parametrize("user", ["Jime", "Juan", "Paula"])
 @pytest.mark.parametrize("vendor", ["ANA KAREN", "KAREN JACQUIE"])
-def test_new_order_keeps_original_vendor_choices_and_requires_apparatus(vendor):
+def test_new_order_keeps_original_vendor_choices_and_requires_apparatus(vendor, user):
     from streamlit.testing.v1 import AppTest
     script = f'''
 import sys
@@ -371,7 +372,7 @@ from unittest.mock import patch
 calls = st.session_state.setdefault("calls", [])
 with patch.multiple(
     app,
-    get_current_user=lambda: "Jime",
+    get_current_user=lambda: {user!r},
     get_workbench_form_catalog=lambda: {{"VENDEDOR": [*app.VENDEDOR_OPTIONS, "JUAN", "KAREN ORTEGA", "KAREN JACKIE", "IGNACIO"]}},
     generate_unique_columna_1_id=lambda: "12102026-001",
     append_estatus_row=lambda row: calls.append(("row", row)) or 5,
@@ -544,7 +545,7 @@ def test_paused_cases_are_archived_and_can_return_to_any_stage_in_their_flow():
     assert "LISTO P/CONFECCIÓN" in options
     assert all(
         app.is_transition_allowed_for_user(user, app.PAUSED_STATUS, "ORDEN RECIBIDA", "HYRAX")
-        for user in app.APP_USERS
+        for user in ("Admin", "Jime", "Lesly", "Vero")
     )
 
 
@@ -871,7 +872,7 @@ def test_column_order_is_normalized_and_persisted_per_user(monkeypatch):
 
 
 def test_passwords_are_loaded_only_from_secrets_for_allowed_users():
-    assert app.APP_USERS == ("Admin", "Jime", "Lesly", "Vero")
+    assert app.APP_USERS == ("Admin", "Jime", "Lesly", "Vero", "Juan", "Paula")
     assert "Estefano" not in app.USER_VISIBLE_TABS
     assert "Estefano" not in app.USER_ALLOWED_TRANSITIONS
     assert app.get_user_passwords({}) == {}
@@ -882,8 +883,8 @@ def test_passwords_are_loaded_only_from_secrets_for_allowed_users():
     assert configured == {
         "Admin": "admin-hash", "Jime": "jime-hash", "Lesly": "lesly-hash", "Vero": "vero-hash"
     }
-    assert app.missing_user_passwords(configured) == []
-    assert app.missing_user_passwords({"Jime": "hash"}) == ["Admin", "Lesly", "Vero"]
+    assert app.missing_user_passwords(configured) == ["Juan", "Paula"]
+    assert app.missing_user_passwords({"Jime": "hash"}) == ["Admin", "Lesly", "Vero", "Juan", "Paula"]
 
 
 def test_pbkdf2_password_verification_remains_supported():

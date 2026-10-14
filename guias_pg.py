@@ -25,6 +25,7 @@ import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from streamlit.errors import StreamlitAPIException
+from user_permissions import can_edit_orders
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -813,9 +814,12 @@ def render_request_feedback() -> None:
             rerun_active_tab()
 
 
-def render_request_tab() -> None:
+def render_request_tab(current_user: str = "Admin") -> None:
     """Formulario de solicitud de guía DHL a nombre de ARTTD JIMENA."""
 
+    if not can_edit_orders(current_user):
+        st.info("Tu acceso a Guías es de sólo lectura.")
+        return
     st.subheader("📝 Nueva solicitud de guía")
     st.caption(
         f"La solicitud queda registrada a nombre de {GUIDE_VENDOR_NAME} en el Excel de ventas. "
@@ -1056,13 +1060,14 @@ def render_guides_tabs(current_user: str) -> None:
 
     dataset, pending = load_guides_datasets()
     render_guides_notice(dataset, pending)
-    tabs = st.tabs(GUIDES_TAB_LABELS, key=f"guides_primary_tabs_{current_user}", on_change="rerun")
-    for label, tab in zip(GUIDES_TAB_LABELS, tabs):
+    labels = GUIDES_TAB_LABELS if can_edit_orders(current_user) else [GUIDES_TAB_LOADED]
+    tabs = st.tabs(labels, key=f"guides_primary_tabs_{current_user}", on_change="rerun")
+    for label, tab in zip(labels, tabs):
         if not tab.open:
             continue
         with tab:
             if label == GUIDES_TAB_REQUEST:
-                render_request_tab()
+                render_request_tab(current_user)
             else:
                 render_loaded_tab(dataset, pending)
         break

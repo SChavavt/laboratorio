@@ -92,7 +92,8 @@ def test_all_files_are_validated_before_first_write(store, bad):
     assert store.client.writes == []
 
 
-@pytest.mark.parametrize('rows,user', [([], 'Jime'), (['001', '001'], 'Jime'), (['001'], 'Invitado')])
+@pytest.mark.parametrize('rows,user', [([], 'Jime'), (['001', '001'], 'Jime'), (['001'], 'Invitado'),
+                                      (['001'], 'Juan'), (['001'], 'Paula')])
 def test_removed_duplicate_or_unauthorized_case_cannot_receive_files(store, rows, user):
     with pytest.raises(ValueError):
         store.upload('aparatos', '001', [Upload('factura.pdf')], user,
@@ -215,6 +216,19 @@ import case_invoices as invoices
 invoices.render_section('aparatos', '001', st.session_state.get('user', 'Jime'),
                         verify_case=lambda: None, rerun=st.rerun)
 '''
+
+
+@pytest.mark.parametrize('user', ['Juan', 'Paula'])
+def test_limited_users_can_read_invoices_without_upload_controls(store, monkeypatch, user):
+    store.upload('aparatos', '001', [Upload('consulta.pdf')], 'Jime', lambda: None)
+    monkeypatch.setattr(invoices, 'list_invoices', Mock(return_value=store.list('aparatos', '001')))
+    at = AppTest.from_string(SECTION_SCRIPT, default_timeout=15)
+    at.session_state['user'] = user
+    at.run()
+    assert not at.exception
+    assert len(at.get('link_button')) == 2
+    assert not at.file_uploader
+    assert not any(button.label == 'Guardar facturas' for button in at.button)
 
 
 @pytest.mark.parametrize('user', ['Jime', 'Admin'])

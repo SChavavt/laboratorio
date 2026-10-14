@@ -70,7 +70,7 @@ def case_label(row) -> str:
 
 
 def render(current_user: str, *, namespace: str, load_cases, verify_case, rerun) -> None:
-    if current_user not in case_invoices.ALLOWED_USERS:
+    if current_user not in case_invoices.VIEW_USERS:
         st.error("Tu usuario no tiene acceso al buscador de casos.")
         return
     st.subheader(TAB_LABEL)
