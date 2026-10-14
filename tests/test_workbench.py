@@ -384,7 +384,8 @@ with patch.multiple(
     at = AppTest.from_string(script, default_timeout=15).run()
     seller = at.selectbox(key="nuevo_pedido_vendedor_0")
     assert seller.options == ["", *[app.display_selectbox_value("VENDEDOR", value) for value in app.VENDEDOR_OPTIONS]]
-    assert "👩 Karen Jacquie" in seller.options and "👩 Ana Karen" in seller.options
+    assert "👩 KAREN JACQUIE" in seller.options and "👩 ANA KAREN" in seller.options
+    assert all(label.isupper() for label in seller.options if label)
     seller.set_value(app.display_selectbox_value("VENDEDOR", vendor))
     at.button[0].click().run()
     assert not at.exception

@@ -19,7 +19,6 @@ VENDOR_ALIASES = {
     "KAREN ORTEGA": "ANA KAREN",
     "KAREN JACKIE": "KAREN JACQUIE", "KAREN JAQUIE": "KAREN JACQUIE",
 }
-VENDOR_DISPLAY_NAMES = {"KAREN JACQUIE": "Karen Jacquie", "ANA KAREN": "Ana Karen"}
 
 
 def canonical_vendor(value):
@@ -31,8 +30,7 @@ def canonical_vendor(value):
 
 
 def vendor_display_name(value):
-    canonical = canonical_vendor(value)
-    return VENDOR_DISPLAY_NAMES.get(canonical, canonical)
+    return canonical_vendor(value)
 
 
 def with_app_vendors(catalog):

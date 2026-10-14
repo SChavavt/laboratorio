@@ -354,8 +354,9 @@ with patch.multiple(app,
     vendor = next(item for item in at.selectbox if 'VENDEDOR' in item.label)
     assert vendor.options == [app.new_order_option_label('VENDEDOR', value)
                               for value in (*app.dropdown_fields.APP_VENDORS, 'JUAN', 'IGNACIO')]
-    assert vendor.options.count('👤 Karen Jacquie') == 1
-    assert vendor.options.count('👤 Ana Karen') == 1
+    assert vendor.options.count('👤 KAREN JACQUIE') == 1
+    assert vendor.options.count('👤 ANA KAREN') == 1
+    assert all(label.isupper() for label in vendor.options)
     assert len(set(vendor.options)) == len(vendor.options)
     vendor.select('ANA KAREN').run()
     assert not at.exception

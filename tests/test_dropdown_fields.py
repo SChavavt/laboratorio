@@ -63,7 +63,7 @@ def test_grid_resolves_historical_vendor_aliases_without_duplicate_choices_or_fa
         assert changes(original, displayed) == []
 
 
-@pytest.mark.parametrize('canonical,label', [('KAREN JACQUIE', 'Karen Jacquie'), ('ANA KAREN', 'Ana Karen')])
+@pytest.mark.parametrize('canonical,label', [('KAREN JACQUIE', 'KAREN JACQUIE'), ('ANA KAREN', 'ANA KAREN')])
 def test_vendor_names_display_and_roundtrip_with_the_requested_spelling(canonical, label):
     import lab_pg as lab
     assert lab.display_selectbox_value('VENDEDOR', canonical) == '👩 ' + label
