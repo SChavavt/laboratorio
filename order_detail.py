@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from dropdown_fields import join_values, option_colors, split_values
+from dropdown_fields import canonical_vendor, join_values, option_colors, split_values
 
 
 HEADER_CSS = """<style>
@@ -329,6 +329,10 @@ def render_editor(row, *, namespace, id_column, columns, catalog, labels,
                 with container:
                     value = draft["changes"].get(column, draft["baseline"].get(column, ""))
                     text = "" if value is None else str(value)
+                    if column == "VENDEDOR" and canonical_vendor(text) in catalog.get(column, []):
+                        # Muestra el nombre único sin crear un cambio en el pedido
+                        # ni volver a añadir su alias como opción histórica.
+                        text = canonical_vendor(text)
                     key = f"order_field_{token}_{column}"
                     label = labels.get(column, column.replace("_", " · ").title())
                     args = (namespace, identifier, column, key, equivalent, lambda value: value or "")

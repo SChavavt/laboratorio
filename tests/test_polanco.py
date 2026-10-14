@@ -320,16 +320,22 @@ def test_native_table_catalog_includes_unused_options_and_keeps_raw_values():
 def test_catalog_is_read_once_and_scoped_to_each_sheet(sheets, monkeypatch):
     calls = []
     monkeypatch.setattr(app, 'configured_spreadsheet_id', lambda: 'demo')
+    monkeypatch.setattr(app.st, 'secrets', {'gsheets': {'sheet_id': 'aparatos'}})
+    def read_apparatus(identifier):
+        calls.append(identifier)
+        return ['ALEX', ' santiago ', 'VENDEDOR APARATOS']
+    monkeypatch.setattr(app, 'read_apparatus_vendor_catalog', read_apparatus)
     def read(identifier):
         calls.append(identifier)
         return {app.SHEET_ORDERS: FORM_CATALOG,
                 app.SHEET_POLANCO: {**FORM_CATALOG, 'VENDEDOR': ['POLANCO DEMO']}}
     monkeypatch.setattr(app, 'read_order_form_catalogs', read)
-    assert app.get_order_form_catalog()['VENDEDOR'] == ['JIMENA', 'MICHELLE', 'JIME', 'LESLY']
+    assert app.get_order_form_catalog()['VENDEDOR'] == [*app.dropdown_fields.APP_VENDORS, 'VENDEDOR APARATOS']
     app.st.session_state['aligners_order_sheet'] = app.SHEET_POLANCO
-    assert app.get_order_form_catalog()['VENDEDOR'] == ['POLANCO DEMO', 'JIME', 'LESLY']
+    assert app.get_order_form_catalog()['VENDEDOR'] == [
+        *app.dropdown_fields.APP_VENDORS, 'VENDEDOR APARATOS', 'POLANCO DEMO']
     app.get_order_form_catalog()
-    assert calls == ['demo']
+    assert calls == ['demo', 'aparatos']
 
 
 def test_invalid_dropdown_value_is_rejected_before_writing(sheets):

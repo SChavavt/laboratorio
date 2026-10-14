@@ -1,19 +1,35 @@
 """Catálogos compartidos entre tabla, ficha y alta; los adornos no se guardan."""
 import hashlib
 import re
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
 from st_aggrid import JsCode
 
-# Vendedores que la app ofrece aunque la lista de Sheets todavía no los incluya.
-APP_VENDORS = ("JIME", "LESLY")
+# Catálogo base de Aparatos, compartido con Alineadores y Polanco. Las listas
+# parciales de Sheets lo complementan, nunca lo reemplazan.
+APP_VENDORS = (
+    "ALEJANDRO", "ANA KAREN", "BLANCA", "CASSANDRA", "DANIELA", "SOFI",
+    "MICHELLE", "KAREN JACQUIE", "NORMA", "PAULINA", "JIME", "LESLY",
+)
+INACTIVE_VENDORS = frozenset({"SANTIAGO"})
+VENDOR_ALIASES = {"JIMENA": "JIME", "ALEX": "ALEJANDRO"}
 
 
-def with_app_vendors(catalog):
-    if not catalog.get("VENDEDOR"):
-        return catalog  # Sin lista en Sheets el campo sigue siendo texto libre.
-    return {**catalog, "VENDEDOR": list(dict.fromkeys([*catalog["VENDEDOR"], *APP_VENDORS]))}
+def canonical_vendor(value):
+    """Una sola opción por nombre, sin adornos ni diferencias de formato."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = " ".join(text.split()).upper()
+    text = text.lstrip("👤👨👩\ufe0f ")
+    return VENDOR_ALIASES.get(text, text)
+
+
+def with_app_vendors(catalog, extra_vendors=()):
+    values = [canonical_vendor(value) for value in
+              (*APP_VENDORS, *extra_vendors, *catalog.get("VENDEDOR", ()))]
+    return {**catalog, "VENDEDOR": list(dict.fromkeys(
+        value for value in values if value and value not in INACTIVE_VENDORS))}
 
 
 def split_values(value, options=()):
@@ -96,6 +112,9 @@ def dropdown_js(kind):
 
 def decorate_grid(options, catalog, source, *, multiple=(), labeler=lambda c, v: v, palettes=None,
                   canonicalize=lambda c, v: str(v)):
+    original_canonicalize = canonicalize
+    canonicalize = lambda column, value: (canonical_vendor(value) if column == "VENDEDOR"
+                                           else original_canonicalize(column, value))
     specs = {}
     for column, choices in catalog.items():
         if column in {'STATUS', 'APARATO'}:

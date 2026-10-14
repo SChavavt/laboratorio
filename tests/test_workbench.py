@@ -141,11 +141,12 @@ def test_vendor_catalog_contains_only_active_sellers():
         "KAREN JACQUIE",
         "NORMA",
         "PAULINA",
-        "SANTIAGO",
         "JIME",
         "LESLY",
     ]
-    assert list(app.VENDEDOR_DISPLAY) == app.VENDEDOR_OPTIONS
+    assert "SANTIAGO" not in app.VENDEDOR_OPTIONS
+    # El histórico conserva su etiqueta, pero ya no se ofrece en altas.
+    assert [value for value in app.VENDEDOR_DISPLAY if value != "SANTIAGO"] == app.VENDEDOR_OPTIONS
 
 
 def test_sheet_vendor_list_also_offers_jime_and_lesly(monkeypatch):
@@ -153,7 +154,7 @@ def test_sheet_vendor_list_also_offers_jime_and_lesly(monkeypatch):
     monkeypatch.setattr(app, "read_workbench_form_catalog", lambda _: {"VENDEDOR": ["NORMA", "LESLY"]})
     monkeypatch.setattr(app.st, "secrets", {"gsheets": {"sheet_id": "demo"}})
     try:
-        assert app.get_workbench_form_catalog()["VENDEDOR"] == ["NORMA", "LESLY", "JIME"]
+        assert app.get_workbench_form_catalog()["VENDEDOR"] == app.VENDEDOR_OPTIONS
     finally:
         app.st.session_state.pop("apparatus_form_catalog", None)
 
