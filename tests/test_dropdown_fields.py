@@ -31,11 +31,11 @@ def javascript(js):
 
 def test_partial_sheets_cannot_drop_active_sellers_or_reintroduce_aliases_and_santiago():
     catalog = {'VENDEDOR': ['JIMENA', 'JIME', 'ALEX', 'ALEJANDRO', ' santiago ',
-                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', '',
+                            'Lesly ', 'LESLY', 'JUAN', ' juan ', '👤 JUAN', 'IGNACIO', ' Ignacio ', '👤 IGNACIO', '',
                             'KAREN JACQUIE', 'KAREN JACKIE', ' Karen Jaquie ', 'KAREN ORTEGA', 'Ana Karen'],
                'SERVICIO': ['NO APLICA ', 'Foto, lateral']}
     result = dropdown.with_app_vendors(catalog)
-    assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN', 'IGNACIO']
+    assert result['VENDEDOR'] == [*dropdown.APP_VENDORS, 'JUAN']
     assert result['SERVICIO'] == catalog['SERVICIO']
     assert catalog['VENDEDOR'][0] == 'JIMENA'
     assert dropdown.with_app_vendors({})['VENDEDOR'] == list(dropdown.APP_VENDORS)

@@ -323,7 +323,7 @@ def test_catalog_is_read_once_and_scoped_to_each_sheet(sheets, monkeypatch):
     def read(identifier):
         calls.append(identifier)
         return {app.SHEET_ORDERS: {**FORM_CATALOG, 'VENDEDOR': [
-                    'JIMENA', 'MICHELLE', 'KAREN JACQUIE', 'KAREN JACKIE', 'KAREN ORTEGA', 'ANA KAREN', 'JUAN']},
+                    'JIMENA', 'MICHELLE', 'KAREN JACQUIE', 'KAREN JACKIE', 'KAREN ORTEGA', 'ANA KAREN', 'JUAN', 'Ignacio']},
                 app.SHEET_POLANCO: {**FORM_CATALOG, 'VENDEDOR': ['POLANCO DEMO']}}
     monkeypatch.setattr(app, 'read_order_form_catalogs', read)
     assert app.get_order_form_catalog()['VENDEDOR'] == [*app.dropdown_fields.APP_VENDORS, 'JUAN']
@@ -353,7 +353,7 @@ with patch.multiple(app,
     assert not at.exception
     vendor = next(item for item in at.selectbox if 'VENDEDOR' in item.label)
     assert vendor.options == [app.new_order_option_label('VENDEDOR', value)
-                              for value in (*app.dropdown_fields.APP_VENDORS, 'JUAN', 'IGNACIO')]
+                              for value in (*app.dropdown_fields.APP_VENDORS, 'JUAN')]
     assert vendor.options.count('👤 KAREN JACQUIE') == 1
     assert vendor.options.count('👤 ANA KAREN') == 1
     assert all(label.isupper() for label in vendor.options)

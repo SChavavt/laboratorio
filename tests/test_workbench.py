@@ -144,7 +144,7 @@ def test_vendor_catalog_contains_only_active_sellers():
         "JIME",
         "LESLY",
     ]
-    assert "SANTIAGO" not in app.VENDEDOR_OPTIONS
+    assert not {"SANTIAGO", "IGNACIO"} & set(app.VENDEDOR_OPTIONS)
     # El histórico conserva su etiqueta, pero ya no se ofrece en altas.
     assert [value for value in app.VENDEDOR_DISPLAY if value != "SANTIAGO"] == app.VENDEDOR_OPTIONS
 
@@ -152,7 +152,7 @@ def test_vendor_catalog_contains_only_active_sellers():
 @pytest.mark.parametrize("cached", [False, True])
 def test_apparatus_keeps_original_vendors_even_with_sheet_extras_or_an_old_cache(monkeypatch, cached):
     app.st.session_state.pop("apparatus_form_catalog", None)
-    sheet_catalog = {"VENDEDOR": ["NORMA", "LESLY", "JUAN", "KAREN ORTEGA", "KAREN JACKIE", "SANTIAGO"],
+    sheet_catalog = {"VENDEDOR": ["NORMA", "LESLY", "JUAN", "KAREN ORTEGA", "KAREN JACKIE", "SANTIAGO", "IGNACIO"],
                      "SERVICIO": ["NO APLICA "]}
     monkeypatch.setattr(app, "read_workbench_form_catalog", lambda _: sheet_catalog)
     monkeypatch.setattr(app.st, "secrets", {"gsheets": {"sheet_id": "demo"}})
@@ -372,7 +372,7 @@ calls = st.session_state.setdefault("calls", [])
 with patch.multiple(
     app,
     get_current_user=lambda: "Jime",
-    get_workbench_form_catalog=lambda: {{"VENDEDOR": [*app.VENDEDOR_OPTIONS, "JUAN", "KAREN ORTEGA", "KAREN JACKIE"]}},
+    get_workbench_form_catalog=lambda: {{"VENDEDOR": [*app.VENDEDOR_OPTIONS, "JUAN", "KAREN ORTEGA", "KAREN JACKIE", "IGNACIO"]}},
     generate_unique_columna_1_id=lambda: "12102026-001",
     append_estatus_row=lambda row: calls.append(("row", row)) or 5,
     register_status_change=lambda **kwargs: calls.append(("log", kwargs)),

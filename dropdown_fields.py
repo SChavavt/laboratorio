@@ -7,13 +7,13 @@ from pathlib import Path
 
 from st_aggrid import JsCode
 
-# Lista original de Aparatos, sin Santiago. Alineadores y Polanco también
+# Lista original de Aparatos, sin vendedores inactivos. Alineadores y Polanco también
 # ofrecen estos vendedores; sus opciones de Sheets no amplían Aparatos.
 APP_VENDORS = (
     "ALEJANDRO", "ANA KAREN", "BLANCA", "CASSANDRA", "DANIELA", "SOFI",
     "MICHELLE", "KAREN JACQUIE", "NORMA", "PAULINA", "JIME", "LESLY",
 )
-INACTIVE_VENDORS = frozenset({"SANTIAGO"})
+INACTIVE_VENDORS = frozenset({"SANTIAGO", "IGNACIO"})
 VENDOR_ALIASES = {
     "JIMENA": "JIME", "ALEX": "ALEJANDRO",
     "KAREN ORTEGA": "ANA KAREN",
