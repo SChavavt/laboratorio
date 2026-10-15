@@ -73,6 +73,8 @@ SHEET_POLANCO = "POLANCO"
 SHEET_POLANCO_TIMES = "TIEMPOS_POLANCO"
 SHEET_AERIS = "AERIS"
 SHEET_AERIS_TIMES = "TIEMPOS_AERIS"
+POLANCO_TAB_LABEL = "🏢 Seguimiento Polanco"
+AERIS_TAB_LABEL = "🌬️ AERIS"
 ORDER_TIME_SHEETS = {
     SHEET_ORDERS: SHEET_TIMES,
     SHEET_POLANCO: SHEET_POLANCO_TIMES,
@@ -80,8 +82,8 @@ ORDER_TIME_SHEETS = {
 }
 TRACKING_TAB_SHEETS = {
     "📋 Seguimiento": SHEET_ORDERS,
-    "📋 Seguimiento Polanco": SHEET_POLANCO,
-    "AERIS": SHEET_AERIS,
+    POLANCO_TAB_LABEL: SHEET_POLANCO,
+    AERIS_TAB_LABEL: SHEET_AERIS,
 }
 CASE_ORDER_SHEETS = {
     "alineadores": SHEET_ORDERS,
@@ -198,7 +200,7 @@ ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
     },
     {
         "key": "aeris",
-        "label": "AERIS",
+        "label": AERIS_TAB_LABEL,
         # Los archivos privados nuevos se conectan desde Streamlit Secrets.
         "default_sheet_id": "",
         "default_form_id": "",
@@ -1787,6 +1789,8 @@ def render_aligners_forms_tab() -> None:
         "directamente de sus Google Sheets con la cuenta de servicio compartida."
     )
     forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
+    if st.session_state.get(FORMS_SUB_TABS_KEY) == "AERIS":
+        st.session_state[FORMS_SUB_TABS_KEY] = AERIS_TAB_LABEL
     sub_tabs = st.tabs(
         [form["label"] for form in forms], key=FORMS_SUB_TABS_KEY, on_change="rerun"
     )
@@ -4678,8 +4682,8 @@ def render_board(current_user: str) -> None:
 # agregarlas aquí.
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
-    "📋 Seguimiento Polanco",
-    "AERIS",
+    POLANCO_TAB_LABEL,
+    AERIS_TAB_LABEL,
     case_search.TAB_LABEL,
     FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
@@ -4690,6 +4694,11 @@ ALIGNERS_TAB_LABELS = (
 def render_app_tabs(current_user: str) -> None:
     """Ejecuta únicamente el contenido de la pestaña visible."""
     apply_board_url(current_user)
+    previous_labels = {"📋 Seguimiento Polanco": POLANCO_TAB_LABEL, "AERIS": AERIS_TAB_LABEL}
+    for key in ("aligners_active_tab", f"aligners_primary_tabs_{current_user}"):
+        previous = st.session_state.get(key)
+        if previous in previous_labels:
+            st.session_state[key] = previous_labels[previous]
     tabs = st.tabs(
         ALIGNERS_TAB_LABELS,
         key=f"aligners_primary_tabs_{current_user}",

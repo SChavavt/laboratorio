@@ -505,7 +505,7 @@ with (
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
     assert [tab.label for tab in at.tabs] == [
-        "📋 Seguimiento", "📋 Seguimiento Polanco", "AERIS", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
+        "📋 Seguimiento", "🏢 Seguimiento Polanco", "🌬️ AERIS", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
     ]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[2].markdown
