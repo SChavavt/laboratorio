@@ -505,7 +505,7 @@ with (
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
     assert [tab.label for tab in at.tabs] == [
-        "📋 Seguimiento", "📋 Seguimiento Polanco", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
+        "📋 Seguimiento", "📋 Seguimiento Polanco", "AERIS", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
     ]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[2].markdown
@@ -514,20 +514,20 @@ with (
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[3].markdown] == ["forms ejecutados"]
+    assert [item.value for item in at.tabs[4].markdown] == ["forms ejecutados"]
 
     at.session_state["aligners_primary_tabs_Admin"] = "🔎 Buscar casos"
     at.run()
     assert not at.exception
-    assert [item.value for item in at.tabs[2].markdown] == ["buscador ejecutado"]
-    assert not at.tabs[0].markdown and not at.tabs[3].markdown
+    assert [item.value for item in at.tabs[3].markdown] == ["buscador ejecutado"]
+    assert not at.tabs[0].markdown and not at.tabs[4].markdown
 
     # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[3].markdown
+    assert not at.tabs[4].markdown
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):
@@ -841,6 +841,9 @@ def test_each_aligner_form_points_to_its_google_form(monkeypatch):
     assert configs["td"]["form_id"] == "otro"
     assert configs["marca_blanca"]["form_id"] == "1alX8OXw_iSvrBnYzPLI1Sy5CDg0XiMMIhm-bMJ0G_lI"
     assert configs["otros_productos"]["form_id"] == "1iMRjp1eaHDEvqbUA165fax6_3wlJJVXwY3wDiq87ZFs"
+    assert configs["aeris"]["form_id"] == ""
+    assert configs["aeris"]["sheet_id"] == ""
+    assert configs["aeris"]["worksheet"] == "Respuestas de formulario 1"
 
 
 def test_form_pdf_builds_one_block_per_section():

@@ -71,6 +71,23 @@ SHEET_PROCESSES = "PROCESOS POR PRODUCTO"
 SHEET_TIMES = "TIEMPOS_ALINEADORES"
 SHEET_POLANCO = "POLANCO"
 SHEET_POLANCO_TIMES = "TIEMPOS_POLANCO"
+SHEET_AERIS = "AERIS"
+SHEET_AERIS_TIMES = "TIEMPOS_AERIS"
+ORDER_TIME_SHEETS = {
+    SHEET_ORDERS: SHEET_TIMES,
+    SHEET_POLANCO: SHEET_POLANCO_TIMES,
+    SHEET_AERIS: SHEET_AERIS_TIMES,
+}
+TRACKING_TAB_SHEETS = {
+    "📋 Seguimiento": SHEET_ORDERS,
+    "📋 Seguimiento Polanco": SHEET_POLANCO,
+    "AERIS": SHEET_AERIS,
+}
+CASE_ORDER_SHEETS = {
+    "alineadores": SHEET_ORDERS,
+    "polanco": SHEET_POLANCO,
+    "aeris": SHEET_AERIS,
+}
 ORDER_HEADER_ROW = 2
 
 ID_COLUMN = "No. Orden"
@@ -117,7 +134,7 @@ TIMES_HEADERS = [
 # ==============================
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
-# Los 3 formularios usan "Favor de subir archivos en formato ZIP: - Escaneos
+# Los formularios originales usan "Favor de subir archivos en formato ZIP: - Escaneos
 # STL..." (no "adjuntar archivos STL" como en la app de aparatos), por eso el
 # hint es distinto aquí.
 FORMS_FILE_COLUMN_HINT = "archivos en formato ZIP"
@@ -178,6 +195,13 @@ ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
         "label": "📦 Otros Productos",
         "default_sheet_id": "1FFjO3RTMRZQ4OBfoL4thy_8GpIxgdlASkWggN_RMlRU",
         "default_form_id": "1iMRjp1eaHDEvqbUA165fax6_3wlJJVXwY3wDiq87ZFs",
+    },
+    {
+        "key": "aeris",
+        "label": "AERIS",
+        # Los archivos privados nuevos se conectan desde Streamlit Secrets.
+        "default_sheet_id": "",
+        "default_form_id": "",
     },
 )
 
@@ -917,7 +941,7 @@ def login_user(username: str, password: str) -> bool:
 
 
 def logout_user() -> None:
-    for namespace in ("aligners", "polanco_aligners"):
+    for namespace in ("aligners", "polanco_aligners", "aeris_aligners"):
         order_detail.clear_drafts(namespace)
     for key in [
         "aligners_authenticated_user",
@@ -1031,7 +1055,7 @@ def get_worksheet(sheet_name: str):
     try:
         return run_gsheets_request(lambda: spreadsheet.worksheet(sheet_name))
     except gspread.WorksheetNotFound:
-        if sheet_name not in (SHEET_TIMES, SHEET_POLANCO_TIMES):
+        if sheet_name not in ORDER_TIME_SHEETS.values():
             raise
         return run_gsheets_request(
             lambda: spreadsheet.add_worksheet(
@@ -1045,17 +1069,18 @@ def get_worksheet(sheet_name: str):
 def current_order_sheet() -> str:
     """El destino pertenece a la sesión; nunca cambia globals compartidos."""
     value = st.session_state.get("aligners_order_sheet", SHEET_ORDERS)
-    return value if value in (SHEET_ORDERS, SHEET_POLANCO) else SHEET_ORDERS
+    return value if value in ORDER_TIME_SHEETS else SHEET_ORDERS
 
 
 def current_times_sheet() -> str:
-    return SHEET_POLANCO_TIMES if current_order_sheet() == SHEET_POLANCO else SHEET_TIMES
+    return ORDER_TIME_SHEETS[current_order_sheet()]
 
 
 def tracking_key(key: str) -> str:
-    """Conserva las claves existentes y aísla tabla, filtros y formularios Polanco."""
-    if current_order_sheet() == SHEET_POLANCO and not key.startswith("polanco_"):
-        return "polanco_" + key
+    """Aísla tablas, filtros, borradores y altas de cada seguimiento."""
+    prefix = {SHEET_POLANCO: "polanco_", SHEET_AERIS: "aeris_"}.get(current_order_sheet(), "")
+    if prefix and not key.startswith(prefix):
+        return prefix + key
     return key
 
 
@@ -1754,18 +1779,18 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
 
 
 def render_aligners_forms_tab() -> None:
-    """Agrupa los 3 formularios de prescripción en subpestañas de solo lectura."""
+    """Agrupa los formularios de prescripción en subpestañas de solo lectura."""
 
     st.subheader(FORMS_TAB_LABEL)
     st.caption(
-        "Respuestas y archivos de los 3 formularios de prescripción, leídos "
+        f"Respuestas y archivos de los {len(ALIGNERS_FORMS)} formularios de prescripción, leídos "
         "directamente de sus Google Sheets con la cuenta de servicio compartida."
     )
     forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
     sub_tabs = st.tabs(
         [form["label"] for form in forms], key=FORMS_SUB_TABS_KEY, on_change="rerun"
     )
-    # Sólo se lee y muestra la subpestaña abierta: abrir las 3 marcaba como
+    # Sólo se lee y muestra la subpestaña abierta: abrir todas marcaba como
     # vista la respuesta más nueva de formularios que nadie estaba mirando.
     for form, tab in zip(forms, sub_tabs):
         if not tab.open:
@@ -1784,7 +1809,7 @@ def rerun_active_tab() -> None:
 
 
 def read_orders_df(sheet_name: str | None = None) -> pd.DataFrame:
-    """Pedidos de la hoja activa, o de ``sheet_name`` (el tablero lee ambas)."""
+    """Pedidos de la hoja activa, o de ``sheet_name`` (tablero y buscador)."""
     values = read_order_values(sheet_name or current_order_sheet())
     if len(values) < ORDER_HEADER_ROW:
         return pd.DataFrame()
@@ -1808,7 +1833,9 @@ def read_times_df(sheet_name: str | None = None) -> pd.DataFrame:
     headers = [canonical_column_name(item) for item in ensure_unique_column_names(values[0])]
     rows = normalize_rows(values[1:], headers)
     frame = pd.DataFrame(rows, columns=headers)
-    order_sheet = SHEET_POLANCO if (sheet_name or current_times_sheet()) == SHEET_POLANCO_TIMES else SHEET_ORDERS
+    times_sheet = sheet_name or current_times_sheet()
+    order_sheet = next((orders for orders, times in ORDER_TIME_SHEETS.items()
+                        if times == times_sheet), SHEET_ORDERS)
     return canonical_times_df(frame, read_orders_df(order_sheet).get(ID_COLUMN, []))
 
 
@@ -1943,7 +1970,7 @@ def register_status_change(
     definitions: dict[str, ProcessDefinition],
     comment: str = "",
 ) -> None:
-    """Cierra la etapa anterior y abre la nueva medición en TIEMPOS_ALINEADORES."""
+    """Cierra la etapa anterior y abre la medición de la hoja activa."""
 
     if current_user in VIEW_AND_CREATE_USERS and clean_cell(previous_status).strip():
         raise ValueError("Tu usuario no tiene permiso para modificar pedidos existentes.")
@@ -2523,6 +2550,9 @@ def validate_delta(
     invalid_columns = set(delta) - aligners_editable_columns(row.index)
     if invalid_columns:
         errors.append(f"{identifier}: no se puede editar {', '.join(sorted(invalid_columns))}.")
+    if (current_order_sheet() == SHEET_AERIS and PRODUCT_COLUMN in delta
+            and product_key(delta[PRODUCT_COLUMN]) != product_key(SHEET_AERIS)):
+        errors.append(f"{identifier}: el seguimiento AERIS sólo admite el producto AERIS.")
     if reactivate and set(delta) - {STATUS_COLUMN}:
         errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
     for column in {column for column in delta if column in DATE_COLUMNS or column.startswith("FECHA")}:
@@ -2768,7 +2798,7 @@ def tracking_columns(available_columns: Iterable[str]) -> list[str]:
     columns = list(available_columns)
     visible = [column for column in GRID_COLUMNS if column in columns]
     # La hoja puede incorporar más campos propios sin cambiar la app.
-    if current_order_sheet() == SHEET_POLANCO:
+    if current_order_sheet() in (SHEET_POLANCO, SHEET_AERIS):
         extras = [column for column in columns
                   if column not in visible and not column.startswith("_")]
         position = next((i for i, column in enumerate(visible)
@@ -2807,15 +2837,23 @@ def parse_order_form_catalogs(metadata: dict[str, Any]) -> dict[str, dict[str, l
     """Lee opciones nativas de tabla, incluso las que todavía no tienen pedidos."""
     return {title: catalog for title, catalog in
             order_detail.parse_sheet_catalogs(metadata, canonical_column_name).items()
-            if title in (SHEET_ORDERS, SHEET_POLANCO)}
+            if title in ORDER_TIME_SHEETS}
 
 
 @st.cache_data(ttl=3600)
 def read_order_form_catalogs(spreadsheet_id: str) -> dict[str, dict[str, list[str]]]:
     spreadsheet = get_spreadsheet_by_id(spreadsheet_id)
+    # No incluir rangos de una hoja ausente: Sheets rechaza toda la consulta.
+    available = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(title))",
+    }))
+    titles = {sheet.get("properties", {}).get("title") for sheet in available.get("sheets", [])}
+    ranges = [f"'{name}'!A2:CB12" for name in ORDER_TIME_SHEETS if name in titles]
+    if not ranges:
+        return {}
     metadata = run_gsheets_request(lambda: spreadsheet.fetch_sheet_metadata(params={
         "includeGridData": "true",
-        "ranges": ["'ALINEADORES (nuevo)'!A2:CA12", "'POLANCO'!A2:CB12"],
+        "ranges": ranges,
         "fields": "sheets(properties(title),tables(range,columnProperties(columnName,dataValidationRule)),data(startRow,rowData(values(formattedValue,dataValidation))))",
     }))
     return parse_order_form_catalogs(metadata)
@@ -2826,7 +2864,12 @@ def get_order_form_catalog() -> dict[str, list[str]]:
     if catalogs is None:
         catalogs = read_order_form_catalogs(configured_spreadsheet_id())
         st.session_state["aligners_form_catalogs"] = catalogs
-    return dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}))
+    catalog = dropdown_fields.with_app_vendors(catalogs.get(current_order_sheet(), {}))
+    if current_order_sheet() == SHEET_AERIS:
+        # Esta hoja sólo atiende AERIS, incluso si copió una lista de Polanco.
+        catalog[PRODUCT_COLUMN] = [value for value in catalog.get(PRODUCT_COLUMN, [])
+                                   if product_key(value) == product_key(SHEET_AERIS)] or [SHEET_AERIS]
+    return catalog
 
 
 def tracking_form_catalog() -> dict:
@@ -2896,7 +2939,7 @@ def _create_order(values: dict[str, Any], current_user: str,
     if catalog is not None:
         for column in NEW_ORDER_SELECT_COLUMNS:
             selected = values.get(column)
-            if selected:
+            if selected and (catalog.get(column) or current_order_sheet() != SHEET_AERIS):
                 if not dropdown_fields.valid_value(selected, catalog.get(column, []), multiple=column in MULTI_SELECT_COLUMNS):
                     raise ValueError(f"La opción de {column} no pertenece al catálogo de Sheets.")
                 row[column] = (dropdown_fields.join_values(dropdown_fields.split_values(selected, catalog[column]))
@@ -2905,6 +2948,8 @@ def _create_order(values: dict[str, Any], current_user: str,
     for column in (PRODUCT_COLUMN, "NOMBRE DOCTOR", "NOMBRE PACIENTE"):
         if not row.get(column):
             raise ValueError(f"Completa {column}.")
+    if current_order_sheet() == SHEET_AERIS and product_key(row[PRODUCT_COLUMN]) != product_key(SHEET_AERIS):
+        raise ValueError("El seguimiento AERIS sólo admite el producto AERIS.")
     definition = get_process_definition(row[PRODUCT_COLUMN], definitions)
     if not definition or not definition.normal_statuses:
         raise ValueError("El producto no tiene un flujo configurado en PROCESOS POR PRODUCTO.")
@@ -2971,7 +3016,13 @@ def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
     except Exception as exc:
         st.error(f"No se pudieron cargar las opciones de Sheets: {exc}")
         return
-    missing = [column for column in NEW_ORDER_SELECT_COLUMNS if not catalog.get(column)]
+    # AERIS tiene su propio esquema, sin TIPO ni ETAPA SOLICITUD.
+    select_columns = list(NEW_ORDER_SELECT_COLUMNS)
+    if current_order_sheet() == SHEET_AERIS:
+        orders = snapshot.get("orders", pd.DataFrame())
+        select_columns = [column for column in select_columns if column in orders.columns]
+    missing = [column for column in select_columns if not catalog.get(column)
+               and current_order_sheet() != SHEET_AERIS]
     if missing:
         st.warning("Faltan listas en la tabla de Sheets: " + ", ".join(missing) +
                    ". Configúralas y pulsa Actualizar datos.")
@@ -2985,6 +3036,9 @@ def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
         row: dict[str, Any] = {}
 
         def select_field(container, column):
+            if not catalog.get(column):
+                return container.text_input(f"{NEW_ORDER_FIELD_ICONS[column]} {column}",
+                    key=tracking_key(f"aligners_new_{column}_{version}"))
             if column in MULTI_SELECT_COLUMNS:
                 values = container.multiselect(f"{NEW_ORDER_FIELD_ICONS[column]} {column}",
                     catalog[column], placeholder="Elige una o varias opciones",
@@ -2993,7 +3047,8 @@ def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
                 return dropdown_fields.join_values(values)
             return container.selectbox(
                 f"{NEW_ORDER_FIELD_ICONS[column]} {column}" + (" *" if column == PRODUCT_COLUMN else ""),
-                catalog[column], index=None, placeholder="Selecciona una opción",
+                catalog[column], index=0 if current_order_sheet() == SHEET_AERIS and column == PRODUCT_COLUMN else None,
+                placeholder="Selecciona una opción",
                 format_func=lambda value: new_order_option_label(column, value),
                 key=tracking_key(f"aligners_new_{column}_{version}"),
             )
@@ -3004,8 +3059,9 @@ def render_new_order(current_user: str, snapshot: dict[str, Any]) -> None:
         row["NOMBRE PACIENTE"] = first[2].text_input("👤 NOMBRE PACIENTE *")
         for group in (("TIPO", "ETAPA SOLICITUD", "VENDEDOR"),
                       ("SERVICIO", "PAQUETE MARCA BLANCA", "ARCHIVOS RECIBIDOS")):
-            columns = st.columns(3)
-            for container, column in zip(columns, group):
+            fields = [column for column in group if column in select_columns]
+            columns = st.columns(len(fields)) if fields else []
+            for container, column in zip(columns, fields):
                 row[column] = select_field(container, column)
         if current_order_sheet() == SHEET_POLANCO:
             comments, balance = st.columns([2, 1])
@@ -3464,22 +3520,29 @@ def render_shipments_section(namespace: str, identifier: str, plan: ShipmentBloc
 
 
 def invoice_case_type(sheet_name: str | None = None) -> str:
-    return "polanco" if (sheet_name or current_order_sheet()) == SHEET_POLANCO else "alineadores"
+    selected_sheet = sheet_name or current_order_sheet()
+    return next((case_type for case_type, order_sheet in CASE_ORDER_SHEETS.items()
+                 if order_sheet == selected_sheet), "alineadores")
 
 
 def verify_invoice_case(case_type: str, identifier: str) -> None:
-    if case_type not in {"alineadores", "polanco"}:
+    if case_type not in CASE_ORDER_SHEETS:
         raise ValueError("Selecciona un caso de Alineadores válido.")
-    sheet_name = SHEET_POLANCO if case_type == "polanco" else SHEET_ORDERS
+    sheet_name = CASE_ORDER_SHEETS[case_type]
     read_order_values.clear(sheet_name)
     case_invoices.require_unique_case(read_orders_df(sheet_name), identifier, ID_COLUMN)
 
 
 def render_case_search(current_user: str) -> None:
     def load_cases():
-        frames = [case_search.source_cases(read_orders_df(sheet_name), invoice_case_type(sheet_name), ID_COLUMN)
-                  for sheet_name in (SHEET_ORDERS, SHEET_POLANCO)]
-        return pd.concat(frames, ignore_index=True)
+        frames = []
+        for sheet_name in ORDER_TIME_SHEETS:
+            try:
+                orders = read_orders_df(sheet_name)
+            except gspread.WorksheetNotFound:
+                continue
+            frames.append(case_search.source_cases(orders, invoice_case_type(sheet_name), ID_COLUMN))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     case_search.render(current_user, namespace="alineadores", load_cases=load_cases,
                        verify_case=verify_invoice_case, rerun=rerun_active_tab)
 
@@ -4099,10 +4162,11 @@ def render_processes(current_user: str) -> None:
 # Tablero para pantalla
 # ==============================
 BOARD_TAB_LABEL = "📺 Tablero"
-BOARD_ALL_SOURCES = "Ambas hojas"
+BOARD_ALL_SOURCES = "Todas las hojas"
 BOARD_SOURCES = (
     ("Alineadores", SHEET_ORDERS, SHEET_TIMES),
     ("Polanco", SHEET_POLANCO, SHEET_POLANCO_TIMES),
+    ("AERIS", SHEET_AERIS, SHEET_AERIS_TIMES),
 )
 BOARD_REFRESH_SECONDS = 60
 BOARD_CARDS_PER_STAGE = 5
@@ -4355,7 +4419,7 @@ def board_view_model(
         board_card(
             row,
             rank=index + 1 if index < priority_rows else None,
-            show_source=source_filter == BOARD_ALL_SOURCES and row.get("HOJA") == "Polanco",
+            show_source=source_filter == BOARD_ALL_SOURCES and row.get("HOJA") in ("Polanco", "AERIS"),
             signal_keys=signal_keys,
         )
         for index, (_, row) in enumerate(board.iterrows())
@@ -4458,11 +4522,15 @@ def board_source_options() -> list[str]:
 
 def read_board_sources(source_filter: str) -> list[tuple[str, pd.DataFrame, pd.DataFrame]]:
     """Lee cada hoja por nombre; no toca la hoja activa de Seguimiento."""
-    return [
-        (label, read_orders_df(orders_sheet), read_times_df(times_sheet))
-        for label, orders_sheet, times_sheet in BOARD_SOURCES
-        if source_filter in (BOARD_ALL_SOURCES, label)
-    ]
+    sources = []
+    for label, orders_sheet, times_sheet in BOARD_SOURCES:
+        if source_filter not in (BOARD_ALL_SOURCES, label):
+            continue
+        try:
+            sources.append((label, read_orders_df(orders_sheet), read_times_df(times_sheet)))
+        except gspread.WorksheetNotFound:
+            continue
+    return sources
 
 
 def load_board_model(source_filter: str, *, screen: bool) -> dict[str, Any]:
@@ -4587,7 +4655,7 @@ def render_board_live(source_filter: str, screen: bool) -> None:
 
 
 def render_board(current_user: str) -> None:
-    """Tablero de sólo lectura para pantalla con Alineadores y Polanco juntos."""
+    """Tablero de sólo lectura de los seguimientos independientes."""
     screen = bool(st.session_state.get(BOARD_SCREEN_KEY, False))
     apply_board_css(current_user, screen=screen)
     if screen:
@@ -4611,6 +4679,7 @@ def render_board(current_user: str) -> None:
 ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     "📋 Seguimiento Polanco",
+    "AERIS",
     case_search.TAB_LABEL,
     FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
@@ -4633,13 +4702,17 @@ def render_app_tabs(current_user: str) -> None:
         with tab:
             st.session_state["aligners_active_tab"] = label
             st.session_state["aligners_order_sheet"] = (
-                SHEET_POLANCO if label == "📋 Seguimiento Polanco" else SHEET_ORDERS
+                TRACKING_TAB_SHEETS.get(label, SHEET_ORDERS)
             )
-            if label in ("📋 Seguimiento", "📋 Seguimiento Polanco"):
-                ensure_times_headers()
+            if label in TRACKING_TAB_SHEETS:
                 if st.session_state.pop("aligners_tab_warning", False):
                     st.warning("Guarda o descarta los cambios antes de cambiar de pestaña.")
-                render_workbench(current_user)
+                try:
+                    ensure_times_headers()
+                    render_workbench(current_user)
+                except gspread.WorksheetNotFound:
+                    st.error(f"No se encontró la hoja {current_order_sheet()} en Control ALINEADORES. "
+                             "Revisa su nombre y recarga la página después de agregarla.")
             elif label == "🚨 Alertas y pausas":
                 render_alerts(current_user)
             elif label == "⚙️ Procesos y plazos":

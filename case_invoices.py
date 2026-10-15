@@ -20,7 +20,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit.runtime.caching.cache_errors import CacheError, UnserializableReturnValueError
 from user_permissions import APP_USERS, ORDER_EDIT_USERS, can_edit_orders
 
-CASE_TYPES = {"aparatos": "Aparatos", "alineadores": "Alineadores", "polanco": "Polanco"}
+CASE_TYPES = {"aparatos": "Aparatos", "alineadores": "Alineadores", "polanco": "Polanco", "aeris": "AERIS"}
 ALLOWED_USERS = ORDER_EDIT_USERS
 VIEW_USERS = frozenset(APP_USERS)
 SERVICE_SECTION = "📋 Servicio y archivos"

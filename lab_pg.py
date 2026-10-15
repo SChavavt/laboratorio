@@ -2032,7 +2032,7 @@ def login_user(username: str, password: str) -> bool:
 def logout_user() -> None:
     """Cierra sesión y limpia selección de usuario/pestaña."""
 
-    for namespace in ("apparatus", "aligners", "polanco_aligners"):
+    for namespace in ("apparatus", "aligners", "polanco_aligners", "aeris_aligners"):
         order_detail.clear_drafts(namespace)
 
     for key in [
