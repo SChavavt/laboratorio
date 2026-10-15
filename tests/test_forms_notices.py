@@ -311,7 +311,7 @@ def test_aeris_notice_opens_aeris_response_without_changing_polanco_orders():
     assert not at.exception
     assert at.session_state[app.LAB_WORKSPACE_STATE_KEY] == app.LAB_VIEW_ALIGNERS
     assert at.session_state["aligners_primary_tabs_Admin"] == "📥 Recibidos de Forms"
-    assert at.session_state["aligners_forms_sub_tabs"] == "AERIS"
+    assert at.session_state["aligners_forms_sub_tabs"] == "🌬️ AERIS"
     assert at.session_state["forms_notices_focus"] == {"aeris": "2026-10-02T12:52:50"}
     assert at.session_state["aligners_order_sheet"] == app.alineadores_pg.SHEET_POLANCO
 

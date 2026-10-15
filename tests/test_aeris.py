@@ -150,11 +150,11 @@ def test_snapshots_filters_drafts_and_pending_tab_guard_are_isolated(sheets):
         snapshots[source] = app.get_snapshot("Jime")
         assert snapshots[source]["orders"].iloc[0]["DETALLE COMENTARIOS"] == source
         app.st.session_state[app.tracking_key("aligners_signal_filter")] = source
-    app.st.session_state.update({"aligners_active_tab": "AERIS",
-        "aligners_primary_tabs_Jime": "📋 Seguimiento Polanco",
+    app.st.session_state.update({"aligners_active_tab": "🌬️ AERIS",
+        "aligners_primary_tabs_Jime": "🏢 Seguimiento Polanco",
         "order_detail_drafts_aeris_aligners": {"001": {"changes": {"SERVICIO": "Otro"}}}})
     app.guard_tracking_tab_change("Jime")
-    assert app.st.session_state["aligners_primary_tabs_Jime"] == "AERIS"
+    assert app.st.session_state["aligners_primary_tabs_Jime"] == "🌬️ AERIS"
     assert app.st.session_state["aligners_tab_warning"]
     app.reset_workbench()
     assert "aeris_aligners_snapshot" not in app.st.session_state
@@ -268,14 +268,14 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
      patch.object(app, 'read_order_form_catalogs', lambda _: {{app.SHEET_AERIS: {catalog!r}}}), \\
      patch.object(app, 'configured_spreadsheet_id', lambda: 'fake'), \\
      patch.object(app, 'create_order', create):
-    st.session_state['aligners_primary_tabs_Jime'] = st.session_state.get('test_tab', '📋 Seguimiento Polanco')
+    st.session_state['aligners_primary_tabs_Jime'] = st.session_state.get('test_tab', '🏢 Seguimiento Polanco')
     if st.session_state.get('test_open'):
         st.session_state['aeris_aligners_new_expander'] = True
     app.render_app_tabs('Jime')
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception and not at.text_input
-    at.session_state["test_tab"] = "AERIS"
+    at.session_state["test_tab"] = "🌬️ AERIS"
     at.run()
     assert not at.exception and not at.text_input
     assert at.session_state["aligners_order_sheet"] == app.SHEET_AERIS

@@ -3982,13 +3982,7 @@ def render_nuevo_pedido_tab() -> None:
     if "nuevo" not in USER_VISIBLE_TABS.get(get_current_user(), []):
         st.error("Tu usuario no tiene permiso para agregar pedidos.")
         return
-    st.subheader("➕ Nuevo pedido")
-    st.caption(
-        "Captura los datos principales en ESTATUS APARATOS. "
-        "La fecha de recepción se guarda automáticamente con la fecha de hoy; "
-        "la fecha para entrega la calcula la hoja (envío a Stefano + 6 días hábiles) "
-        "y la salida proyectada por etapas se ve en Entrega estimada."
-    )
+    st.subheader("Datos del pedido")
     render_success_feedback(
         "nuevo_pedido_success_message",
         "nuevo_pedido_show_celebration",
@@ -3999,29 +3993,11 @@ def render_nuevo_pedido_tab() -> None:
     form_key = f"form_nuevo_pedido_{form_version}"
 
     with st.form(form_key):
-        is_admin_user = get_current_user() in ADMIN_ACCESS_USERS
         fecha_recepcion = app_today()
-
-        if is_admin_user:
-            admin_info_cols = st.columns(2)
-            with admin_info_cols[0]:
-                st.info(
-                    "El ID único de Columna 1 se generará automáticamente al guardar "
-                    "con formato DDMMAAAA-NNN."
-                )
-                st.info(
-                    f"{display_field_label('FECHA DE RECEPCIÓN')}: "
-                    f"{format_sheet_date(fecha_recepcion)} (automática al guardar)."
-                )
-            with admin_info_cols[1]:
-                st.info(
-                    f"{display_field_label('FECHA PARA ENTREGA')}: la calcula la hoja "
-                    "con FECHA/HORA ENVÍO STEFANO + 6 días hábiles; la app no la escribe."
-                )
-                st.info(
-                    "🚚 ENTREGA ESTIMADA: Seguimiento proyecta la salida sumando el tiempo "
-                    "de las etapas pendientes; el pago no la detiene."
-                )
+        st.caption(
+            f"Recepción automática: {fecha_recepcion:%d/%m/%Y} · "
+            "Consulta la entrega estimada en Seguimiento."
+        )
 
         first_row_cols = st.columns(3)
         second_row_cols = st.columns(3)
