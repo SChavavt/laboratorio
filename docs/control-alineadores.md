@@ -109,11 +109,12 @@ opción; la etapa usa el mismo color que en la tabla.
 En **📋 Servicio y archivos**, **Adjuntar facturas PDF** permite subir varios PDFs
 a la orden mediante **Guardar facturas**, y agregar más en cargas posteriores.
 El guardado conserva los campos pendientes de la ficha. Las facturas se guardan
-en el S3 del laboratorio, por separado para Alineadores y Polanco:
-`facturas/alineadores/<folio>/` y `facturas/polanco/<folio>/`. Compartir un folio
-con Aparatos o Polanco no mezcla sus archivos. No hay que agregar columnas a Sheets.
+en el S3 del laboratorio, por separado para Alineadores, Polanco y AERIS:
+`facturas/alineadores/<folio>/`, `facturas/polanco/<folio>/` y
+`facturas/aeris/<folio>/`. Compartir un folio entre hojas no mezcla sus archivos.
+No hay que agregar columnas a Sheets.
 
-La nueva pestaña **🔎 Buscar casos** consulta Alineadores y Polanco, incluidas
+La pestaña **🔎 Buscar casos** consulta Alineadores, Polanco y AERIS, incluidas
 órdenes enviadas, canceladas y pausadas, por paciente, doctor, folio o producto.
 El resultado identifica la hoja de origen y muestra el resumen de la orden,
 sus facturas y los enlaces existentes de sus columnas de archivos.
@@ -157,8 +158,9 @@ capturan en la ficha del pedido, dentro del desplegable
 ## Tablero para pantalla (📺 Tablero)
 
 Pestaña de sólo lectura pensada para dejarse en una TV. Junta los pedidos activos
-de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
-`TIEMPOS_POLANCO`) sin cambiar la hoja activa de Seguimiento.
+de `ALINEADORES (nuevo)`, `POLANCO` y `AERIS` (con sus bitácoras
+`TIEMPOS_ALINEADORES`, `TIEMPOS_POLANCO` y `TIEMPOS_AERIS`) sin cambiar la hoja
+activa de Seguimiento.
 
 - **Encabezado:** pedidos activos por hoja, semáforo de la etapa actual (el mismo
   de Seguimiento), el pedido más antiguo y lo recibido/enviado esta semana y hoy.
@@ -167,7 +169,7 @@ de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
 - **Flujo por etapa:** una columna por etapa normal, en el orden común de
   `PROCESOS POR PRODUCTO`, y aparte las pausas. Cada tarjeta muestra paciente,
   antigüedad, folio, tiempo consumido del plazo de la etapa y, si viene de
-  Polanco, la marca `POL`. Las tarjetas van de la más antigua a la más reciente.
+  Polanco o AERIS, la marca `POL` o `AER`. Las tarjetas van de la más antigua a la más reciente.
   Una etapa que no está en `PROCESOS POR PRODUCTO` aparece en “Otras etapas”.
 - **Prioridad por antigüedad:** los 10 pedidos activos más antiguos (`#1` … `#10`,
   la misma marca aparece en su tarjeta).
@@ -186,8 +188,8 @@ de `ALINEADORES (nuevo)` y `POLANCO` (con sus bitácoras `TIEMPOS_ALINEADORES` y
 
 ## Recibidos de Forms (alineadores)
 
-Las subpestañas Prescripción Alineadores TD, Prescripción Marca Blanca y Otros
-Productos leen las respuestas de cada Google Sheet de respuestas y, además, la
+Las subpestañas Prescripción Alineadores TD, Prescripción Marca Blanca, Otros
+Productos y AERIS leen las respuestas de cada Google Sheet de respuestas y, además, la
 estructura actual de su Google Form con Google Forms API.
 
 - La tabla, la ficha y el PDF de cada respuesta siguen las secciones y el orden
@@ -201,14 +203,14 @@ estructura actual de su Google Form con Google Forms API.
   servicio y cada formulario compartido como editor con su `client_email`. Si
   falta alguno, la pestaña lo avisa y el PDF usa el orden de columnas del Sheet.
 - Los IDs de los formularios vienen por defecto en `ALIGNERS_FORMS`; se pueden
-  cambiar con `[google_forms_alineadores.<td|marca_blanca|otros_productos>]`
+  cambiar con `[google_forms_alineadores.<td|marca_blanca|otros_productos|aeris>]`
   `form_id = "..."` (igual que `sheet_id` y `worksheet`).
 
 ## Avisos de respuestas nuevas de Forms
 
 Con la app abierta, cada usuario recibe un aviso cuando llega una respuesta
-nueva a un formulario que puede abrir: Admin, Jime y Lesly los 4 (Aparatos
-sinterizados y los 3 de alineadores); Vero los 3 de alineadores.
+nueva a un formulario que puede abrir: Admin, Jime, Lesly, Juan y Paula los 5
+(Aparatos sinterizados y los 4 de alineadores, incluido AERIS); Vero los 4 de alineadores.
 
 - La app revisa los Sheets de respuestas cada minuto (`forms_notices.py`, con
   su propio caché de 55 s que no se vacía al guardar). Cada respuesta nueva sale
@@ -241,17 +243,27 @@ python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/t
 ```
 
 
-### Altas y seguimiento Polanco
+### Altas y seguimientos Polanco y AERIS
 
 - Aparatos: “Nuevo pedido” se encuentra en un desplegable cerrado dentro de
   Seguimiento, conservando los permisos de alta existentes. Ya no ocupa una pestaña.
-- Alineadores: Seguimiento y Seguimiento Polanco tienen un desplegable “Nueva orden”.
+- Alineadores: Seguimiento, Seguimiento Polanco y AERIS tienen un desplegable “Nueva orden”.
   El formulario se carga sólo al abrirlo, incluso si no hay pedidos activos.
 - Polanco lee y escribe la pestaña `POLANCO` del mismo archivo Control ALINEADORES.
   Conserva los campos adicionales, incluido `ADEUDO`, y las columnas repetidas de envíos.
-- Los procesos de ambas pestañas provienen de `PROCESOS POR PRODUCTO`. Los tiempos
+- AERIS lee y escribe la pestaña `AERIS` de ese archivo, con encabezados en la fila 2.
+  Su alta sólo ofrece el producto AERIS y usa los campos existentes de esa hoja;
+  no requiere `TIPO` ni `ETAPA SOLICITUD`. Las listas nativas se respetan cuando
+  existen; los campos opcionales sin catálogo se capturan como texto.
+  El producto AERIS puede seguir usándose en Polanco: las órdenes de cada hoja
+  son independientes y no se copian ni se sincronizan automáticamente.
+- Los procesos de las tres pestañas provienen de `PROCESOS POR PRODUCTO`. Los tiempos
   de Polanco se registran en `TIEMPOS_POLANCO`, creada automáticamente al entrar
   por primera vez. No necesita secrets nuevos ni mezcla órdenes con igual folio.
+- AERIS tiene su propia bitácora `TIEMPOS_AERIS`, creada automáticamente al entrar.
+  Su flujo empieza en `LISTO STLs PARA IMPRESIÓN`, continúa por
+  `EN IMPRESIÓN Y CONFECCIÓN` y `LISTO P/ENVÍO`, y termina en `ENVIADO`.
+  `IMPRESIÓN EN PAUSA` y `CANCELADO` conservan su tratamiento opcional.
 - Las nuevas órdenes requieren producto, doctor y paciente. El folio se genera
   automáticamente al guardar con formato DDMMAAAA-NNN, igual que en Aparatos.
   La recepción es la fecha actual y la etapa inicial es la primera etapa normal
@@ -266,6 +278,28 @@ python -m pytest -q tests/test_workbench.py tests/test_alineadores_pg.py tests/t
   cambios pendientes deben guardarse o descartarse antes de cambiar de pestaña.
 - Si la orden se guarda pero falla la bitácora, la app lo informa y permite reparar
   la medición; no solicita volver a crear la orden.
+
+### Formulario AERIS
+
+En **Recibidos de Forms → AERIS** se leen las respuestas del archivo conectado,
+pestaña `Respuestas de formulario 1`. Los identificadores del archivo y del
+formulario se configuran únicamente en Streamlit Secrets; no se publican en el
+repositorio. Agrega esta sección en **Settings → Secrets**, con los IDs reales:
+
+```toml
+[google_forms_alineadores.aeris]
+sheet_id = "ID_DEL_ARCHIVO_DE_RESPUESTAS"
+worksheet = "Respuestas de formulario 1"
+form_id = "ID_INTERNO_DEL_FORMULARIO"
+```
+
+`form_id` es el ID del enlace de edición, no el ID público `1FAIpQL...` del enlace
+que usan los pacientes para responder. Sin `sheet_id`, la subpestaña indica que
+falta conectar la hoja y la campana no intenta leerla. Si falta acceso a la
+estructura del formulario, la ficha/PDF usa el orden de columnas de la hoja.
+La cuenta de servicio existente necesita acceso al archivo de respuestas y al
+formulario, igual que con los otros formularios. Las respuestas son de consulta;
+el alta de órdenes se hace con **Nueva orden** en el seguimiento que corresponda.
 
 ## Solicitudes de guía
 

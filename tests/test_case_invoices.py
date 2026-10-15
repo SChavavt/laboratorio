@@ -80,10 +80,13 @@ def test_many_pdfs_append_preserve_names_paginate_and_do_not_collide_across_case
     store.upload('aparatos', '0012', [uploads[0]], 'Admin', lambda: None)
     store.upload('alineadores', '001', [uploads[0]], 'Admin', lambda: None)
     store.upload('polanco', '001', [uploads[0]], 'Admin', lambda: None)
+    store.upload('aeris', '001', [uploads[0]], 'Admin', lambda: None)
     assert len(store.list('aparatos', '001')) == 4
     assert sorted(file.name for file in store.list('aparatos', '001')).count('Factura México.pdf') == 2
     assert len(store.list('aparatos', '0012')) == len(store.list('alineadores', '001')) == len(store.list('polanco', '001')) == 1
-    assert len(store.client.objects) == 7
+    assert len(store.list('aeris', '001')) == 1
+    assert invoices.case_prefix('aeris', '001') != invoices.case_prefix('polanco', '001')
+    assert len(store.client.objects) == 8
     assert all(write['ContentType'] == 'application/pdf' and 'ACL' not in write for write in store.client.writes)
     assert invoices.case_prefix('aparatos', '001') != invoices.case_prefix('aparatos', '1')
 
@@ -398,7 +401,7 @@ import lab_pg as lab
 import alineadores_pg as align
 st.session_state.setdefault('case_type', 'aparatos')
 case_type = st.session_state['case_type']
-st.session_state['aligners_order_sheet'] = align.SHEET_POLANCO if case_type == 'polanco' else align.SHEET_ORDERS
+st.session_state['aligners_order_sheet'] = {{'polanco': align.SHEET_POLANCO, 'aeris': align.SHEET_AERIS}}.get(case_type, align.SHEET_ORDERS)
 id_column = lab.ID_COLUMN if case_type == 'aparatos' else align.ID_COLUMN
 row = {{id_column: '001', 'NOMBRE DOCTOR': 'Doctora demo', 'NOMBRE PACIENTE': 'Paciente demo',
        'APARATO': 'MSE', 'PRODUCTO': 'Graphy', 'STATUS': 'REVISIÓN DE ARCHIVOS', 'SERVICIO': 'PLANEACIÓN'}}
@@ -421,7 +424,7 @@ with patch.object(lab, 'get_workbench_form_catalog', lambda: catalog), \
 '''
 
 
-@pytest.mark.parametrize('case_type', ['aparatos', 'alineadores', 'polanco'])
+@pytest.mark.parametrize('case_type', ['aparatos', 'alineadores', 'polanco', 'aeris'])
 def test_pdf_upload_from_service_section_preserves_order_drafts_and_allows_more_invoices(store, case_type):
     at = AppTest.from_string(EDITOR_SCRIPT, default_timeout=15)
     at.session_state['case_type'] = case_type
@@ -527,7 +530,7 @@ def test_partial_duplicate_blocks_invoice_access_even_with_one_search_result(sto
 def test_aligner_search_preserves_invoice_origin_when_folios_match(store, monkeypatch):
     rows = {sheet: pd.DataFrame([{'No. Orden': '001', 'PRODUCTO': 'Graphy',
             'NOMBRE PACIENTE': 'Paciente compartido', 'NOMBRE DOCTOR': sheet, 'STATUS': 'ENVIADO'}])
-            for sheet in (align.SHEET_ORDERS, align.SHEET_POLANCO)}
+            for sheet in (align.SHEET_ORDERS, align.SHEET_POLANCO, align.SHEET_AERIS)}
     reads = []
     def read(sheet=None):
         reads.append(sheet)
@@ -537,6 +540,7 @@ def test_aligner_search_preserves_invoice_origin_when_folios_match(store, monkey
     monkeypatch.setattr(align, 'read_order_values', values)
     store.upload('alineadores', '001', [Upload('alineadores.pdf')], 'Jime', lambda: None)
     store.upload('polanco', '001', [Upload('polanco.pdf')], 'Jime', lambda: None)
+    store.upload('aeris', '001', [Upload('aeris.pdf')], 'Jime', lambda: None)
     script = f'''
 import sys
 sys.path.insert(0, {str(ROOT)!r})
@@ -548,7 +552,7 @@ app.render_case_search('Jime')
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception and not reads
     at.text_input[0].set_value('compartido').run()
-    assert {align.SHEET_ORDERS, align.SHEET_POLANCO}.issubset(reads)
+    assert {align.SHEET_ORDERS, align.SHEET_POLANCO, align.SHEET_AERIS}.issubset(reads)
     assert at.selectbox[0].value is None
     at.selectbox[0].select('polanco\0' + '001\0' + '0').run()
     assert any(item.value == 'polanco.pdf' for item in at.markdown)
@@ -558,6 +562,16 @@ app.render_case_search('Jime')
     assert not at.exception
     values.clear.assert_called_with(align.SHEET_POLANCO)
     assert len(store.list('polanco', '001')) == 2 and len(store.list('alineadores', '001')) == 1
+    assert at.session_state['aligners_order_sheet'] == align.SHEET_ORDERS
+    at.selectbox[0].select('aeris\0' + '001\0' + '0').run()
+    assert not at.exception
+    assert any(item.value == 'aeris.pdf' for item in at.markdown)
+    assert not any(item.value in {'polanco.pdf', 'alineadores.pdf'} for item in at.markdown)
+    at.file_uploader[0].set_value(('aeris-posterior.pdf', PDF, 'application/pdf')).run()
+    next(button for button in at.button if button.label == 'Guardar facturas').click().run()
+    assert not at.exception
+    values.clear.assert_called_with(align.SHEET_AERIS)
+    assert len(store.list('aeris', '001')) == 2 and len(store.list('polanco', '001')) == 2
     assert at.session_state['aligners_order_sheet'] == align.SHEET_ORDERS
 
 

@@ -140,7 +140,7 @@ def test_merge_never_turns_a_seen_response_back_into_new():
     }
 
 
-def lab_app(user="Admin"):
+def lab_app(user="Admin", form_key="td"):
     from streamlit.testing.v1 import AppTest
 
     root = str(Path(__file__).resolve().parents[1])
@@ -159,7 +159,8 @@ if st.session_state.get("test_late_response"):
     rows.append({LATE_TD_ROW!r})
 store = st.session_state.setdefault("test_store", {{}})
 saves = st.session_state.setdefault("test_saves", [])
-sources = [{{"key": "td", "label": "🦷 Prescripción Alineadores TD", "read": lambda: pd.DataFrame(rows)}}]
+form_label = next(form['label'] for form in app.alineadores_pg.ALIGNERS_FORMS if form['key'] == {form_key!r})
+sources = [{{"key": {form_key!r}, "label": form_label, "read": lambda: pd.DataFrame(rows)}}]
 
 def save(user, states):
     saves.append(user)
@@ -285,14 +286,34 @@ def test_each_user_only_gets_forms_they_can_open(monkeypatch):
     import lab_pg as app
 
     monkeypatch.setattr(app, "get_forms_config", lambda: {"sheet_id": "aparatos-sheet", "worksheet": "R"})
-    monkeypatch.setattr(app.st, "secrets", {})
+    monkeypatch.setattr(app.st, "secrets", {"google_forms_alineadores": {"aeris": {"sheet_id": "aeris-sheet"}}})
     admin = [source["key"] for source in app.forms_notice_sources("Admin")]
     vero = [source["key"] for source in app.forms_notice_sources("Vero")]
-    assert admin == ["aparatos", "td", "marca_blanca", "otros_productos"]
-    assert vero == ["td", "marca_blanca", "otros_productos"]
+    assert admin == ["aparatos", "td", "marca_blanca", "otros_productos", "aeris"]
+    assert vero == ["td", "marca_blanca", "otros_productos", "aeris"]
 
     monkeypatch.setattr(app, "get_forms_config", lambda: {"sheet_id": "", "worksheet": "R"})
+    assert [source["key"] for source in app.forms_notice_sources("Jime")] == ["td", "marca_blanca", "otros_productos", "aeris"]
+    monkeypatch.setattr(app.st, "secrets", {})
     assert [source["key"] for source in app.forms_notice_sources("Jime")] == ["td", "marca_blanca", "otros_productos"]
+
+
+def test_aeris_notice_opens_aeris_response_without_changing_polanco_orders():
+    import lab_pg as app
+
+    at = lab_app(form_key="aeris").run()
+    assert not at.exception
+    at.session_state["aligners_order_sheet"] = app.alineadores_pg.SHEET_POLANCO
+    at.session_state["test_new_response"] = True
+    at.run()
+    assert bell_label(at) == ["🔔 1 respuesta nueva de Forms"]
+    at.button(key="forms_notices_open_aeris_2026-10-02T12:52:50").click().run()
+    assert not at.exception
+    assert at.session_state[app.LAB_WORKSPACE_STATE_KEY] == app.LAB_VIEW_ALIGNERS
+    assert at.session_state["aligners_primary_tabs_Admin"] == "📥 Recibidos de Forms"
+    assert at.session_state["aligners_forms_sub_tabs"] == "AERIS"
+    assert at.session_state["forms_notices_focus"] == {"aeris": "2026-10-02T12:52:50"}
+    assert at.session_state["aligners_order_sheet"] == app.alineadores_pg.SHEET_POLANCO
 
 
 class FakeNoticeSheet:

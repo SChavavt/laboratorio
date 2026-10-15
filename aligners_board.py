@@ -418,7 +418,7 @@ def render_board_html(model: dict[str, Any]) -> str:
         f'<section class="board-bottom">{_priority(model)}{_ages(model)}</section>'
         '<footer class="board-foot">'
         "<span>Semáforo: tiempo de la etapa actual contra su plazo en PROCESOS POR PRODUCTO.</span>"
-        "<span>Tarjetas ordenadas de la más antigua a la más reciente · #N = lugar en prioridad · POL = hoja Polanco.</span>"
+        "<span>Tarjetas ordenadas de la más antigua a la más reciente · #N = lugar en prioridad · POL = Polanco · AER = AERIS.</span>"
         f'<span>{_text(model.get("footer", ""))}</span>'
         "</footer></div>"
     )

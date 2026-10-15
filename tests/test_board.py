@@ -129,7 +129,7 @@ def test_view_model_groups_stages_and_ranks_priority(definitions):
     model = app.board_view_model(board, definitions, activity, now=NOW, priority_rows=2)
 
     assert model["total"] == 5
-    assert model["sources"] == [("Alineadores", 3), ("Polanco", 2)]
+    assert model["sources"] == [("Alineadores", 3), ("Polanco", 2), ("AERIS", 0)]
     assert model["clock"] == "12:00"
     assert model["date_label"] == "jueves 24 de septiembre"
     assert [(card["folio"], card["rank"]) for card in model["priority"]] == [("A-2", 1), ("A-1", 2)]
@@ -180,14 +180,15 @@ def test_board_html_escapes_sheet_text(definitions):
     assert "#1</span>" in html
 
 
-def test_board_reads_both_sheets_without_switching_tracking_sheet(monkeypatch):
+def test_board_reads_all_sheets_without_switching_tracking_sheet(monkeypatch):
     calls = []
     monkeypatch.setattr(app.st, "session_state", {"aligners_order_sheet": app.SHEET_POLANCO})
     monkeypatch.setattr(app, "read_order_values", lambda name: calls.append(name) or [])
     monkeypatch.setattr(app, "read_times_values", lambda name: calls.append(name) or [])
     loaded = app.read_board_sources(app.BOARD_ALL_SOURCES)
-    assert [label for label, _, _ in loaded] == ["Alineadores", "Polanco"]
-    assert calls == [app.SHEET_ORDERS, app.SHEET_TIMES, app.SHEET_POLANCO, app.SHEET_POLANCO_TIMES]
+    assert [label for label, _, _ in loaded] == ["Alineadores", "Polanco", "AERIS"]
+    assert calls == [app.SHEET_ORDERS, app.SHEET_TIMES, app.SHEET_POLANCO, app.SHEET_POLANCO_TIMES,
+                     app.SHEET_AERIS, app.SHEET_AERIS_TIMES]
     assert app.st.session_state == {"aligners_order_sheet": app.SHEET_POLANCO}
     calls.clear()
     app.read_board_sources("Polanco")
