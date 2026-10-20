@@ -136,10 +136,22 @@ TIMES_HEADERS = [
 # ==============================
 DEFAULT_FORMS_WORKSHEET = "Respuestas de formulario 1"
 FORMS_WORKSHEET_FALLBACKS = ["Respuestas de formulario 1", "Form_Responses"]
-# Los formularios originales usan "Favor de subir archivos en formato ZIP: - Escaneos
-# STL..." (no "adjuntar archivos STL" como en la app de aparatos), por eso el
-# hint es distinto aquí.
-FORMS_FILE_COLUMN_HINT = "archivos en formato ZIP"
+# Preguntas de subida de archivos. Cada vez que se edita un formulario, Google
+# agrega una columna nueva y deja la vieja: Marca Blanca tiene "Favor de subir
+# archivos en formato ZIP", "Favor de subir archivos: - Escaneos STL..." y
+# "Por favor sube el archivo de la imagen de tu logo". Todas cuentan como
+# adjuntos de la respuesta.
+FORMS_FILE_COLUMN_HINTS = (
+    "subir archivo",
+    "sube el archivo",
+    "sube los archivos",
+    "adjuntar archivo",
+    "archivos en formato ZIP",
+)
+# Google Forms guarda los archivos subidos como links "drive.google.com/open?id=..."
+# separados por coma; sirve para reconocer la pregunta aunque cambie su título.
+_FORMS_UPLOAD_LINK = r"https://drive\.google\.com/open\?id=[\w-]+"
+FORMS_UPLOAD_ANSWER_RE = re.compile(rf"{_FORMS_UPLOAD_LINK}(?:\s*,\s*{_FORMS_UPLOAD_LINK})*")
 FORMS_EXCLUDED_COLUMN_HINTS = [
     "Acepto que he leído los Términos y Condiciones",
     "Estoy de acuerdo con el resguardo de mis datos personales",
@@ -1424,16 +1436,39 @@ def build_forms_review_df(forms_df: pd.DataFrame) -> pd.DataFrame:
     return review_df
 
 
-def get_forms_file_column(review_df: pd.DataFrame) -> str:
-    """Encuentra la columna con el link de Drive del ZIP STL/DICOM."""
+def is_forms_file_column(column: str, values: pd.Series) -> bool:
+    """Dice si la columna es una pregunta de subida de archivos de Google Forms.
 
-    return find_column_by_hint(
-        list(review_df.columns),
-        FORMS_FILE_COLUMN_HINT,
-        "Escaneos STL superior e inferior",
-        "adjuntar archivos STL",
-        "DICOM",
-    )
+    Se reconoce por el título o, si el título no coincide, porque todas sus
+    respuestas son solo links de archivos subidos a Forms.
+    """
+
+    normalized_column = normalize_text(column)
+    if any(normalize_text(hint) in normalized_column for hint in FORMS_FILE_COLUMN_HINTS):
+        return True
+    answers = [answer for value in values if (answer := clean_cell(value).strip())]
+    return bool(answers) and all(FORMS_UPLOAD_ANSWER_RE.fullmatch(answer) for answer in answers)
+
+
+def get_forms_file_columns(review_df: pd.DataFrame) -> list[str]:
+    """Columnas con archivos adjuntos, en el orden del Sheet."""
+
+    return [
+        column
+        for column in review_df.columns
+        if column != "Respuesta #" and is_forms_file_column(column, review_df[column])
+    ]
+
+
+def get_forms_row_file_links(row: pd.Series, file_columns: list[str]) -> list[str]:
+    """Junta, sin repetir, los links de todas las columnas de archivos de una respuesta."""
+
+    links: list[str] = []
+    for column in file_columns:
+        for link in get_forms_file_links(row.get(column, "")):
+            if link not in links:
+                links.append(link)
+    return links
 
 
 def get_forms_file_links(value: Any) -> list[str]:
@@ -1647,7 +1682,7 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         st.info("No hay respuestas de Google Forms para mostrar todavía.")
         return
 
-    file_column = get_forms_file_column(review_df)
+    file_columns = get_forms_file_columns(review_df)
     form_sections, form_error = read_form_sections(form.get("form_id", ""))
     column_positions = map_forms_columns(list(review_df.columns), form_sections)
     display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
@@ -1669,11 +1704,9 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         display_df,
         use_container_width=True,
         hide_index=True,
-        column_config=(
-            {file_column: st.column_config.LinkColumn(file_column)}
-            if file_column
-            else None
-        ),
+        column_config={
+            column: st.column_config.LinkColumn(column) for column in file_columns
+        } or None,
         on_select="rerun",
         selection_mode="single-row",
         key=forms_notices.table_widget_key(table_key),
@@ -1703,11 +1736,10 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
     forms_notices.record_viewed(
         form["key"], selected_row.get(forms_notices.timestamp_column(display_df.columns), "")
     )
-    selected_link = clean_cell(selected_row.get(file_column, "")).strip() if file_column else ""
-    selected_links = get_forms_file_links(selected_link)
+    selected_links = get_forms_row_file_links(selected_row, file_columns)
     visible_details = []
     for column in display_df.columns:
-        if column in {"Respuesta #", file_column}:
+        if column == "Respuesta #" or column in file_columns:
             continue
         value = clean_cell(selected_row.get(column, "")).strip()
         if value:
@@ -1776,7 +1808,7 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         )
     else:
         st.warning(
-            "Esta respuesta no trae link en la columna configurada de archivos STL/DICOM."
+            "Esta respuesta no trae archivos en ninguna pregunta de subida de archivos."
         )
 
 
