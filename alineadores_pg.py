@@ -207,13 +207,13 @@ FORMS_OTHER_ANSWERS_TITLE = "Otras respuestas (preguntas que ya no están en el 
 ALIGNERS_FORMS: tuple[dict[str, str], ...] = (
     {
         "key": "td",
-        "label": "🦷 Prescripción Alineadores TD",
+        "label": "🔵 Prescripción Alineadores TD",
         "default_sheet_id": "1_wBpRLzN9p87sJq9961J_qtHEdpLvYSDEPqNQrqqlZ0",
         "default_form_id": "1-31c4NAll-3NqsOecSBmVOU-AM0OdckMnvtk84uSBzE",
     },
     {
         "key": "marca_blanca",
-        "label": "⚪ Prescripción Marca Blanca",
+        "label": "🟣 Prescripción Marca Blanca",
         "default_sheet_id": "1OYwJI_IaqGYOXR4aTffYmLK_38hd0p51_3C7vAjFXEU",
         "default_form_id": "1alX8OXw_iSvrBnYzPLI1Sy5CDg0XiMMIhm-bMJ0G_lI",
     },

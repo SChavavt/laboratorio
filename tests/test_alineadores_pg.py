@@ -848,7 +848,7 @@ def test_each_aligner_form_points_to_its_google_form(monkeypatch):
 
 def test_form_pdf_builds_one_block_per_section():
     pdf = app.build_form_response_pdf(
-        form_label="🦷 Prescripción Alineadores TD",
+        form_label="🔵 Prescripción Alineadores TD",
         response_number=42,
         sections=[
             ("Datos capturados", [("Asesor:", "Jimena")]),
