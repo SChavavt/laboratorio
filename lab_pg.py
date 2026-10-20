@@ -7832,7 +7832,7 @@ def forms_notice_blocker() -> str:
 
 
 def apply_forms_notice_navigation() -> None:
-    """Abre la vista, pestaña y subpestaña que pidió un aviso.
+    """Abre la vista y la pestaña de Forms que pidió un aviso.
 
     Corre al inicio de main(), antes de crear esos widgets: Streamlit no deja
     cambiar su valor una vez dibujados en el mismo run.
@@ -7847,10 +7847,8 @@ def apply_forms_notice_navigation() -> None:
         st.session_state[f"lab_primary_tabs_{current_user}"] = APP_TAB_OPTIONS["estefano"]
     else:
         view = LAB_VIEW_ALIGNERS
+        # Todas las respuestas están en una sola tabla: el enfoque la deja seleccionada.
         st.session_state[f"aligners_primary_tabs_{current_user}"] = alineadores_pg.FORMS_TAB_LABEL
-        labels = {form["key"]: form["label"] for form in alineadores_pg.ALIGNERS_FORMS}
-        if goto["form"] in labels:
-            st.session_state[alineadores_pg.FORMS_SUB_TABS_KEY] = labels[goto["form"]]
     st.session_state[LAB_WORKSPACE_STATE_KEY] = view
     st.query_params["vista"] = LAB_WORKSPACE_URL_VALUES[view]
 

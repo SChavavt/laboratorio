@@ -886,7 +886,7 @@ structure = (app.parse_form_sections({FORM_JSON!r}), st.session_state.get("form_
 form = {{"key": "td", "label": "TD", "sheet_id": "sheet", "worksheet": "Respuestas", "form_id": "form"}}
 with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
         patch.object(app, "read_form_sections", lambda _: structure if not structure[1] else ([], structure[1])):
-    app.render_aligners_form_review(form)
+    app.render_aligners_forms_inbox([form])
 '''
 
     def card_titles(at):

@@ -173,8 +173,21 @@ FORMS_METADATA_HEADERS = {
 }
 FORMS_FIRST_SECTION_TITLE = "Datos capturados"
 FORMS_TAB_LABEL = "📥 Recibidos de Forms"
-# Con key, la campana de avisos puede abrir la subpestaña del formulario.
-FORMS_SUB_TABS_KEY = "aligners_forms_sub_tabs"
+# Tabla única de "Recibidos de Forms": todas las respuestas de los formularios.
+FORMS_INBOX_TABLE_KEY = "aligners_forms_table"
+FORMS_INBOX_SELECTOR_KEY = "aligners_forms_selector"
+FORMS_INBOX_RECENT_ROWS = 40
+# Columnas internas de la tabla única; no se muestran.
+FORMS_INBOX_ID_COLUMN = "_respuesta"
+FORMS_INBOX_FORM_COLUMN = "_formulario"
+FORMS_INBOX_KEY_COLUMN = "_clave"
+FORMS_INBOX_TABLE_COLUMNS = [
+    "Nueva", "Formulario", "Respuesta #", "Marca temporal", "Paciente", "Doctor", "Asesor",
+    "Archivos",
+]
+FORMS_INBOX_PATIENT_HINTS = ("nombre completo del paciente", "nombre del paciente")
+FORMS_INBOX_DOCTOR_HINTS = ("medico tratante", "doctor tratante", "nombre del doctor")
+FORMS_INBOX_ADVISOR_HINTS = ("nombre del asesor",)
 FORMS_OTHER_ANSWERS_TITLE = "Otras respuestas (preguntas que ya no están en el formulario)"
 
 # Cada formulario apunta al Google Sheet de respuestas ya compartido con la
@@ -1652,46 +1665,142 @@ def build_form_response_pdf(
     return buffer.getvalue()
 
 
-def render_aligners_form_review(form: dict[str, str]) -> None:
-    """Muestra respuestas de un Google Form de alineadores con sus archivos de Drive."""
+def first_forms_answer(row: pd.Series, columns: list[str], hints: tuple[str, ...]) -> str:
+    """Primera respuesta no vacía entre las columnas cuyo título coincide con algún hint.
 
-    st.caption(
-        "Elige una respuesta para ver su ficha con los datos capturados y los "
-        "archivos de Drive adjuntos."
+    Un formulario puede repetir la pregunta en varias secciones (Marca Blanca
+    pide el paciente en la sección de cada paquete), así que se revisan todas.
+    """
+
+    normalized_hints = [normalize_text(hint) for hint in hints]
+    for column in columns:
+        normalized_column = normalize_text(column)
+        if any(hint in normalized_column for hint in normalized_hints):
+            value = clean_cell(row.get(column, "")).strip()
+            if value:
+                return value
+    return ""
+
+
+def load_forms_inbox_sources(
+    forms: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lee las respuestas de cada formulario.
+
+    Devuelve ``(fuentes, problemas)``: un formulario sin configurar o que no se
+    pudo leer queda fuera con su motivo, sin tapar las respuestas de los demás.
+    """
+
+    sources: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for form in forms:
+        if not form["sheet_id"]:
+            problems.append(
+                f"{form['label']}: configura su `sheet_id` en "
+                f"`[google_forms_alineadores.{form['key']}]` en secrets."
+            )
+            continue
+        try:
+            review_df = build_forms_review_df(
+                read_forms_responses_df(form["sheet_id"], form["worksheet"])
+            )
+        except Exception as exc:
+            problems.append(
+                f"{form['label']}: no pude leer su Google Sheet de respuestas. Verifica que "
+                f"`{get_service_account_email()}` tenga acceso. Detalle: {exc}"
+            )
+            continue
+        sources.append({
+            "form": form,
+            "review_df": review_df,
+            "file_columns": get_forms_file_columns(review_df),
+        })
+    return sources, problems
+
+
+def build_forms_inbox_df(sources: list[dict[str, Any]]) -> pd.DataFrame:
+    """Una fila por respuesta de todos los formularios, de la más nueva a la más vieja."""
+
+    rows = []
+    for source in sources:
+        form, review_df = source["form"], source["review_df"]
+        if review_df.empty:
+            continue
+        columns = list(review_df.columns)
+        stamp = forms_notices.timestamp_column(columns)
+        new_numbers = forms_notices.new_response_numbers(review_df, form["key"])
+        for _, row in review_df.iterrows():
+            number = int(row["Respuesta #"])
+            timestamp = clean_cell(row.get(stamp, "")).strip() if stamp else ""
+            rows.append({
+                FORMS_INBOX_ID_COLUMN: f"{form['key']}:{number}",
+                FORMS_INBOX_FORM_COLUMN: form["key"],
+                FORMS_INBOX_KEY_COLUMN: forms_notices.response_key(timestamp),
+                "Nueva": "🆕" if number in new_numbers else "",
+                "Formulario": form["label"],
+                "Respuesta #": number,
+                "Marca temporal": timestamp,
+                "Paciente": first_forms_answer(row, columns, FORMS_INBOX_PATIENT_HINTS),
+                "Doctor": first_forms_answer(row, columns, FORMS_INBOX_DOCTOR_HINTS),
+                "Asesor": first_forms_answer(row, columns, FORMS_INBOX_ADVISOR_HINTS),
+                "Archivos": len(get_forms_row_file_links(row, source["file_columns"])),
+            })
+    if not rows:
+        return pd.DataFrame()
+    # Sin marca temporal reconocible ("") quedan al final.
+    return (
+        pd.DataFrame(rows)
+        .sort_values([FORMS_INBOX_KEY_COLUMN, "Respuesta #"], ascending=False, kind="stable")
+        .reset_index(drop=True)
     )
 
-    if not form["sheet_id"]:
-        st.info(
-            "Configura el `sheet_id` de este formulario en "
-            f"`[google_forms_alineadores.{form['key']}]` en secrets."
-        )
-        return
 
-    try:
-        forms_df = read_forms_responses_df(form["sheet_id"], form["worksheet"])
-    except Exception as exc:
-        st.error(
-            "No pude leer el Google Sheet de respuestas. Verifica que el correo del "
-            "service account tenga acceso al archivo."
-        )
-        st.exception(exc)
-        return
+def focus_forms_inbox(inbox_df: pd.DataFrame, form_keys: set[str]) -> pd.DataFrame:
+    """Filas visibles de la tabla única y respuesta elegida en el selector.
 
-    review_df = build_forms_review_df(forms_df)
-    if review_df.empty:
-        st.info("No hay respuestas de Google Forms para mostrar todavía.")
-        return
+    - Recupera la respuesta que el usuario tenía elegida antes de cambiar de pestaña.
+    - Deja seleccionada la que pidió un aviso de la campana, buscándola por
+      formulario y marca temporal (no por número de fila).
+    - Muestra las más recientes y, al final, las nuevas o la elegida que no
+      entren entre ellas: así siempre se pueden abrir.
+    """
 
-    file_columns = get_forms_file_columns(review_df)
+    selector_key = FORMS_INBOX_SELECTOR_KEY
+    remembered = st.session_state.get(forms_notices.SELECTIONS_KEY, {}).get(selector_key)
+    if selector_key not in st.session_state and remembered is not None:
+        st.session_state[selector_key] = remembered
+    focus = st.session_state.get(forms_notices.FOCUS_KEY, {})
+    for form_key in sorted(form_keys & set(focus if isinstance(focus, dict) else ())):
+        key = focus.pop(form_key)
+        matches = inbox_df[
+            (inbox_df[FORMS_INBOX_FORM_COLUMN] == form_key)
+            & (inbox_df[FORMS_INBOX_KEY_COLUMN] == key)
+        ] if key else inbox_df.iloc[0:0]
+        if not matches.empty:
+            st.session_state[selector_key] = matches.iloc[-1][FORMS_INBOX_ID_COLUMN]
+            versions = st.session_state.setdefault(forms_notices.TABLE_VERSIONS_KEY, {})
+            versions[FORMS_INBOX_TABLE_KEY] = versions.get(FORMS_INBOX_TABLE_KEY, 0) + 1
+
+    wanted = set(inbox_df.loc[inbox_df["Nueva"] != "", FORMS_INBOX_ID_COLUMN])
+    if st.session_state.get(selector_key) is not None:
+        wanted.add(st.session_state[selector_key])
+    recent = inbox_df.head(FORMS_INBOX_RECENT_ROWS)
+    missing = wanted - set(recent[FORMS_INBOX_ID_COLUMN])
+    extra = inbox_df.iloc[FORMS_INBOX_RECENT_ROWS:]
+    extra = extra[extra[FORMS_INBOX_ID_COLUMN].isin(missing)]
+    return pd.concat([recent, extra], ignore_index=True)
+
+
+def render_forms_response_detail(source: dict[str, Any], selected_row: pd.Series) -> None:
+    """Ficha de una respuesta: resumen, PDF, datos capturados y archivos de Drive."""
+
+    form, review_df, file_columns = source["form"], source["review_df"], source["file_columns"]
+    response_number = int(selected_row["Respuesta #"])
+    forms_notices.record_viewed(
+        form["key"], selected_row.get(forms_notices.timestamp_column(review_df.columns), "")
+    )
     form_sections, form_error = read_form_sections(form.get("form_id", ""))
     column_positions = map_forms_columns(list(review_df.columns), form_sections)
-    display_df = review_df.sort_values("Respuesta #", ascending=False).head(25).reset_index(drop=True)
-    display_df = display_df[order_forms_columns(list(display_df.columns), column_positions)]
-    table_key = f"aligners_forms_table_{form['key']}"
-    selector_key = f"aligners_forms_selector_{form['key']}"
-    display_df = forms_notices.focus_response(
-        review_df, display_df, form["key"], table_key, selector_key
-    )
     if form_error:
         st.caption(
             "ℹ️ No pude leer el formulario actual en Google Forms, así que el PDF y la "
@@ -1700,45 +1809,9 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
             f"en su proyecto de Google Cloud. Detalle: {form_error}"
         )
 
-    table_event = st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            column: st.column_config.LinkColumn(column) for column in file_columns
-        } or None,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=forms_notices.table_widget_key(table_key),
-    )
-    apply_single_row_selection_to_selectbox(table_event, display_df, "Respuesta #", selector_key)
-
-    response_options = display_df["Respuesta #"].tolist()
-    if st.session_state.get(selector_key) not in response_options:
-        st.session_state[selector_key] = response_options[0]
-    new_numbers = forms_notices.new_response_numbers(display_df, form["key"])
-    if new_numbers:
-        # Fuera del selector: si su texto cambia entre reruns, Streamlit pierde la opción elegida.
-        st.caption("🆕 Respuestas nuevas que todavía no abres: " + ", ".join(
-            f"#{number}" for number in sorted(new_numbers, reverse=True)
-        ))
-    selected_response = st.selectbox(
-        "📌 Selecciona una respuesta",
-        options=response_options,
-        key=selector_key,
-    )
-    forms_notices.remember_selection(selector_key, selected_response)
-    selected_rows = display_df[display_df["Respuesta #"] == selected_response]
-    if selected_rows.empty:
-        return
-
-    selected_row = selected_rows.iloc[0]
-    forms_notices.record_viewed(
-        form["key"], selected_row.get(forms_notices.timestamp_column(display_df.columns), "")
-    )
     selected_links = get_forms_row_file_links(selected_row, file_columns)
     visible_details = []
-    for column in display_df.columns:
+    for column in order_forms_columns(list(review_df.columns), column_positions):
         if column == "Respuesta #" or column in file_columns:
             continue
         value = clean_cell(selected_row.get(column, "")).strip()
@@ -1758,7 +1831,8 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         f"<div class='align-forms-hero'>"
         f"<div class='align-forms-hero-title'>📌 Resumen rápido de la respuesta seleccionada</div>"
         f"<div style='margin-top:10px;'>"
-        f"<span class='align-forms-pill align-forms-pill-id'>🧾 Respuesta #{html.escape(str(selected_response))}</span>"
+        f"<span class='align-forms-pill align-forms-pill-form'>{html.escape(form['label'])}</span>"
+        f"<span class='align-forms-pill align-forms-pill-id'>🧾 Respuesta #{response_number}</span>"
         f"<span class='align-forms-pill {link_pill_class}'>{link_pill_text}</span>"
         f"</div></div>",
         unsafe_allow_html=True,
@@ -1766,7 +1840,7 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
 
     pdf_bytes = build_form_response_pdf(
         form_label=form["label"],
-        response_number=selected_response,
+        response_number=response_number,
         sections=detail_groups,
         links=selected_links,
     )
@@ -1774,9 +1848,9 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         st.download_button(
             "📄 Descargar PDF de esta respuesta",
             data=pdf_bytes,
-            file_name=f"{form['key']}_respuesta_{selected_response}.pdf",
+            file_name=f"{form['key']}_respuesta_{response_number}.pdf",
             mime="application/pdf",
-            key=f"aligners_forms_pdf_button_{form['key']}_{selected_response}",
+            key=f"aligners_forms_pdf_button_{form['key']}_{response_number}",
         )
 
     if visible_details:
@@ -1812,28 +1886,90 @@ def render_aligners_form_review(form: dict[str, str]) -> None:
         )
 
 
+def render_aligners_forms_inbox(forms: list[dict[str, str]]) -> None:
+    """Tabla única con las respuestas de todos los formularios y la ficha de la elegida."""
+
+    sources, problems = load_forms_inbox_sources(forms)
+    for problem in problems:
+        st.caption(f"ℹ️ {problem}")
+    inbox_df = build_forms_inbox_df(sources)
+    if inbox_df.empty:
+        st.info("No hay respuestas de Google Forms para mostrar todavía.")
+        return
+
+    display_df = focus_forms_inbox(inbox_df, {source["form"]["key"] for source in sources})
+    new_rows = display_df[display_df["Nueva"] != ""]
+    if not new_rows.empty:
+        plural = "s" if len(new_rows) != 1 else ""
+        st.info(
+            f"**{len(new_rows)} respuesta{plural} nueva{plural} que todavía no abres** "
+            "(marcadas con 🆕 en la tabla): "
+            + ", ".join(
+                f"{row['Formulario']} #{row['Respuesta #']}" for _, row in new_rows.iterrows()
+            ),
+            icon="🆕",
+        )
+    st.caption(
+        "Elige una respuesta para ver su ficha con los datos capturados y los "
+        "archivos de Drive adjuntos."
+    )
+    table_event = st.dataframe(
+        display_df,
+        width="stretch",
+        hide_index=True,
+        column_order=FORMS_INBOX_TABLE_COLUMNS,
+        column_config={
+            "Nueva": st.column_config.TextColumn("🆕", width="small"),
+            "Respuesta #": st.column_config.NumberColumn("Respuesta #", format="%d"),
+            "Archivos": st.column_config.NumberColumn("📎 Archivos", format="%d"),
+        },
+        on_select="rerun",
+        selection_mode="single-row",
+        key=forms_notices.table_widget_key(FORMS_INBOX_TABLE_KEY),
+    )
+    apply_single_row_selection_to_selectbox(
+        table_event, display_df, FORMS_INBOX_ID_COLUMN, FORMS_INBOX_SELECTOR_KEY
+    )
+
+    rows_by_id = {row[FORMS_INBOX_ID_COLUMN]: row for _, row in display_df.iterrows()}
+    response_options = list(rows_by_id)
+    if st.session_state.get(FORMS_INBOX_SELECTOR_KEY) not in rows_by_id:
+        st.session_state[FORMS_INBOX_SELECTOR_KEY] = response_options[0]
+    # Sin 🆕 en el texto: si cambia entre reruns, Streamlit pierde la opción elegida.
+    selected_id = st.selectbox(
+        "📌 Selecciona una respuesta",
+        options=response_options,
+        format_func=lambda option: " · ".join(
+            part for part in (
+                rows_by_id[option]["Formulario"],
+                f"#{rows_by_id[option]['Respuesta #']}",
+                rows_by_id[option]["Paciente"],
+            ) if part
+        ),
+        key=FORMS_INBOX_SELECTOR_KEY,
+    )
+    forms_notices.remember_selection(FORMS_INBOX_SELECTOR_KEY, selected_id)
+    inbox_row = rows_by_id[selected_id]
+    source = next(
+        source for source in sources
+        if source["form"]["key"] == inbox_row[FORMS_INBOX_FORM_COLUMN]
+    )
+    review_df = source["review_df"]
+    selected_rows = review_df[review_df["Respuesta #"] == inbox_row["Respuesta #"]]
+    if not selected_rows.empty:
+        render_forms_response_detail(source, selected_rows.iloc[0])
+
+
 def render_aligners_forms_tab() -> None:
-    """Agrupa los formularios de prescripción en subpestañas de solo lectura."""
+    """Respuestas de todos los formularios de prescripción en una sola tabla."""
 
     st.subheader(FORMS_TAB_LABEL)
     st.caption(
         f"Respuestas y archivos de los {len(ALIGNERS_FORMS)} formularios de prescripción, leídos "
-        "directamente de sus Google Sheets con la cuenta de servicio compartida."
+        "directamente de sus Google Sheets con la cuenta de servicio compartida. La columna "
+        "**Formulario** dice de cuál viene cada respuesta."
     )
-    forms = [get_aligners_form_config(form) for form in ALIGNERS_FORMS]
-    if st.session_state.get(FORMS_SUB_TABS_KEY) == "AERIS":
-        st.session_state[FORMS_SUB_TABS_KEY] = AERIS_TAB_LABEL
-    sub_tabs = st.tabs(
-        [form["label"] for form in forms], key=FORMS_SUB_TABS_KEY, on_change="rerun"
-    )
-    # Sólo se lee y muestra la subpestaña abierta: abrir todas marcaba como
-    # vista la respuesta más nueva de formularios que nadie estaba mirando.
-    for form, tab in zip(forms, sub_tabs):
-        if not tab.open:
-            continue
-        with tab:
-            render_aligners_form_review(form)
-        break
+    render_aligners_forms_inbox([get_aligners_form_config(form) for form in ALIGNERS_FORMS])
 
 
 def rerun_active_tab() -> None:
@@ -4901,6 +5037,7 @@ def apply_custom_css() -> None:
         .align-forms-hero-title {font-size:1.05rem;font-weight:800;color:#123B2C;margin-bottom:4px;}
         .align-forms-pill {display:inline-block;border-radius:999px;padding:7px 12px;margin:4px 7px 8px 0;font-weight:800;}
         .align-forms-pill-id {background:#DCF2E4;color:#0F6B44;}
+        .align-forms-pill-form {background:#EEF0FF;color:#3B3F8F;}
         .align-forms-pill-link {background:#E0F7EE;color:#13654E;}
         .align-forms-pill-missing {background:#FFECEF;color:#A72B48;}
         .align-forms-detail {background:linear-gradient(180deg,#FFFFFF 0%,#F7FCF9 100%);border:1px solid #D7EDDD;border-left:5px solid #12875E;border-radius:14px;padding:12px 14px;margin:7px 0;box-shadow:0 4px 12px rgba(15,63,42,.05);}
