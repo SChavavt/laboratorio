@@ -23,7 +23,7 @@ def test_aeris_form_supports_separate_response_source_overrides(monkeypatch):
     assert app.get_aligners_form_config(other)["sheet_id"] == other["default_sheet_id"]
 
 
-def test_aeris_forms_tab_reads_only_its_response_sheet_and_offers_files_and_pdf():
+def test_aeris_responses_show_in_forms_table_with_files_and_pdf():
     script = f'''
 import sys
 sys.path.insert(0, {str(ROOT)!r})
@@ -31,14 +31,14 @@ from unittest.mock import patch
 import pandas as pd
 import streamlit as st
 import alineadores_pg as app
-st.session_state[app.FORMS_SUB_TABS_KEY] = 'AERIS'
 rows = pd.DataFrame([{{'Marca temporal': '14/10/2026 12:00:00',
     'Nombre completo del paciente:': 'Paciente demo',
     'Producto solicitado:': 'AERIS', 'Servicio del producto solicitado:': 'CONFECCIÓN',
     {UPLOAD_COLUMN!r}: 'https://drive.google.com/open?id=demo-stl'}}])
 def responses(sheet_id, worksheet):
     st.session_state.setdefault('response_reads', []).append((sheet_id, worksheet))
-    return rows
+    # Los otros formularios no tienen respuestas en esta prueba.
+    return rows if sheet_id == 'aeris-responses' else pd.DataFrame()
 def sections(form_id):
     st.session_state['structure_read'] = form_id
     return [], ''
@@ -51,10 +51,10 @@ with patch.object(app, 'read_forms_responses_df', responses), \\
         'sheet_id': 'aeris-responses', 'form_id': 'aeris-form'}}
     at.run()
     assert not at.exception
-    assert at.session_state['response_reads'] == [
-        ('aeris-responses', 'Respuestas de formulario 1')]
+    assert ('aeris-responses', 'Respuestas de formulario 1') in at.session_state['response_reads']
     assert at.session_state['structure_read'] == 'aeris-form'
-    assert at.selectbox(key='aligners_forms_selector_aeris').value == 2
+    assert at.selectbox(key='aligners_forms_selector').value == 'aeris:2'
+    assert at.dataframe[0].value['Formulario'].tolist() == [app.AERIS_TAB_LABEL]
     assert any('demo-stl' in item.value for item in at.markdown)
     assert len(at.get('download_button')) == 1
     assert not at.warning

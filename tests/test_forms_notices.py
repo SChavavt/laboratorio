@@ -214,7 +214,6 @@ def test_bell_announces_new_response_and_opens_it_in_forms_tab():
     assert not at.exception
     assert at.session_state[app.LAB_WORKSPACE_STATE_KEY] == app.LAB_VIEW_ALIGNERS
     assert at.session_state["aligners_primary_tabs_Admin"] == "📥 Recibidos de Forms"
-    assert at.session_state["aligners_forms_sub_tabs"] == "🦷 Prescripción Alineadores TD"
     assert at.session_state["forms_notices_focus"] == {"td": "2026-10-02T12:52:50"}
     assert at.query_params["vista"] == ["alineadores"]
     assert at.session_state["test_store"]["td"] == {"base": "2026-10-02T12:52:50", "vistas": []}
@@ -311,7 +310,6 @@ def test_aeris_notice_opens_aeris_response_without_changing_polanco_orders():
     assert not at.exception
     assert at.session_state[app.LAB_WORKSPACE_STATE_KEY] == app.LAB_VIEW_ALIGNERS
     assert at.session_state["aligners_primary_tabs_Admin"] == "📥 Recibidos de Forms"
-    assert at.session_state["aligners_forms_sub_tabs"] == "🌬️ AERIS"
     assert at.session_state["forms_notices_focus"] == {"aeris": "2026-10-02T12:52:50"}
     assert at.session_state["aligners_order_sheet"] == app.alineadores_pg.SHEET_POLANCO
 
@@ -379,28 +377,31 @@ if "test_started" not in st.session_state:
     # Pidió abrir una respuesta vieja (fuera de las 25 más nuevas) y hay dos pendientes.
     st.session_state["forms_notices_focus"] = {{"td": "2026-09-02T10:00:00"}}
     st.session_state["forms_notices_pending"] = {{"td": ["2026-09-02T10:00:00", "2026-09-30T10:00:00"]}}
-    st.session_state["aligners_forms_table_td"] = {{"selection": {{"rows": [0], "columns": []}}}}
+    st.session_state["aligners_forms_table"] = {{"selection": {{"rows": [0], "columns": []}}}}
 form = {{"key": "td", "label": "TD", "sheet_id": "sheet", "worksheet": "Respuestas", "form_id": ""}}
 with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
-        patch.object(app, "read_form_sections", lambda _: ([], "")):
-    app.render_aligners_form_review(form)
+        patch.object(app, "read_form_sections", lambda _: ([], "")), \\
+        patch.object(app, "FORMS_INBOX_RECENT_ROWS", 25):
+    app.render_aligners_forms_inbox([form])
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    selector = at.selectbox(key="aligners_forms_selector_td")
-    assert selector.value == 3  # "Respuesta #" de la fila del 2/9.
+    selector = at.selectbox(key="aligners_forms_selector")
+    assert selector.value == "td:3"  # "Respuesta #" de la fila del 2/9.
     assert all("🆕" not in option for option in selector.options)
-    assert any(item.value == "🆕 Respuestas nuevas que todavía no abres: #31, #3" for item in at.caption)
+    assert [item.value for item in at.info] == [
+        "**2 respuestas nuevas que todavía no abres** (marcadas con 🆕 en la tabla): TD #31, TD #3"
+    ]
     assert at.session_state["forms_notices_viewed"] == [["td", "2026-09-02T10:00:00"]]
     assert at.session_state["forms_notices_pending"] == {"td": ["2026-09-30T10:00:00"]}
     assert at.session_state["forms_notices_focus"] == {}
     # La tabla usa otra key: la fila que el navegador tenía marcada ya no manda.
-    assert at.session_state["forms_notices_table_versions"] == {"aligners_forms_table_td": 1}
+    assert at.session_state["forms_notices_table_versions"] == {"aligners_forms_table": 1}
 
     # En el siguiente rerun (p. ej. descargar el PDF) sigue en la misma respuesta.
     at.run()
     assert not at.exception
-    assert at.selectbox(key="aligners_forms_selector_td").value == 3
+    assert at.selectbox(key="aligners_forms_selector").value == "td:3"
     assert at.session_state["forms_notices_viewed"] == [["td", "2026-09-02T10:00:00"]]
 
 
@@ -468,7 +469,7 @@ def test_bell_reader_has_its_own_cache_and_never_waits_on_quota(monkeypatch):
     app.read_forms_notice_responses.clear()
 
 
-def test_forms_tab_keeps_choice_across_sub_tabs_and_lists_old_pending():
+def test_forms_tab_keeps_choice_across_tabs_and_lists_old_pending():
     from streamlit.testing.v1 import AppTest
 
     root = str(Path(__file__).resolve().parents[1])
@@ -489,24 +490,89 @@ responses = pd.DataFrame({rows!r})
 st.session_state.setdefault("forms_notices_pending", {{"td": ["2026-09-01T10:00:00", "2026-09-04T10:00:00"]}})
 form = {{"key": "td", "label": "TD", "sheet_id": "sheet", "worksheet": "Respuestas", "form_id": ""}}
 with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
-        patch.object(app, "read_form_sections", lambda _: ([], "")):
-    if not st.session_state.get("test_other_sub_tab"):
-        app.render_aligners_form_review(form)
+        patch.object(app, "read_form_sections", lambda _: ([], "")), \\
+        patch.object(app, "FORMS_INBOX_RECENT_ROWS", 25):
+    if not st.session_state.get("test_other_tab"):
+        app.render_aligners_forms_inbox([form])
     else:
-        st.write("otra subpestaña")
+        st.write("otra pestaña")
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    selector = at.selectbox(key="aligners_forms_selector_td")
-    assert {"2", "5"} <= set(selector.options)  # #2 y #5 quedan fuera de las 25 más nuevas.
-    assert any(item.value == "🆕 Respuestas nuevas que todavía no abres: #5, #2" for item in at.caption)
+    selector = at.selectbox(key="aligners_forms_selector")
+    # #2 y #5 quedan fuera de las 25 más nuevas.
+    assert {"TD · #2 · Paciente 1", "TD · #5 · Paciente 4"} <= set(selector.options)
+    assert [item.value for item in at.info] == [
+        "**2 respuestas nuevas que todavía no abres** (marcadas con 🆕 en la tabla): TD #5, TD #2"
+    ]
 
-    selector.set_value(5).run()
-    assert at.selectbox(key="aligners_forms_selector_td").value == 5
-    # Cambia a otra subpestaña (el selector deja de dibujarse) y regresa.
-    at.session_state["test_other_sub_tab"] = True
+    selector.set_value("td:5").run()
+    assert at.selectbox(key="aligners_forms_selector").value == "td:5"
+    # Cambia a otra pestaña (el selector deja de dibujarse) y regresa.
+    at.session_state["test_other_tab"] = True
     at.run()
-    at.session_state["test_other_sub_tab"] = False
+    at.session_state["test_other_tab"] = False
     at.run()
     assert not at.exception
-    assert at.selectbox(key="aligners_forms_selector_td").value == 5
+    assert at.selectbox(key="aligners_forms_selector").value == "td:5"
+
+
+def test_forms_table_mixes_every_form_and_opens_notice_from_any_of_them():
+    from streamlit.testing.v1 import AppTest
+
+    root = str(Path(__file__).resolve().parents[1])
+    td_rows = [
+        {"Marca temporal": "1/10/2026 09:00:00", "Nombre completo del paciente:": "Ana TD",
+         "Nombre completo del médico tratante:": "Dra. Ruiz"},
+        {"Marca temporal": "18/10/2026 09:00:00", "Nombre completo del paciente:": "Beto TD",
+         "Nombre completo del médico tratante:": "Dr. Peña"},
+    ]
+    # Marca Blanca repite la pregunta del paciente en dos secciones.
+    white_rows = [
+        {"Marca temporal": "19/10/2026 17:06:33",
+         "Indique el nombre del asesor que le brindó información y atención:": "",
+         "Indique el nombre del asesor que le brindó información y atención:_2": "Dra Lesly",
+         "Nombre completo del paciente:": "", "Nombre completo del paciente:_2": "Raquel",
+         "Favor de subir archivos:": "https://drive.google.com/open?id=a, https://drive.google.com/open?id=b"},
+    ]
+    script = f'''
+import sys
+sys.path.insert(0, {root!r})
+import pandas as pd
+import streamlit as st
+import alineadores_pg as app
+from unittest.mock import patch
+
+frames = {{"td-sheet": pd.DataFrame({td_rows!r}), "mb-sheet": pd.DataFrame({white_rows!r})}}
+if "test_started" not in st.session_state:
+    st.session_state["test_started"] = True
+    st.session_state["forms_notices_pending"] = {{"marca_blanca": ["2026-10-19T17:06:33"]}}
+    st.session_state["forms_notices_focus"] = {{"marca_blanca": "2026-10-19T17:06:33", "aparatos": "x"}}
+forms = [
+    {{"key": "td", "label": "TD", "sheet_id": "td-sheet", "worksheet": "R", "form_id": ""}},
+    {{"key": "marca_blanca", "label": "Marca Blanca", "sheet_id": "mb-sheet", "worksheet": "R", "form_id": ""}},
+    {{"key": "aeris", "label": "AERIS", "sheet_id": "", "worksheet": "R", "form_id": ""}},
+]
+with patch.object(app, "read_forms_responses_df", lambda sheet_id, _: frames[sheet_id]), \\
+        patch.object(app, "read_form_sections", lambda _: ([], "")):
+    app.render_aligners_forms_inbox(forms)
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    table = at.dataframe[0].value
+    assert table[["Nueva", "Formulario", "Respuesta #", "Paciente", "Doctor", "Asesor", "Archivos"]].values.tolist() == [
+        ["🆕", "Marca Blanca", 2, "Raquel", "", "Dra Lesly", 2],
+        ["", "TD", 3, "Beto TD", "Dr. Peña", "", 0],
+        ["", "TD", 2, "Ana TD", "Dra. Ruiz", "", 0],
+    ]
+    assert at.selectbox(key="aligners_forms_selector").value == "marca_blanca:2"
+    # Sólo se consume el aviso de alineadores; el de aparatos es de otra pestaña.
+    assert at.session_state["forms_notices_focus"] == {"aparatos": "x"}
+    assert at.session_state["forms_notices_viewed"] == [["marca_blanca", "2026-10-19T17:06:33"]]
+    assert any("Marca Blanca</span>" in item.value and "2 archivos listos" in item.value for item in at.markdown)
+    assert any("AERIS: configura su `sheet_id`" in item.value for item in at.caption)
+
+    at.selectbox(key="aligners_forms_selector").set_value("td:2").run()
+    assert not at.exception
+    assert any("TD</span>" in item.value and "Sin link detectado" in item.value for item in at.markdown)
+    assert any("Ana TD" in item.value for item in at.markdown)
