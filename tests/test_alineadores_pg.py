@@ -920,6 +920,39 @@ with patch.object(app, "read_forms_responses_df", lambda *_: responses), \\
     assert [item for item in at.caption if "403 Forbidden" in item.value]
 
 
+def test_forms_attachments_come_from_every_upload_question():
+    # Mismo caso que Marca Blanca: el formulario se editó y la respuesta nueva
+    # trae sus archivos en la pregunta nueva, no en la vieja "formato ZIP".
+    logo = "Por favor sube el archivo de la imagen de tu logo:"
+    new_upload = "Favor de subir archivos:\n\n- Escaneos STL superior e inferior."
+    old_upload = "Favor de subir archivos en formato ZIP:\n\n- Escaneos STL."
+    renamed_upload = "Escaneos del paciente"
+    review_df = app.build_forms_review_df(pd.DataFrame([
+        {"Marca temporal": "5/8/2026", logo: "https://drive.google.com/open?id=logo1",
+         new_upload: "", old_upload: "https://drive.google.com/open?id=zip1",
+         renamed_upload: "", "Comentarios:": "https://drive.google.com/open?id=x es mi caso"},
+        {"Marca temporal": "19/10/2026",
+         logo: "https://drive.google.com/open?id=logo2, https://drive.google.com/open?id=logo3",
+         new_upload: "https://drive.google.com/open?id=stl1, https://drive.google.com/open?id=stl2",
+         old_upload: "", renamed_upload: "https://drive.google.com/open?id=ren1",
+         "Comentarios:": "na"},
+    ]))
+
+    file_columns = app.get_forms_file_columns(review_df)
+    assert file_columns == [logo, new_upload, old_upload, renamed_upload]
+    assert app.get_forms_row_file_links(review_df.iloc[1], file_columns) == [
+        "https://drive.google.com/open?id=logo2",
+        "https://drive.google.com/open?id=logo3",
+        "https://drive.google.com/open?id=stl1",
+        "https://drive.google.com/open?id=stl2",
+        "https://drive.google.com/open?id=ren1",
+    ]
+    assert app.get_forms_row_file_links(review_df.iloc[0], file_columns) == [
+        "https://drive.google.com/open?id=logo1",
+        "https://drive.google.com/open?id=zip1",
+    ]
+
+
 # --- Cambio manual de etapa («Ver todas las etapas…»), igual que en Aparatos ---
 
 @pytest.mark.parametrize("user", ["Admin", "Jime", "Lesly"])
