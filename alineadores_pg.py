@@ -74,7 +74,7 @@ SHEET_POLANCO = "POLANCO"
 SHEET_POLANCO_TIMES = "TIEMPOS_POLANCO"
 SHEET_AERIS = "AERIS"
 SHEET_AERIS_TIMES = "TIEMPOS_AERIS"
-POLANCO_TAB_LABEL = "🏢 Seguimiento Polanco"
+POLANCO_TAB_LABEL = "🏢 Polanco"
 AERIS_TAB_LABEL = "🌬️ AERIS"
 ORDER_TIME_SHEETS = {
     SHEET_ORDERS: SHEET_TIMES,
@@ -4667,7 +4667,7 @@ def render_general_workbench(current_user: str) -> None:
         value=individual_tracking_hidden(),
         key=GENERAL_HIDE_TOGGLE_KEY,
         on_change=set_individual_tracking_hidden,
-        help="Oculta Seguimiento, Seguimiento Polanco y AERIS y deja sólo esta vista general. "
+        help="Oculta Seguimiento, Polanco y AERIS y deja sólo esta vista general. "
              "Desactívalo aquí para mostrarlas otra vez.",
     )
     sources, problems = load_general_sources(current_user)
@@ -5216,10 +5216,10 @@ def render_board(current_user: str) -> None:
 # (render_processes) están ocultas; para mostrarlas otra vez basta con
 # agregarlas aquí.
 ALIGNERS_TAB_LABELS = (
+    GENERAL_TAB_LABEL,
     "📋 Seguimiento",
     POLANCO_TAB_LABEL,
     AERIS_TAB_LABEL,
-    GENERAL_TAB_LABEL,
     case_search.TAB_LABEL,
     FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
@@ -5238,7 +5238,9 @@ def render_app_tabs(current_user: str) -> None:
     """Ejecuta únicamente el contenido de la pestaña visible."""
     apply_board_url(current_user)
     labels = aligners_tab_labels()
-    previous_labels = {"📋 Seguimiento Polanco": POLANCO_TAB_LABEL, "AERIS": AERIS_TAB_LABEL}
+    # Nombres anteriores de pestañas que una sesión abierta pudo haber guardado.
+    previous_labels = {"📋 Seguimiento Polanco": POLANCO_TAB_LABEL,
+                       "🏢 Seguimiento Polanco": POLANCO_TAB_LABEL, "AERIS": AERIS_TAB_LABEL}
     for key in ("aligners_active_tab", f"aligners_primary_tabs_{current_user}"):
         current = st.session_state.get(key)
         previous = previous_labels.get(current, current)

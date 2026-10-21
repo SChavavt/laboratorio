@@ -471,7 +471,10 @@ with (
 ):
     app.main()
 '''
-    at = AppTest.from_string(script, default_timeout=15).run()
+    at = AppTest.from_string(script, default_timeout=15)
+    # La vista general abre primero; aquí se prueba la pestaña de Seguimiento.
+    at.session_state["aligners_primary_tabs_Admin"] = "📋 Seguimiento"
+    at.run()
     assert not at.exception
     assert any("Control de alineadores" in markdown.value for markdown in at.markdown)
     assert at.button(key="aligners_signal_card_total").label.startswith("🦷 Pedidos activos")
@@ -504,18 +507,24 @@ with (
 '''
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
-    # Alertas y pausas / Procesos y plazos están ocultas.
+    # Alertas y pausas / Procesos y plazos están ocultas. La vista general va primero.
     assert [tab.label for tab in at.tabs] == [
-        "📋 Seguimiento", "🏢 Seguimiento Polanco", "🌬️ AERIS", "🗂️ Seguimiento General",
+        "🗂️ Seguimiento General", "📋 Seguimiento", "🏢 Polanco", "🌬️ AERIS",
         "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
     ]
-    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[2].markdown
+    assert [item.value for item in at.tabs[0].markdown] == ["general ejecutado"]
+    assert not at.tabs[1].markdown and not at.tabs[3].markdown
+
+    at.session_state["aligners_primary_tabs_Admin"] = "📋 Seguimiento"
+    at.run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[1].markdown] == ["seguimiento ejecutado"]
+    assert not at.tabs[0].markdown
 
     at.session_state["aligners_primary_tabs_Admin"] = "📥 Recibidos de Forms"
     at.run()
     assert not at.exception
-    assert not at.tabs[0].markdown
+    assert not at.tabs[0].markdown and not at.tabs[1].markdown
     assert [item.value for item in at.tabs[5].markdown] == ["forms ejecutados"]
 
     at.session_state["aligners_primary_tabs_Admin"] = "🔎 Buscar casos"
@@ -524,18 +533,19 @@ with (
     assert [item.value for item in at.tabs[4].markdown] == ["buscador ejecutado"]
     assert not at.tabs[0].markdown and not at.tabs[5].markdown
 
-    # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
+    # Una sesión que tenía abierta una pestaña oculta vuelve a la primera.
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
-    assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
+    assert [item.value for item in at.tabs[0].markdown] == ["general ejecutado"]
     assert not at.tabs[5].markdown
 
-    at.session_state["aligners_primary_tabs_Admin"] = "🗂️ Seguimiento General"
+    # Una sesión con el nombre anterior de Polanco sigue en Polanco.
+    at.session_state["aligners_primary_tabs_Admin"] = "🏢 Seguimiento Polanco"
     at.run()
     assert not at.exception
-    assert [item.value for item in at.tabs[3].markdown] == ["general ejecutado"]
-    assert not at.tabs[0].markdown
+    assert at.session_state["aligners_primary_tabs_Admin"] == "🏢 Polanco"
+    assert [item.value for item in at.tabs[2].markdown] == ["seguimiento ejecutado"]
 
 
 def test_hidden_individual_tracking_tabs_leave_only_general_view():

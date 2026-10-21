@@ -218,13 +218,13 @@ def test_legacy_numeric_log_is_closed_and_new_folio_stays_text(sheets):
 
 def test_pending_polanco_changes_block_tab_switch(sheets):
     app.st.session_state.update({'aligners_order_sheet': app.SHEET_POLANCO,
-        'aligners_active_tab': '🏢 Seguimiento Polanco',
+        'aligners_active_tab': app.POLANCO_TAB_LABEL,
         'aligners_primary_tabs_Jime': '📋 Seguimiento',
         'polanco_aligners_editor_key': 'polanco_grid',
         'polanco_aligners_editor_baseline': pd.DataFrame([{app.ID_COLUMN: '001', 'ADEUDO': '500'}]),
         'polanco_grid': {'rows': [{app.ID_COLUMN: '001', 'ADEUDO': '250'}]}})
     app.guard_tracking_tab_change('Jime')
-    assert app.st.session_state['aligners_primary_tabs_Jime'] == '🏢 Seguimiento Polanco'
+    assert app.st.session_state['aligners_primary_tabs_Jime'] == app.POLANCO_TAB_LABEL
     assert app.st.session_state['aligners_tab_warning']
 
 
@@ -256,7 +256,7 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     at = AppTest.from_string(script, default_timeout=15).run()
     assert not at.exception
     assert not at.text_input
-    at.session_state['test_tab'] = '🏢 Seguimiento Polanco'
+    at.session_state['test_tab'] = app.POLANCO_TAB_LABEL
     at.run()
     assert not at.exception
     assert not at.text_input
