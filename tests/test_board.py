@@ -265,8 +265,8 @@ def test_board_keeps_last_reading_when_sheets_fail():
     assert "se muestra la lectura de las 12:00:00" in html
 
 
-def test_default_tab_is_still_tracking():
+def test_default_tab_is_general_tracking():
     at = board_app().run()
     assert not at.exception
-    assert at.session_state["aligners_primary_tabs_Jime"] == "📋 Seguimiento"
+    assert at.session_state["aligners_primary_tabs_Jime"] == app.GENERAL_TAB_LABEL
     assert not board_html(at)

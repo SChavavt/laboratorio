@@ -206,7 +206,7 @@ def test_bell_announces_new_response_and_opens_it_in_forms_tab():
     assert "Regina Gonzalez" in flash
     assert not at.get("toast")
     assert any(
-        "🦷 Prescripción Alineadores TD · Regina Gonzalez · Dr(a). Emilio Ruiz" in item.value
+        "🔵 Prescripción Alineadores TD · Regina Gonzalez · Dr(a). Emilio Ruiz" in item.value
         for item in at.markdown
     )
 
