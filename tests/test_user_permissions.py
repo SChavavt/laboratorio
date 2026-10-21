@@ -197,3 +197,30 @@ with patch.object(app, 'get_forms_config', lambda: {{'sheet_id': 'demo', 'worksh
     assert not at.exception
     assert any('Paciente uno' in text.value for text in at.markdown)
     assert not at.file_uploader and not at.button
+
+
+def test_juan_order_detail_offers_only_stage_change_in_polanco(definitions):
+    script = f'''
+import sys
+sys.path.insert(0, {ROOT!r})
+from unittest.mock import patch
+import pandas as pd
+import streamlit as st
+import alineadores_pg as align
+definitions = align.parse_process_matrix([['Graphy', ''], ['Fases', 'Tiempo'],
+    ['REVISIÓN DE ARCHIVOS', '<1 dia'], ['EN PLANEACIÓN', '<1 dia'], ['ENVIADO', '']])
+row = pd.Series({{'No. Orden': '002', 'PRODUCTO': 'Graphy', 'STATUS': 'REVISIÓN DE ARCHIVOS',
+    'NOMBRE DOCTOR': 'Doctor consulta'}})
+st.session_state['aligners_order_sheet'] = st.session_state.get('sheet', align.SHEET_POLANCO)
+with patch.object(align, 'get_order_form_catalog', lambda: {{}}):
+    align.render_aligner_order_editor(row, 'Juan', definitions)
+'''
+    at = AppTest.from_string(script, default_timeout=15).run()
+    assert not at.exception
+    assert all(widget.disabled for widget in at.text_input)
+    assert [box.label for box in at.selectbox] == ['🚦 Cambiar etapa']
+    assert any('EN PLANEACIÓN' in option for option in at.selectbox[0].options)
+    assert [button.label for button in at.button] == ['Guardar etapa']
+    at.session_state['sheet'] = align.SHEET_ORDERS
+    at.run()
+    assert not at.exception and not at.selectbox and not at.button
