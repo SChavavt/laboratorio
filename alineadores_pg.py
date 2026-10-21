@@ -30,7 +30,8 @@ import forms_notices
 import order_detail
 import case_invoices
 import case_search
-from user_permissions import APP_USERS, VIEW_AND_CREATE_USERS, can_edit_orders, can_create_orders
+from user_permissions import (APP_USERS, VIEW_AND_CREATE_USERS, can_change_status, can_create_orders,
+                              can_edit_orders, status_only)
 from grid_interactions import response_frame
 import dropdown_fields
 from order_identifiers import identifier_resolver
@@ -1144,6 +1145,15 @@ def current_times_sheet() -> str:
     return ORDER_TIME_SHEETS[current_order_sheet()]
 
 
+def can_change_status_here(current_user: str) -> bool:
+    """Juan puede cambiar la etapa en Polanco y AERIS; el resto sigue ``can_edit_orders``."""
+    return can_change_status(current_user, current_order_sheet())
+
+
+def status_only_here(current_user: str) -> bool:
+    return status_only(current_user, current_order_sheet())
+
+
 def tracking_key(key: str) -> str:
     """Aísla tablas, filtros, borradores y altas de cada seguimiento."""
     prefix = {SHEET_POLANCO: "polanco_", SHEET_AERIS: "aeris_"}.get(current_order_sheet(), "")
@@ -2185,7 +2195,8 @@ def register_status_change(
 ) -> None:
     """Cierra la etapa anterior y abre la medición de la hoja activa."""
 
-    if current_user in VIEW_AND_CREATE_USERS and clean_cell(previous_status).strip():
+    if (current_user in VIEW_AND_CREATE_USERS and clean_cell(previous_status).strip()
+            and not can_change_status_here(current_user)):
         raise ValueError("Tu usuario no tiene permiso para modificar pedidos existentes.")
     ensure_times_headers()
     configured = configured_statuses(definitions)
@@ -2752,10 +2763,13 @@ def validate_delta(
     current_user: str = "",
 ) -> list[str]:
     """``manual_stage`` valida contra todas las etapas del producto (ver get_manual_stage_statuses)."""
-    if current_user in VIEW_AND_CREATE_USERS:
-        return ["Tu usuario no tiene permiso para editar pedidos."]
-    errors: list[str] = []
     identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+    if current_user in VIEW_AND_CREATE_USERS:
+        if not status_only_here(current_user) or reactivate:
+            return ["Tu usuario no tiene permiso para editar pedidos."]
+        if set(delta) - {STATUS_COLUMN}:
+            return [f"{identifier}: tu usuario sólo puede cambiar la etapa (STATUS)."]
+    errors: list[str] = []
     if manual_stage and reactivate:
         return [f"{identifier}: usa el histórico de Enviados para reactivar este pedido."]
     if manual_stage and current_user not in MANUAL_STAGE_USERS:
@@ -2816,7 +2830,7 @@ def save_workbench_changes(
     multiple = dropdown_fields.multiple_columns(select_catalog or {}, source, MULTI_SELECT_COLUMNS)
     order_detail.restore_catalog_values(changes, select_catalog, multiple)
 
-    if not can_edit_orders(current_user):
+    if not can_edit_orders(current_user) and (reactivate or not can_change_status_here(current_user)):
         return [], ["Tu usuario no tiene permiso para editar pedidos."]
     if source[ID_COLUMN].duplicated().any():
         return [], ["Hay números de orden duplicados; corrige la hoja antes de guardar."]
@@ -2985,7 +2999,8 @@ def grid_configuration_parts(
     editable_columns = ({STATUS_COLUMN} & set(grid.columns)
                         if reactivate else aligners_editable_columns(grid.columns))
     if current_user in VIEW_AND_CREATE_USERS:
-        editable_columns = set()
+        editable_columns = ({STATUS_COLUMN} & editable_columns
+                            if status_only_here(current_user) and not reactivate else set())
     return {"stages": stages, "manual_stages": manual_stages, "selections": selections,
             "multiple": multiple, "dates": dates, "palettes": palettes, "editable": editable_columns}
 
@@ -3863,6 +3878,31 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
             rerun_active_tab()
         for error in errors:
             st.error(error)
+    if view_only and status_only_here(current_user):
+        render_status_only_change(row, current_user, definitions, catalog[STATUS_COLUMN])
+
+
+def render_status_only_change(row: pd.Series, current_user: str, definitions: dict, options: list[str]) -> None:
+    """Ficha de sólo lectura con un único cambio permitido: la etapa (Juan en Polanco/AERIS)."""
+    identifier = clean_cell(row.get(ID_COLUMN, "")).strip()
+    current = clean_cell(row.get(STATUS_COLUMN, "")).strip()
+    choices = [option for option in options if status_key(option) != status_key(current)]
+    if not choices:
+        return
+    target = st.selectbox("🚦 Cambiar etapa", choices, index=None, placeholder="Selecciona la nueva etapa",
+                          format_func=lambda value: status_display_value(value, definitions),
+                          key=tracking_key(f"aligners_status_only_{identifier}"))
+    if st.button("Guardar etapa", type="primary", disabled=not target,
+                 key=tracking_key(f"aligners_status_only_save_{identifier}")):
+        source = pd.DataFrame([row])
+        edited = source.copy()
+        edited[STATUS_COLUMN] = target
+        saved, errors = save_workbench_changes(source, source, edited, current_user, definitions)
+        if saved:
+            st.session_state[tracking_key("aligners_feedback")] = (saved, errors, f"{order_detail.order_title(row)} guardado.")
+            rerun_active_tab()
+        for error in errors:
+            st.error(error)
 
 
 def render_case_actions(
@@ -3883,7 +3923,7 @@ def render_case_actions(
     if len(selected) > 1:
         st.markdown(f"### Pedidos seleccionados · {len(selected)}")
     form_pending = bool(order_detail.pending_count(namespace))
-    if len(selected) > 1 and not form_pending and can_edit_orders(current_user):
+    if len(selected) > 1 and not form_pending and can_change_status_here(current_user):
         with st.expander("⚡ Cambiar etapa de los seleccionados", expanded=True):
             options = aligners_batch_stages(selected, definitions)
             target = st.selectbox("Etapa para todos", options, index=None,
@@ -4017,7 +4057,9 @@ def render_workbench(current_user: str) -> None:
         for error in errors:
             st.error(error)
 
-    if not can_edit_orders(current_user):
+    if status_only_here(current_user):
+        st.caption(STATUS_ONLY_CAPTION)
+    elif not can_edit_orders(current_user):
         st.caption("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
     with st.expander("➕ Nueva orden", expanded=False,
                      key=tracking_key("aligners_new_expander"), on_change="rerun") as new_order:
@@ -4118,7 +4160,7 @@ def render_active_orders(
         '<span class="automatic">⚙ Cálculo automático</span></div>'
     )
     visibility[1].markdown(legend if can_edit_orders(current_user) else
-        '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
+        STATUS_ONLY_LEGEND if status_only_here(current_user) else '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
     st.caption(
         f"{len(filtered)} de {len(table)} pedidos · Cada fila sólo ofrece su siguiente etapa normal, "
         "las pausas aplicables y Cancelado. En una pausa se habilitan las etapas para reanudar."
@@ -4180,7 +4222,7 @@ def render_active_orders(
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not can_edit_orders(current_user) or not changes or sent_pending or form_pending,
+        disabled=not can_change_status_here(current_user) or not changes or sent_pending or form_pending,
         use_container_width=True,
         key=tracking_key("aligners_save"),
         help=(
@@ -4603,7 +4645,9 @@ def general_grid_options(
             )
         for _, row in filtered.loc[mask].iterrows():
             row_key, identifier = row[GENERAL_ROW_KEY_COLUMN], row[ID_COLUMN]
-            stages[row_key] = parts["stages"].get(identifier, [])
+            # STATUS se habilita por columna; sin permiso en esta hoja la fila no ofrece etapas.
+            stages[row_key] = (parts["stages"].get(identifier, [])
+                               if STATUS_COLUMN in parts["editable"] else [])
             manual_stages[row_key] = parts["manual_stages"].get(identifier, [])
             row_editable[row_key] = sorted(parts["editable"] & set(own))
         for column, values in parts["selections"].items():
@@ -4679,6 +4723,16 @@ def discard_general_changes(sources: list[dict[str, Any]]) -> None:
             order_detail.clear_drafts(tracking_key("aligners"))
             reset_workbench()
     reset_general_grid()
+
+
+def any_status_access(current_user: str, sources: list[dict[str, Any]]) -> bool:
+    return any(can_change_status(current_user, source["sheet"]) for source in sources)
+
+
+STATUS_ONLY_LEGEND = ('<div class="align-column-legend"><span class="editable">✎ Sólo puedes cambiar STATUS'
+                      '</span><span class="readonly">🔒 Lo demás es de sólo lectura</span></div>')
+STATUS_ONLY_CAPTION = ("👁️ Puedes consultar los pedidos, agregar nuevos y cambiar la etapa (STATUS) de Polanco y "
+                       "AERIS; lo demás es de sólo lectura.")
 
 
 def render_general_orders(current_user: str, sources: list[dict[str, Any]], stored_pending: int) -> None:
@@ -4760,7 +4814,7 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
         '<span class="editable">✎ Editable manual</span>'
         '<span class="auto-editable">✎⚙ Editable automática</span>'
         '<span class="automatic">⚙ Cálculo automático</span></div>'
-        if can_edit_orders(current_user) else
+        if can_edit_orders(current_user) else STATUS_ONLY_LEGEND if any_status_access(current_user, sources) else
         '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>',
         unsafe_allow_html=True,
     )
@@ -4824,7 +4878,7 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not can_edit_orders(current_user) or not batches or sent_pending or form_pending,
+        disabled=not any_status_access(current_user, sources) or not batches or sent_pending or form_pending,
         width="stretch",
         key=f"{GENERAL_KEY_PREFIX}aligners_save",
         help="Primero guarda o descarta los cambios del histórico de Enviados." if sent_pending else None,
@@ -4918,7 +4972,8 @@ def render_general_workbench(current_user: str) -> None:
         rerun_active_tab()
     show_general_feedback(sources)
     if not can_edit_orders(current_user):
-        st.caption("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
+        st.caption(STATUS_ONLY_CAPTION if any_status_access(current_user, sources) else
+                   "👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
 
     render_general_new_order(current_user, sources, pending)
     render_general_orders(current_user, sources, pending)

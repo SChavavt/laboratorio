@@ -297,3 +297,41 @@ with patch.object(app, 'ensure_times_headers', lambda: None), \\
     assert "ETAPA SOLICITUD" not in at.session_state["created_values"]
     assert at.session_state["aeris_aligners_new_version"] == 1
     assert "polanco_aligners_new_version" not in at.session_state
+
+
+@pytest.mark.parametrize("sheet_name", [app.SHEET_AERIS, app.SHEET_POLANCO])
+def test_juan_only_changes_status_in_polanco_and_aeris(sheets, sheet_name):
+    app.st.session_state["aligners_order_sheet"] = sheet_name
+    source = app.read_orders_df()
+    edited = source.copy()
+    edited.loc[0, "DETALLE COMENTARIOS"] = "Cambio no permitido"
+    saved, errors = app.save_workbench_changes(source, source, edited, "Juan", definitions())
+    assert not saved and any("sólo puede cambiar la etapa" in error for error in errors)
+    edited = source.copy()
+    edited.loc[0, app.STATUS_COLUMN] = "EN IMPRESIÓN Y CONFECCIÓN"
+    assert app.save_workbench_changes(source, source, edited, "Paula", definitions())[0] == []
+    assert app.save_workbench_changes(source, source, edited, "Juan", definitions(), reactivate=True)[0] == []
+    saved, errors = app.save_workbench_changes(source, source, edited, "Juan", definitions())
+    assert (saved, errors) == (["001"], [])
+    assert sheets[sheet_name].values[2][1] == "EN IMPRESIÓN Y CONFECCIÓN"
+    log = dict(zip(app.TIMES_HEADERS, sheets[app.ORDER_TIME_SHEETS[sheet_name]].values[-1]))
+    assert log["USUARIO"] == "Juan"
+    grid = source.drop(columns=[c for c in source.columns if c.startswith("_")], errors="ignore")
+    parts = app.grid_configuration_parts(grid, source, definitions(), current_user="Juan")
+    assert parts["editable"] == {app.STATUS_COLUMN}
+    assert app.grid_configuration_parts(grid, source, definitions(), current_user="Paula")["editable"] == set()
+
+
+def test_juan_cannot_change_status_in_main_tracking(sheets):
+    app.st.session_state["aligners_order_sheet"] = app.SHEET_ORDERS
+    source = app.read_orders_df()
+    edited = source.copy()
+    edited.loc[0, app.STATUS_COLUMN] = "EN IMPRESIÓN Y CONFECCIÓN"
+    saved, errors = app.save_workbench_changes(source, source, edited, "Juan", definitions())
+    assert not saved and any("permiso" in error for error in errors)
+    assert sheets[app.SHEET_ORDERS].values[2][1] == "LISTO STLs PARA IMPRESIÓN"
+    grid = source.drop(columns=[c for c in source.columns if c.startswith("_")], errors="ignore")
+    assert app.grid_configuration_parts(grid, source, definitions(), current_user="Juan")["editable"] == set()
+    with pytest.raises(ValueError, match="permiso"):
+        app.register_status_change(identifier="001", product="AERIS", previous_status="LISTO STLs PARA IMPRESIÓN",
+            new_status="EN IMPRESIÓN Y CONFECCIÓN", current_user="Juan", definitions=definitions())
