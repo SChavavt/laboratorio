@@ -19,7 +19,8 @@ import unicodedata
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Iterable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -85,6 +86,25 @@ TRACKING_TAB_SHEETS = {
     POLANCO_TAB_LABEL: SHEET_POLANCO,
     AERIS_TAB_LABEL: SHEET_AERIS,
 }
+# Seguimiento General: las órdenes de las tres hojas en una sola tabla. Cada
+# orden se sigue leyendo y guardando en su hoja de origen, así Polanco y AERIS
+# conservan su registro (y su contabilidad) aparte.
+GENERAL_TAB_LABEL = "🗂️ Seguimiento General"
+GENERAL_ORIGINS = (
+    ("📋 Seguimiento", SHEET_ORDERS),
+    ("🏢 Polanco", SHEET_POLANCO),
+    ("🌬️ AERIS", SHEET_AERIS),
+)
+ORIGIN_COLUMN = "ORIGEN"
+GENERAL_OPEN_COLUMN = "ABRIR"
+GENERAL_ROW_KEY_COLUMN = "_ORIGEN_ORDEN"
+GENERAL_KEY_PREFIX = "general_"
+GENERAL_ALL_ORIGINS = "Todos los orígenes"
+# Ocultar las pestañas por hoja: se recuerda en la sesión y en el enlace.
+GENERAL_HIDE_STATE_KEY = "aligners_hide_individual_tracking"
+GENERAL_HIDE_PARAM = "seguimiento"
+GENERAL_HIDE_PARAM_VALUE = "general"
+GENERAL_HIDE_TOGGLE_KEY = f"{GENERAL_KEY_PREFIX}hide_individual_toggle"
 CASE_ORDER_SHEETS = {
     "alineadores": SHEET_ORDERS,
     "polanco": SHEET_POLANCO,
@@ -1097,6 +1117,24 @@ def current_order_sheet() -> str:
     """El destino pertenece a la sesión; nunca cambia globals compartidos."""
     value = st.session_state.get("aligners_order_sheet", SHEET_ORDERS)
     return value if value in ORDER_TIME_SHEETS else SHEET_ORDERS
+
+
+@contextmanager
+def order_sheet_scope(sheet_name: str) -> Iterator[None]:
+    """Trabaja temporalmente sobre otra hoja (lecturas, ficha, altas y guardados).
+
+    La vista general lo usa para que cada orden se lea y se guarde en su hoja
+    de origen con las mismas funciones que su pestaña individual.
+    """
+    previous = st.session_state.get("aligners_order_sheet")
+    st.session_state["aligners_order_sheet"] = sheet_name
+    try:
+        yield
+    finally:
+        if previous is None:
+            st.session_state.pop("aligners_order_sheet", None)
+        else:
+            st.session_state["aligners_order_sheet"] = previous
 
 
 def current_times_sheet() -> str:
@@ -3260,8 +3298,15 @@ def guard_tracking_tab_change(current_user: str) -> None:
     """Impide que Streamlit elimine el editor de una pestaña con cambios pendientes."""
     previous = st.session_state.get("aligners_active_tab", "📋 Seguimiento")
     key = f"aligners_primary_tabs_{current_user}"
-    snapshot = st.session_state.get(tracking_key("aligners_snapshot")) or {}
-    if st.session_state.get(key) != previous and pending_change_count(snapshot.get("definitions", {})):
+    # La vista general edita en las tres hojas; cada pestaña individual, sólo en la suya.
+    sheets = ([sheet for _, sheet in GENERAL_ORIGINS] if previous == GENERAL_TAB_LABEL
+              else [current_order_sheet()])
+    pending = False
+    for sheet in sheets:
+        with order_sheet_scope(sheet):
+            snapshot = st.session_state.get(tracking_key("aligners_snapshot")) or {}
+            pending = pending or bool(pending_change_count(snapshot.get("definitions", {})))
+    if st.session_state.get(key) != previous and pending:
         st.session_state[key] = previous
         st.session_state["aligners_tab_warning"] = True
 
@@ -3352,19 +3397,27 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
     return snapshot
 
 
-def set_aligners_signal_filter(signal: str) -> None:
+def signal_filter_key(key_prefix: str | None = None) -> str:
+    """Sin prefijo, cada seguimiento guarda su filtro; la vista general usa el suyo."""
+    if key_prefix is None:
+        return tracking_key(ALIGNERS_SIGNAL_FILTER_KEY)
+    return key_prefix + ALIGNERS_SIGNAL_FILTER_KEY
+
+
+def set_aligners_signal_filter(signal: str, key_prefix: str | None = None) -> None:
     """Actualiza el filtro de semáforo desde una tarjeta."""
 
-    st.session_state[tracking_key(ALIGNERS_SIGNAL_FILTER_KEY)] = (
+    st.session_state[signal_filter_key(key_prefix)] = (
         signal if signal in {"Todos", *ALERT_COLORS} else "Todos"
     )
 
 
-def current_aligners_signal_filter() -> str:
-    signal = st.session_state.get(tracking_key(ALIGNERS_SIGNAL_FILTER_KEY), "Todos")
+def current_aligners_signal_filter(key_prefix: str | None = None) -> str:
+    key = signal_filter_key(key_prefix)
+    signal = st.session_state.get(key, "Todos")
     if signal not in {"Todos", *ALERT_COLORS}:
         signal = "Todos"
-        st.session_state[tracking_key(ALIGNERS_SIGNAL_FILTER_KEY)] = signal
+        st.session_state[key] = signal
     return signal
 
 
@@ -3374,6 +3427,7 @@ def render_metrics(
     namespace: str = "",
     interactive: bool = False,
     disabled: bool = False,
+    key_prefix: str | None = None,
 ) -> str:
     """Muestra métricas; en Seguimiento también funcionan como filtros."""
 
@@ -3385,7 +3439,7 @@ def render_metrics(
         ("green", "🟢 En tiempo", "🟢 En tiempo"),
         ("gray", "⚪ Sin medición", "⚪ Sin medición"),
     ]
-    selected = current_aligners_signal_filter()
+    selected = current_aligners_signal_filter(key_prefix)
     metrics = st.columns(len(labels))
     for container, (tone, label, signal) in zip(metrics, labels):
         value = len(table) if signal == "Todos" else int(table["SEMÁFORO"].eq(signal).sum())
@@ -3393,12 +3447,13 @@ def render_metrics(
             with container.container(key=f"align_filter_{tone}"):
                 st.button(
                     f"{label}\n\n**{value}**",
-                    key=tracking_key(f"aligners_signal_card_{tone}"),
+                    key=(tracking_key(f"aligners_signal_card_{tone}") if key_prefix is None
+                         else f"{key_prefix}aligners_signal_card_{tone}"),
                     type="primary" if selected == signal else "secondary",
                     disabled=disabled,
                     use_container_width=True,
                     on_click=set_aligners_signal_filter,
-                    args=(signal,),
+                    args=(signal, key_prefix),
                     help="Mostrar todos los pedidos" if signal == "Todos" else f"Filtrar por {label}",
                 )
         else:
@@ -3742,6 +3797,7 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
     if not view_only:
         fields = [column for column in fields if column not in in_shipments]
     identifier = str(row[ID_COLUMN])
+    case_type = invoice_case_type()
     status = clean_cell(row.get(STATUS_COLUMN, "")).strip()
     labels = {column: f"{icon} {column}" for column, icon in NEW_ORDER_FIELD_ICONS.items()}
     labels.update({STATUS_COLUMN: "🚦 STATUS", "NOMBRE DOCTOR": "👩‍⚕️ NOMBRE DOCTOR",
@@ -3762,8 +3818,8 @@ def render_aligner_order_editor(row: pd.Series, current_user: str, definitions: 
         extra=(lambda: render_shipments_section(namespace, identifier, plan, shipments))
         if shipments and can_edit_orders(current_user) else None,
         section_extras={case_invoices.SERVICE_SECTION: lambda: case_invoices.render_section(
-            invoice_case_type(), identifier, current_user,
-            verify_case=lambda: verify_invoice_case(invoice_case_type(), identifier), rerun=rerun_active_tab)},
+            case_type, identifier, current_user,
+            verify_case=lambda: verify_invoice_case(case_type, identifier), rerun=rerun_active_tab)},
         hints={STATUS_COLUMN: f"El pedido está en pausa por **{status}**. Al resolverla podrás elegir la "
                               "etapa real a la que debe regresar."} if is_pause_status(status) else None)
     if result:
@@ -4139,7 +4195,7 @@ def render_active_orders(
     )
 
 
-def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
+def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffix: str = "") -> None:
     """Histórico de enviados; cambiar la etapa devuelve el pedido a la mesa activa."""
     definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
     sent: pd.DataFrame = snapshot.get("sent", pd.DataFrame())
@@ -4155,7 +4211,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any]) -> None:
         st.toast("Guarda o descarta los cambios antes de cerrar Enviados.", icon="⚠️")
     # on_change="rerun": la grilla se monta con el expander ya abierto, no con ancho cero.
     with st.expander(
-        f"🚚 Enviados · {len(sent)} pedido(s)",
+        f"🚚 Enviados{title_suffix} · {len(sent)} pedido(s)",
         expanded=False,
         key=expander_key,
         on_change="rerun",
@@ -4328,6 +4384,317 @@ def render_processes(current_user: str) -> None:
                     + " · ".join(f"⏸️ {pause}" for pause in definition.pauses)
                 )
             st.caption("🗄️ CANCELADO está disponible desde cualquier etapa activa y archiva el pedido.")
+
+
+# ==============================
+# Seguimiento General
+# ==============================
+def load_general_sources(current_user: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lee las tres hojas con el mismo snapshot que usan sus pestañas.
+
+    Una hoja que falla queda fuera con su motivo, sin tapar a las demás.
+    """
+
+    sources: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for origin, sheet in GENERAL_ORIGINS:
+        with order_sheet_scope(sheet):
+            try:
+                ensure_times_headers()
+                snapshot = get_snapshot(current_user)
+            except gspread.WorksheetNotFound:
+                problems.append(f"{origin}: no se encontró la hoja {sheet} en Control ALINEADORES.")
+                continue
+            except Exception as exc:
+                problems.append(f"{origin}: no se pudo leer la hoja {sheet} ({exc}).")
+                continue
+            columns = tracking_columns(snapshot["table"].columns)
+        sources.append({"origin": origin, "sheet": sheet, "snapshot": snapshot, "columns": columns})
+    return sources, problems
+
+
+def merge_column_orders(orders: Iterable[list[str]]) -> list[str]:
+    """Une las columnas de cada hoja respetando su orden; las propias van junto a sus vecinas."""
+
+    merged: list[str] = []
+    for columns in orders:
+        previous = None
+        for column in columns:
+            if column not in merged:
+                position = merged.index(previous) + 1 if previous in merged else len(merged)
+                merged.insert(position, column)
+            previous = column
+    return merged
+
+
+def general_row_key(origin: str, identifier: Any) -> str:
+    """El número de orden puede repetirse entre hojas; el origen lo hace único."""
+    return f"{origin}|{clean_cell(identifier).strip()}"
+
+
+def build_general_table(sources: list[dict[str, Any]], key: str = "table") -> pd.DataFrame:
+    """Une las órdenes de las tres hojas con la columna ORIGEN."""
+
+    frames = []
+    for source in sources:
+        table = source["snapshot"].get(key, pd.DataFrame())
+        if table is None or table.empty:
+            continue
+        frame = table.copy()
+        frame.insert(0, ORIGIN_COLUMN, source["origin"])
+        frame[GENERAL_ROW_KEY_COLUMN] = [
+            general_row_key(source["origin"], identifier) for identifier in frame[ID_COLUMN]
+        ]
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame()
+    # Cada hoja tiene columnas propias (AERIS no usa TIPO, Polanco lleva ADEUDO).
+    return pd.concat(frames, ignore_index=True, sort=False).fillna("")
+
+
+def show_general_feedback(sources: list[dict[str, Any]]) -> None:
+    """Los guardados de la ficha y de Nueva orden avisan en la hoja donde ocurrieron."""
+
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            feedback = st.session_state.pop(tracking_key("aligners_feedback"), None)
+        if not feedback:
+            continue
+        saved, errors, message = feedback
+        if saved:
+            st.toast(f"{source['origin']} · " + (message or "Guardado: " + ", ".join(saved)), icon="✅")
+        for error in errors:
+            st.error(f"{source['origin']} · {error}")
+
+
+def general_pending_count(sources: list[dict[str, Any]]) -> int:
+    total = 0
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            total += pending_change_count(source["snapshot"]["definitions"])
+    return total
+
+
+def refresh_general_sources(sources: list[dict[str, Any]]) -> None:
+    st.session_state.pop("aligners_form_catalogs", None)
+    read_order_form_catalogs.clear(configured_spreadsheet_id())
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            clear_sheet_data_cache()
+            reset_workbench()
+
+
+def set_individual_tracking_hidden() -> None:
+    """Guarda la elección del interruptor y la deja en el enlace para recargar igual."""
+
+    hidden = bool(st.session_state.get(GENERAL_HIDE_TOGGLE_KEY))
+    st.session_state[GENERAL_HIDE_STATE_KEY] = hidden
+    if hidden:
+        st.query_params[GENERAL_HIDE_PARAM] = GENERAL_HIDE_PARAM_VALUE
+    elif GENERAL_HIDE_PARAM in st.query_params:
+        del st.query_params[GENERAL_HIDE_PARAM]
+
+
+def individual_tracking_hidden() -> bool:
+    if GENERAL_HIDE_STATE_KEY not in st.session_state:
+        st.session_state[GENERAL_HIDE_STATE_KEY] = (
+            normalize_text(get_query_param_value(GENERAL_HIDE_PARAM))
+            == normalize_text(GENERAL_HIDE_PARAM_VALUE)
+        )
+    return bool(st.session_state[GENERAL_HIDE_STATE_KEY])
+
+
+def render_general_new_order(current_user: str, sources: list[dict[str, Any]]) -> None:
+    """Nueva orden: primero se elige a qué seguimiento pertenece."""
+
+    with st.expander("➕ Nueva orden", expanded=False,
+                     key=f"{GENERAL_KEY_PREFIX}new_expander", on_change="rerun") as new_order:
+        if not new_order.open:
+            return
+        origins = [source["origin"] for source in sources]
+        origin = st.segmented_control(
+            "¿A qué seguimiento pertenece la orden?",
+            origins,
+            key=f"{GENERAL_KEY_PREFIX}new_origin",
+        )
+        st.caption(
+            "La orden se guarda en la hoja de ese origen: Polanco y AERIS conservan su "
+            "registro aparte para su contabilidad y facturación."
+        )
+        if not origin:
+            st.info("Elige el origen para capturar la orden.")
+            return
+        source = next(source for source in sources if source["origin"] == origin)
+        with order_sheet_scope(source["sheet"]):
+            if pending_change_count(source["snapshot"]["definitions"]):
+                st.info("Guarda o descarta los cambios de esa hoja antes de crear una orden.")
+            else:
+                render_new_order(current_user, source["snapshot"])
+
+
+def render_general_orders(current_user: str, sources: list[dict[str, Any]]) -> None:
+    """Tabla única con las órdenes activas y la ficha de las que se marquen."""
+
+    definitions: dict[str, ProcessDefinition] = sources[0]["snapshot"]["definitions"]
+    table = build_general_table(sources)
+    signal = render_metrics(table, interactive=True, key_prefix=GENERAL_KEY_PREFIX)
+    st.caption(
+        "Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · "
+        "Rojo: plazo agotado · Morado: pausa opcional · Gris: falta iniciar o reparar la medición. "
+        "Los tiempos cuentan de lunes a viernes."
+    )
+    if table.empty:
+        st.info(
+            "No hay pedidos activos. Los enviados se consultan abajo, en el histórico de "
+            "Enviados de cada origen."
+        )
+        return
+
+    filters = st.columns([1.6, 2.2, 1.5, 1.5, 1.3])
+    origin_filter = filters[0].selectbox(
+        "Origen",
+        [GENERAL_ALL_ORIGINS, *(source["origin"] for source in sources)],
+        key=f"{GENERAL_KEY_PREFIX}origin_filter",
+    )
+    search = filters[1].text_input(
+        "Buscar pedido",
+        placeholder="Orden, doctor, paciente o producto",
+        key=f"{GENERAL_KEY_PREFIX}search",
+    )
+    scoped = table if origin_filter == GENERAL_ALL_ORIGINS else table[table[ORIGIN_COLUMN] == origin_filter]
+    product_options = sorted(
+        {clean_cell(value).strip() for value in scoped.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
+    )
+    products = filters[2].multiselect("Producto", product_options, key=f"{GENERAL_KEY_PREFIX}products")
+    status_options = sorted(
+        {clean_cell(value).strip() for value in scoped.get(STATUS_COLUMN, []) if clean_cell(value).strip()}
+    )
+    statuses = filters[3].multiselect(
+        "Status",
+        status_options,
+        format_func=lambda value: status_display_value(value, definitions),
+        key=f"{GENERAL_KEY_PREFIX}statuses",
+    )
+    order_mode = filters[4].selectbox(
+        "Orden",
+        ["Orden de la hoja", "Atender urgentes primero"],
+        key=f"{GENERAL_KEY_PREFIX}order_mode",
+    )
+    filtered = filter_tracking_table(
+        scoped, search=search, signal=signal, products=products, statuses=statuses, order_mode=order_mode,
+    )
+    st.caption(
+        f"{len(filtered)} de {len(table)} pedidos activos · Marca **Abrir** en un pedido para ver y "
+        "editar su ficha abajo; los cambios se guardan en la hoja de su origen. Marca varios del "
+        "mismo origen para cambiarles la etapa en lote."
+    )
+    if filtered.empty:
+        st.info("No hay pedidos que coincidan con los filtros.")
+        return
+
+    # Una hoja sin pedidos activos no aporta filas, aunque tenga columnas propias.
+    columns = [column for column in merge_column_orders(source["columns"] for source in sources)
+               if column in table.columns]
+    grid = display_workbench_df(filtered[[ORIGIN_COLUMN, *columns]], definitions)
+    selected_state = f"{GENERAL_KEY_PREFIX}selected"
+    known = set(table[GENERAL_ROW_KEY_COLUMN])
+    selected_keys = [key for key in st.session_state.get(selected_state, []) if key in known]
+    grid.insert(0, GENERAL_OPEN_COLUMN, filtered[GENERAL_ROW_KEY_COLUMN].isin(selected_keys).to_numpy())
+    grid[GENERAL_ROW_KEY_COLUMN] = filtered[GENERAL_ROW_KEY_COLUMN].to_numpy()
+    revisions = []
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            revisions.append(st.session_state.get(tracking_key("aligners_revision"), 0))
+    # Con datos o filtros nuevos la tabla se vuelve a dibujar con lo marcado guardado.
+    signature = hashlib.sha256(json.dumps(
+        [current_user, revisions, origin_filter, search, signal, products, statuses, order_mode],
+        ensure_ascii=False, sort_keys=True,
+    ).encode()).hexdigest()[:16]
+    edited = st.data_editor(
+        grid,
+        hide_index=True,
+        width="stretch",
+        column_order=[GENERAL_OPEN_COLUMN, ORIGIN_COLUMN, *columns],
+        column_config={
+            GENERAL_OPEN_COLUMN: st.column_config.CheckboxColumn("Abrir", width="small", pinned=True),
+            ORIGIN_COLUMN: st.column_config.TextColumn("Origen", pinned=True),
+            ID_COLUMN: st.column_config.TextColumn(ID_COLUMN, pinned=True),
+        },
+        disabled=[column for column in grid.columns if column != GENERAL_OPEN_COLUMN],
+        key=f"{GENERAL_KEY_PREFIX}grid_{signature}",
+    )
+    visible_keys = set(grid[GENERAL_ROW_KEY_COLUMN])
+    checked = edited.loc[edited[GENERAL_OPEN_COLUMN].eq(True), GENERAL_ROW_KEY_COLUMN].tolist()
+    # Lo marcado que quedó fuera por un filtro sigue abierto.
+    selected_keys = [key for key in selected_keys if key not in visible_keys] + checked
+    st.session_state[selected_state] = selected_keys
+
+    shown = 0
+    for source in sources:
+        snapshot = source["snapshot"]
+        origin_rows = table[(table[ORIGIN_COLUMN] == source["origin"])
+                            & table[GENERAL_ROW_KEY_COLUMN].isin(selected_keys)]
+        with order_sheet_scope(source["sheet"]):
+            namespace = tracking_key("aligners")
+            if origin_rows.empty and not order_detail.pending_count(namespace):
+                continue
+            source_table = snapshot["table"]
+            selected = source_table[source_table[ID_COLUMN].isin(origin_rows[ID_COLUMN])]
+            order_detail.note_selection(selected[ID_COLUMN].tolist(), namespace)
+            st.markdown(f"#### {source['origin']}")
+            render_case_actions(
+                selected,
+                snapshot["times"],
+                current_user,
+                snapshot["definitions"],
+                sent_change_count(snapshot["definitions"]) > 0,
+            )
+        shown += 1
+    if not shown:
+        st.caption("☑️ Marca Abrir en un pedido para ver y editar su ficha.")
+
+
+def render_general_workbench(current_user: str) -> None:
+    """Pestaña Seguimiento General: Seguimiento, Polanco y AERIS en una sola vista."""
+
+    heading, toggle = st.columns([5, 2])
+    heading.caption(
+        "Órdenes de Seguimiento, Polanco y AERIS en una sola tabla. La columna **Origen** dice "
+        "de qué hoja viene cada una; al guardar, cada cambio va a su hoja original."
+    )
+    toggle.toggle(
+        "Ocultar pestañas individuales",
+        value=individual_tracking_hidden(),
+        key=GENERAL_HIDE_TOGGLE_KEY,
+        on_change=set_individual_tracking_hidden,
+        help="Oculta Seguimiento, Seguimiento Polanco y AERIS y deja sólo esta vista general. "
+             "Desactívalo aquí para mostrarlas otra vez.",
+    )
+    sources, problems = load_general_sources(current_user)
+    for problem in problems:
+        st.warning(problem)
+    if not sources:
+        return
+    pending = general_pending_count(sources)
+
+    info, refresh = st.columns([5, 1])
+    info.caption(
+        f"{current_user} · Datos consultados {min(source['snapshot']['at'] for source in sources):%d/%m/%Y %H:%M} · "
+        "Hora de Ciudad de México"
+    )
+    if refresh.button("Actualizar datos", disabled=bool(pending), width="stretch",
+                      key=f"{GENERAL_KEY_PREFIX}refresh"):
+        refresh_general_sources(sources)
+        rerun_active_tab()
+    show_general_feedback(sources)
+    if not can_edit_orders(current_user):
+        st.caption("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
+
+    render_general_new_order(current_user, sources)
+    render_general_orders(current_user, sources)
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            render_sent_archive(current_user, source["snapshot"], title_suffix=f" · {source['origin']}")
 
 
 # ==============================
@@ -4852,28 +5219,40 @@ ALIGNERS_TAB_LABELS = (
     "📋 Seguimiento",
     POLANCO_TAB_LABEL,
     AERIS_TAB_LABEL,
+    GENERAL_TAB_LABEL,
     case_search.TAB_LABEL,
     FORMS_TAB_LABEL,
     BOARD_TAB_LABEL,
 )
 
 
+def aligners_tab_labels() -> tuple[str, ...]:
+    """Con las pestañas por hoja ocultas sólo queda la vista general de seguimiento."""
+    if not individual_tracking_hidden():
+        return ALIGNERS_TAB_LABELS
+    return tuple(label for label in ALIGNERS_TAB_LABELS if label not in TRACKING_TAB_SHEETS)
+
+
 @st.fragment(key="aligners_active_tab_content")
 def render_app_tabs(current_user: str) -> None:
     """Ejecuta únicamente el contenido de la pestaña visible."""
     apply_board_url(current_user)
+    labels = aligners_tab_labels()
     previous_labels = {"📋 Seguimiento Polanco": POLANCO_TAB_LABEL, "AERIS": AERIS_TAB_LABEL}
     for key in ("aligners_active_tab", f"aligners_primary_tabs_{current_user}"):
-        previous = st.session_state.get(key)
-        if previous in previous_labels:
-            st.session_state[key] = previous_labels[previous]
+        current = st.session_state.get(key)
+        previous = previous_labels.get(current, current)
+        if previous in TRACKING_TAB_SHEETS and previous not in labels:
+            previous = GENERAL_TAB_LABEL
+        if previous != current:
+            st.session_state[key] = previous
     tabs = st.tabs(
-        ALIGNERS_TAB_LABELS,
+        labels,
         key=f"aligners_primary_tabs_{current_user}",
         on_change=guard_tracking_tab_change,
         args=(current_user,),
     )
-    for label, tab in zip(ALIGNERS_TAB_LABELS, tabs):
+    for label, tab in zip(labels, tabs):
         if not tab.open:
             continue
         with tab:
@@ -4890,6 +5269,10 @@ def render_app_tabs(current_user: str) -> None:
                 except gspread.WorksheetNotFound:
                     st.error(f"No se encontró la hoja {current_order_sheet()} en Control ALINEADORES. "
                              "Revisa su nombre y recarga la página después de agregarla.")
+            elif label == GENERAL_TAB_LABEL:
+                if st.session_state.pop("aligners_tab_warning", False):
+                    st.warning("Guarda o descarta los cambios antes de cambiar de pestaña.")
+                render_general_workbench(current_user)
             elif label == "🚨 Alertas y pausas":
                 render_alerts(current_user)
             elif label == "⚙️ Procesos y plazos":

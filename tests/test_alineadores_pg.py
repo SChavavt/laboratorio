@@ -494,6 +494,7 @@ with (
     patch.object(app, "require_authenticated_user", lambda: "Admin"),
     patch.object(app, "ensure_times_headers", lambda: None),
     patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_general_workbench", lambda _: st.write("general ejecutado")),
     patch.object(app, "render_aligners_forms_tab", lambda: st.write("forms ejecutados")),
     patch.object(app, "render_alerts", lambda _: st.write("alertas ejecutadas")),
     patch.object(app, "render_processes", lambda _: st.write("procesos ejecutados")),
@@ -505,7 +506,8 @@ with (
     assert not at.exception
     # Alertas y pausas / Procesos y plazos están ocultas.
     assert [tab.label for tab in at.tabs] == [
-        "📋 Seguimiento", "🏢 Seguimiento Polanco", "🌬️ AERIS", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
+        "📋 Seguimiento", "🏢 Seguimiento Polanco", "🌬️ AERIS", "🗂️ Seguimiento General",
+        "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
     ]
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
     assert not at.tabs[2].markdown
@@ -514,20 +516,57 @@ with (
     at.run()
     assert not at.exception
     assert not at.tabs[0].markdown
-    assert [item.value for item in at.tabs[4].markdown] == ["forms ejecutados"]
+    assert [item.value for item in at.tabs[5].markdown] == ["forms ejecutados"]
 
     at.session_state["aligners_primary_tabs_Admin"] = "🔎 Buscar casos"
     at.run()
     assert not at.exception
-    assert [item.value for item in at.tabs[3].markdown] == ["buscador ejecutado"]
-    assert not at.tabs[0].markdown and not at.tabs[4].markdown
+    assert [item.value for item in at.tabs[4].markdown] == ["buscador ejecutado"]
+    assert not at.tabs[0].markdown and not at.tabs[5].markdown
 
     # Una sesión que tenía abierta una pestaña oculta vuelve a Seguimiento.
     at.session_state["aligners_primary_tabs_Admin"] = "🚨 Alertas y pausas"
     at.run()
     assert not at.exception
     assert [item.value for item in at.tabs[0].markdown] == ["seguimiento ejecutado"]
-    assert not at.tabs[4].markdown
+    assert not at.tabs[5].markdown
+
+    at.session_state["aligners_primary_tabs_Admin"] = "🗂️ Seguimiento General"
+    at.run()
+    assert not at.exception
+    assert [item.value for item in at.tabs[3].markdown] == ["general ejecutado"]
+    assert not at.tabs[0].markdown
+
+
+def test_hidden_individual_tracking_tabs_leave_only_general_view():
+    from streamlit.testing.v1 import AppTest
+
+    repository_root = str(Path(__file__).resolve().parents[1])
+    script = f'''
+import sys
+sys.path.insert(0, {repository_root!r})
+import streamlit as st
+import alineadores_pg as app
+from unittest.mock import patch
+with (
+    patch.object(app, "require_authenticated_user", lambda: "Admin"),
+    patch.object(app, "ensure_times_headers", lambda: None),
+    patch.object(app, "render_workbench", lambda _: st.write("seguimiento ejecutado")),
+    patch.object(app, "render_general_workbench", lambda _: st.write("general ejecutado")),
+):
+    app.main()
+'''
+    at = AppTest.from_string(script, default_timeout=15)
+    # El enlace recuerda que se ocultaron; la sesión venía de la pestaña de Polanco.
+    at.query_params["seguimiento"] = "general"
+    at.session_state["aligners_primary_tabs_Admin"] = "🏢 Seguimiento Polanco"
+    at.run()
+    assert not at.exception
+    assert [tab.label for tab in at.tabs] == [
+        "🗂️ Seguimiento General", "🔎 Buscar casos", "📥 Recibidos de Forms", "📺 Tablero"
+    ]
+    assert at.session_state["aligners_primary_tabs_Admin"] == "🗂️ Seguimiento General"
+    assert [item.value for item in at.tabs[0].markdown] == ["general ejecutado"]
 
 
 def test_embedded_workspace_reuses_parent_session(monkeypatch):
