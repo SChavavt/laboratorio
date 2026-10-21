@@ -39,6 +39,7 @@ DEFAULT_ORDER = [
 
 LABELS = {
     "SELECCIONAR": "Abrir",
+    "ORIGEN": "Origen",
     "No. Orden": "No. Orden",
     "SEMÁFORO": "Semáforo",
     "STATUS": "🎨 Etapa / status",
@@ -58,6 +59,7 @@ LABELS = {
 
 WIDTHS = {
     "SELECCIONAR": 58,
+    "ORIGEN": 118,
     "No. Orden": 82,
     "SEMÁFORO": 112,
     "STATUS": 154,
@@ -76,6 +78,7 @@ WIDTHS = {
 
 MIN_WIDTHS = {
     "SELECCIONAR": 54,
+    "ORIGEN": 104,
     "No. Orden": 72,
     "SEMÁFORO": 104,
     "STATUS": 138,
@@ -89,6 +92,7 @@ MIN_WIDTHS = {
 
 MAX_WIDTHS = {
     "SELECCIONAR": 62,
+    "ORIGEN": 140,
     "No. Orden": 96,
     "SEMÁFORO": 126,
     "STATUS": 184,
@@ -114,16 +118,21 @@ def build_aligners_grid_options(
     time_zone: str,
     hidden_columns: set[str] | None = None,
     manual_stage_options: dict[str, list[str]] | None = None,
+    id_column: str = "No. Orden",
+    row_editable: dict[str, list[str]] | None = None,
 ) -> dict:
     """Crea el editor manteniendo las transiciones ligadas a cada número de orden.
 
     ``manual_stage_options`` alimenta «Ver todas las etapas…» dentro de STATUS.
+    ``id_column`` identifica cada fila (la vista general usa origen + orden) y
+    ``row_editable`` limita por fila las columnas editables: cada hoja tiene las
+    suyas (AERIS no tiene TIPO, Polanco agrega ADEUDO).
     """
 
     hidden = set(hidden_columns or [])
     system_fixed = [
         column
-        for column in ["SELECCIONAR", "No. Orden", "SEMÁFORO"]
+        for column in ["SELECCIONAR", "ORIGEN", "No. Orden", "SEMÁFORO"]
         if column in grid
     ]
     business_fixed = [column for column in BUSINESS_ORDER if column in grid]
@@ -182,7 +191,7 @@ def build_aligners_grid_options(
                 editable=(
                     JsCode(
                         """function(p) {
-                            return (p.context.stageOptions[p.data['No. Orden']] || []).length > 1;
+                            return (p.context.stageOptions[p.data[p.context.idColumn]] || []).length > 1;
                         }"""
                     )
                     if can_edit
@@ -208,7 +217,7 @@ def build_aligners_grid_options(
         if can_edit and column == "STATUS":
             config["cellClass"] = JsCode(
                 """function(p) {
-                    return (p.context.stageOptions[p.data['No. Orden']] || []).length > 1
+                    return (p.context.stageOptions[p.data[p.context.idColumn]] || []).length > 1
                         ? 'lab-cell-editable' : 'lab-cell-readonly';
                 }"""
             )
@@ -222,6 +231,21 @@ def build_aligners_grid_options(
             config["cellClass"] = "lab-cell-automatic"
         elif column not in system_fixed:
             config["cellClass"] = "lab-cell-readonly"
+
+        if row_editable is not None and can_edit and column not in {"SELECCIONAR", "STATUS"}:
+            config["editable"] = JsCode(
+                """function(p) {
+                    return ((p.context.rowEditable || {})[p.data[p.context.idColumn]] || [])
+                        .includes(p.colDef.field);
+                }"""
+            )
+            automatic_class = " lab-cell-automatic" if column in automatic else ""
+            config["cellClass"] = JsCode(
+                """function(p) {
+                    return ((p.context.rowEditable || {})[p.data[p.context.idColumn]] || [])
+                        .includes(p.colDef.field) ? 'lab-cell-editable%s' : 'lab-cell-readonly';
+                }""" % automatic_class
+            )
 
         if column in palettes:
             config["cellStyle"] = JsCode(
@@ -245,7 +269,8 @@ def build_aligners_grid_options(
     return {
         "columnDefs": columns,
         "context": {
-            "idColumn": "No. Orden",
+            "idColumn": id_column,
+            "rowEditable": row_editable or {},
             "stageOptions": stage_options,
             "manualStageOptions": manual_stage_options or {},
             "palettes": palettes,
@@ -280,9 +305,9 @@ def build_aligners_grid_options(
 
 
 def render_aligners_grid(
-    grid: pd.DataFrame, options: dict, key: str
+    grid: pd.DataFrame, options: dict, key: str, id_column: str = "No. Orden"
 ) -> pd.DataFrame:
-    configure_selection(options, grid, "No. Orden")
+    configure_selection(options, grid, id_column)
     response = AgGrid(
         grid.copy(),
         gridOptions=options,
@@ -298,4 +323,4 @@ def render_aligners_grid(
         custom_css=GRID_CSS,
         show_toolbar=False,
     )
-    return response_frame(grid, response, "No. Orden")
+    return response_frame(grid, response, id_column)

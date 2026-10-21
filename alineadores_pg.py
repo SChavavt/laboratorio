@@ -100,6 +100,9 @@ GENERAL_OPEN_COLUMN = "ABRIR"
 GENERAL_ROW_KEY_COLUMN = "_ORIGEN_ORDEN"
 GENERAL_KEY_PREFIX = "general_"
 GENERAL_ALL_ORIGINS = "Todos los orígenes"
+GENERAL_EDITOR_KEY_STATE = "general_aligners_editor_key"
+GENERAL_EDITOR_BASELINE_STATE = "general_aligners_editor_baseline"
+GENERAL_REVISION_KEY = "general_aligners_revision"
 # Ocultar las pestañas por hoja: se recuerda en la sesión y en el enlace.
 GENERAL_HIDE_STATE_KEY = "aligners_hide_individual_tracking"
 GENERAL_HIDE_PARAM = "seguimiento"
@@ -2920,20 +2923,16 @@ def grid_stage_options(
     return [status_display_value(option, definitions) for option in options]
 
 
-def build_grid_configuration(
+def grid_configuration_parts(
     grid: pd.DataFrame,
     source: pd.DataFrame,
     definitions: dict[str, ProcessDefinition],
     *,
-    hidden_columns: set[str] | None = None,
     reactivate: bool = False,
     select_catalog: dict | None = None,
     current_user: str = "",
-) -> dict:
-    """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa.
-
-    Fuera de él, ``current_user`` decide si STATUS ofrece «Ver todas las etapas…».
-    """
+) -> dict[str, Any]:
+    """Opciones por pedido (etapas, listas, fechas, colores) y columnas editables."""
     duplicates = set(source.loc[source[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
     manual_stages = {} if reactivate else {
         row[ID_COLUMN]: [status_display_value(option, definitions) for option in get_manual_stage_statuses(
@@ -2987,21 +2986,45 @@ def build_grid_configuration(
                         if reactivate else aligners_editable_columns(grid.columns))
     if current_user in VIEW_AND_CREATE_USERS:
         editable_columns = set()
-    options = build_aligners_grid_options(
-        grid,
-        editable=editable_columns,
-        automatic=AUTOMATIC_COLUMNS,
-        stage_options=stages,
-        select_options=selections,
-        date_values=dates,
-        palettes=palettes,
-        time_zone=APP_TIMEZONE_NAME,
-        hidden_columns=hidden_columns,
-        manual_stage_options=manual_stages,
-    )
+    return {"stages": stages, "manual_stages": manual_stages, "selections": selections,
+            "multiple": multiple, "dates": dates, "palettes": palettes, "editable": editable_columns}
+
+
+def decorate_order_grid(options: dict, selections: dict, grid: pd.DataFrame, multiple) -> dict:
     return dropdown_fields.decorate_grid(options, selections, grid, multiple=multiple,
         labeler=new_order_option_label, palettes=order_dropdown_palettes(selections),
         canonicalize=lambda col, value: strip_visual_prefix(value) if col == PRODUCT_COLUMN else str(value))
+
+
+def build_grid_configuration(
+    grid: pd.DataFrame,
+    source: pd.DataFrame,
+    definitions: dict[str, ProcessDefinition],
+    *,
+    hidden_columns: set[str] | None = None,
+    reactivate: bool = False,
+    select_catalog: dict | None = None,
+    current_user: str = "",
+) -> dict:
+    """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa.
+
+    Fuera de él, ``current_user`` decide si STATUS ofrece «Ver todas las etapas…».
+    """
+    parts = grid_configuration_parts(grid, source, definitions, reactivate=reactivate,
+                                     select_catalog=select_catalog, current_user=current_user)
+    options = build_aligners_grid_options(
+        grid,
+        editable=parts["editable"],
+        automatic=AUTOMATIC_COLUMNS,
+        stage_options=parts["stages"],
+        select_options=parts["selections"],
+        date_values=parts["dates"],
+        palettes=parts["palettes"],
+        time_zone=APP_TIMEZONE_NAME,
+        hidden_columns=hidden_columns,
+        manual_stage_options=parts["manual_stages"],
+    )
+    return decorate_order_grid(options, parts["selections"], grid, parts["multiple"])
 
 
 def tracking_columns(available_columns: Iterable[str]) -> list[str]:
@@ -3301,7 +3324,7 @@ def guard_tracking_tab_change(current_user: str) -> None:
     # La vista general edita en las tres hojas; cada pestaña individual, sólo en la suya.
     sheets = ([sheet for _, sheet in GENERAL_ORIGINS] if previous == GENERAL_TAB_LABEL
               else [current_order_sheet()])
-    pending = False
+    pending = previous == GENERAL_TAB_LABEL and general_grid_change_count() > 0
     for sheet in sheets:
         with order_sheet_scope(sheet):
             snapshot = st.session_state.get(tracking_key("aligners_snapshot")) or {}
@@ -4468,7 +4491,8 @@ def show_general_feedback(sources: list[dict[str, Any]]) -> None:
 
 
 def general_pending_count(sources: list[dict[str, Any]]) -> int:
-    total = 0
+    """Cambios sin guardar de la tabla general, de las fichas y de Enviados de cada hoja."""
+    total = general_grid_change_count()
     for source in sources:
         with order_sheet_scope(source["sheet"]):
             total += pending_change_count(source["snapshot"]["definitions"])
@@ -4504,12 +4528,15 @@ def individual_tracking_hidden() -> bool:
     return bool(st.session_state[GENERAL_HIDE_STATE_KEY])
 
 
-def render_general_new_order(current_user: str, sources: list[dict[str, Any]]) -> None:
+def render_general_new_order(current_user: str, sources: list[dict[str, Any]], pending: int) -> None:
     """Nueva orden: primero se elige a qué seguimiento pertenece."""
 
     with st.expander("➕ Nueva orden", expanded=False,
                      key=f"{GENERAL_KEY_PREFIX}new_expander", on_change="rerun") as new_order:
         if not new_order.open:
+            return
+        if pending:
+            st.info("Guarda o descarta los cambios de la tabla antes de crear una orden.")
             return
         origins = [source["origin"] for source in sources]
         origin = st.segmented_control(
@@ -4526,18 +4553,142 @@ def render_general_new_order(current_user: str, sources: list[dict[str, Any]]) -
             return
         source = next(source for source in sources if source["origin"] == origin)
         with order_sheet_scope(source["sheet"]):
-            if pending_change_count(source["snapshot"]["definitions"]):
-                st.info("Guarda o descarta los cambios de esa hoja antes de crear una orden.")
-            else:
-                render_new_order(current_user, source["snapshot"])
+            render_new_order(current_user, source["snapshot"])
 
 
-def render_general_orders(current_user: str, sources: list[dict[str, Any]]) -> None:
-    """Tabla única con las órdenes activas y la ficha de las que se marquen."""
+def general_grid_change_count() -> int:
+    """Filas editadas en la tabla general que todavía no se guardan."""
+
+    key = st.session_state.get(GENERAL_EDITOR_KEY_STATE, "")
+    state = st.session_state.get(key) if key else None
+    baseline = st.session_state.get(GENERAL_EDITOR_BASELINE_STATE)
+    if baseline is None or not state:
+        return 0
+    edited = response_frame(baseline, state, GENERAL_ROW_KEY_COLUMN)
+    if len(edited) != len(baseline):
+        return 1
+    columns = [column for column in baseline.columns if column != "SELECCIONAR"]
+    before = baseline[columns].fillna("").astype(str).reset_index(drop=True)
+    after = edited[columns].fillna("").astype(str).reset_index(drop=True)
+    return int(before.ne(after).any(axis=1).sum())
+
+
+def general_grid_options(
+    grid: pd.DataFrame,
+    filtered: pd.DataFrame,
+    sources: list[dict[str, Any]],
+    definitions: dict[str, ProcessDefinition],
+    current_user: str,
+    hidden: set[str],
+) -> dict:
+    """Mismo editor que cada pestaña; cada fila usa las reglas y columnas de su hoja."""
+
+    stages: dict[str, list[str]] = {}
+    manual_stages: dict[str, list[str]] = {}
+    selections: dict[str, list[str]] = {}
+    multiple: set[str] = set()
+    dates: dict[str, dict[str, str]] = {}
+    palettes: dict[str, dict[str, Any]] = {}
+    editable: set[str] = set()
+    row_editable: dict[str, list[str]] = {}
+    for source in sources:
+        mask = filtered[ORIGIN_COLUMN] == source["origin"]
+        if not mask.any():
+            continue
+        own = [column for column in source["columns"] if column in grid.columns]
+        with order_sheet_scope(source["sheet"]):
+            parts = grid_configuration_parts(
+                grid.loc[mask, own], filtered.loc[mask], definitions,
+                select_catalog=tracking_form_catalog(), current_user=current_user,
+            )
+        for _, row in filtered.loc[mask].iterrows():
+            row_key, identifier = row[GENERAL_ROW_KEY_COLUMN], row[ID_COLUMN]
+            stages[row_key] = parts["stages"].get(identifier, [])
+            manual_stages[row_key] = parts["manual_stages"].get(identifier, [])
+            row_editable[row_key] = sorted(parts["editable"] & set(own))
+        for column, values in parts["selections"].items():
+            selections[column] = list(dict.fromkeys([*selections.get(column, []), *values]))
+        multiple |= set(parts["multiple"])
+        for column, values in parts["dates"].items():
+            dates.setdefault(column, {}).update(values)
+        for column, values in parts["palettes"].items():
+            palettes.setdefault(column, {}).update(values)
+        editable |= parts["editable"] & set(own)
+    options = build_aligners_grid_options(
+        grid,
+        editable=editable,
+        automatic=AUTOMATIC_COLUMNS,
+        stage_options=stages,
+        select_options=selections,
+        date_values=dates,
+        palettes=palettes,
+        time_zone=APP_TIMEZONE_NAME,
+        hidden_columns=hidden | {GENERAL_ROW_KEY_COLUMN},
+        manual_stage_options=manual_stages,
+        id_column=GENERAL_ROW_KEY_COLUMN,
+        row_editable=row_editable,
+    )
+    return decorate_order_grid(options, selections, grid, multiple)
+
+
+def split_general_changes(
+    grid: pd.DataFrame,
+    edited: pd.DataFrame,
+    filtered: pd.DataFrame,
+    sources: list[dict[str, Any]],
+    definitions: dict[str, ProcessDefinition],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Separa lo editado por hoja: cada origen se valida y guarda con su propio número de orden."""
+
+    manual_targets = edited.attrs.get("manualStageTargets", {})
+    batches: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for source in sources:
+        mask = grid[ORIGIN_COLUMN] == source["origin"]
+        if not mask.any():
+            continue
+        own = [column for column in source["columns"] if column in grid.columns]
+        baseline = grid.loc[mask, own].reset_index(drop=True)
+        part = edited.loc[edited[ORIGIN_COLUMN] == source["origin"]]
+        changed = part[own].reset_index(drop=True)
+        keys = dict(zip(part[GENERAL_ROW_KEY_COLUMN].astype(str), part[ID_COLUMN]))
+        changed.attrs["manualStageTargets"] = {
+            keys[row_key]: target for row_key, target in manual_targets.items() if row_key in keys
+        }
+        try:
+            changes = grid_changes(baseline, changed, definitions)
+        except ValueError as exc:
+            errors.append(f"{source['origin']} · {exc}")
+            continue
+        if changes:
+            batches.append({"source": source, "rows": filtered.loc[mask], "baseline": baseline,
+                            "edited": changed, "changes": changes})
+    return batches, errors
+
+
+def reset_general_grid() -> None:
+    """Tabla nueva y limpia: lo editado en la anterior ya se guardó o se descartó."""
+    st.session_state.pop(GENERAL_EDITOR_KEY_STATE, None)
+    st.session_state.pop(GENERAL_EDITOR_BASELINE_STATE, None)
+    st.session_state[GENERAL_REVISION_KEY] = st.session_state.get(GENERAL_REVISION_KEY, 0) + 1
+
+
+def discard_general_changes(sources: list[dict[str, Any]]) -> None:
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            order_detail.clear_drafts(tracking_key("aligners"))
+            reset_workbench()
+    reset_general_grid()
+
+
+def render_general_orders(current_user: str, sources: list[dict[str, Any]], stored_pending: int) -> None:
+    """Tabla única y editable con las órdenes activas; cada cambio va a la hoja de su origen."""
 
     definitions: dict[str, ProcessDefinition] = sources[0]["snapshot"]["definitions"]
+    pending_before_grid = stored_pending > 0
     table = build_general_table(sources)
-    signal = render_metrics(table, interactive=True, key_prefix=GENERAL_KEY_PREFIX)
+    signal = render_metrics(table, interactive=True, disabled=pending_before_grid,
+                            key_prefix=GENERAL_KEY_PREFIX)
     st.caption(
         "Selecciona una tarjeta para filtrar · Verde: menos del 80% del plazo · Amarillo: 80–99% · "
         "Rojo: plazo agotado · Morado: pausa opcional · Gris: falta iniciar o reparar la medición. "
@@ -4550,43 +4701,74 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]]) -> N
         )
         return
 
+    bar_text = (
+        f"✏️ {stored_pending} pedidos con cambios · Guarda o descarta antes de filtrar."
+        if pending_before_grid
+        else "✨ Edita directo en la tabla o marca un pedido en Abrir para verlo en una ficha amplia debajo."
+    )
+    st.markdown(
+        f'<div class="align-edit-bar {"is-pending" if pending_before_grid else "is-ready"}">{bar_text}</div>',
+        unsafe_allow_html=True,
+    )
     filters = st.columns([1.6, 2.2, 1.5, 1.5, 1.3])
     origin_filter = filters[0].selectbox(
         "Origen",
         [GENERAL_ALL_ORIGINS, *(source["origin"] for source in sources)],
+        disabled=pending_before_grid,
         key=f"{GENERAL_KEY_PREFIX}origin_filter",
     )
     search = filters[1].text_input(
         "Buscar pedido",
         placeholder="Orden, doctor, paciente o producto",
+        disabled=pending_before_grid,
         key=f"{GENERAL_KEY_PREFIX}search",
     )
     scoped = table if origin_filter == GENERAL_ALL_ORIGINS else table[table[ORIGIN_COLUMN] == origin_filter]
     product_options = sorted(
         {clean_cell(value).strip() for value in scoped.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
     )
-    products = filters[2].multiselect("Producto", product_options, key=f"{GENERAL_KEY_PREFIX}products")
+    products = filters[2].multiselect("Producto", product_options, disabled=pending_before_grid,
+                                      key=f"{GENERAL_KEY_PREFIX}products")
     status_options = sorted(
         {clean_cell(value).strip() for value in scoped.get(STATUS_COLUMN, []) if clean_cell(value).strip()}
     )
     statuses = filters[3].multiselect(
         "Status",
         status_options,
+        disabled=pending_before_grid,
         format_func=lambda value: status_display_value(value, definitions),
         key=f"{GENERAL_KEY_PREFIX}statuses",
     )
     order_mode = filters[4].selectbox(
         "Orden",
         ["Orden de la hoja", "Atender urgentes primero"],
+        disabled=pending_before_grid,
         key=f"{GENERAL_KEY_PREFIX}order_mode",
     )
     filtered = filter_tracking_table(
         scoped, search=search, signal=signal, products=products, statuses=statuses, order_mode=order_mode,
     )
+
+    visibility = st.columns([1.7, 6.7])
+    hide_automatic = visibility[0].checkbox(
+        "Ocultar automáticas",
+        disabled=pending_before_grid,
+        key=f"{GENERAL_KEY_PREFIX}hide_automatic",
+    )
+    visibility[1].markdown(
+        '<div class="align-column-legend"><span class="readonly">🔒 Fijas: Origen, No. Orden, Semáforo y columnas principales</span>'
+        '<span class="editable">✎ Editable manual</span>'
+        '<span class="auto-editable">✎⚙ Editable automática</span>'
+        '<span class="automatic">⚙ Cálculo automático</span></div>'
+        if can_edit_orders(current_user) else
+        '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>',
+        unsafe_allow_html=True,
+    )
     st.caption(
-        f"{len(filtered)} de {len(table)} pedidos activos · Marca **Abrir** en un pedido para ver y "
-        "editar su ficha abajo; los cambios se guardan en la hoja de su origen. Marca varios del "
-        "mismo origen para cambiarles la etapa en lote."
+        f"{len(filtered)} de {len(table)} pedidos activos · Cada cambio se guarda en la hoja de su "
+        "**Origen**. Cada fila sólo ofrece su siguiente etapa normal, las pausas aplicables y Cancelado."
+        + (" Para corregir, «Ver todas las etapas…» dentro de STATUS ofrece todo el flujo."
+           if current_user in MANUAL_STAGE_USERS else "")
     )
     if filtered.empty:
         st.info("No hay pedidos que coincidan con los filtros.")
@@ -4599,59 +4781,107 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]]) -> N
     selected_state = f"{GENERAL_KEY_PREFIX}selected"
     known = set(table[GENERAL_ROW_KEY_COLUMN])
     selected_keys = [key for key in st.session_state.get(selected_state, []) if key in known]
-    grid.insert(0, GENERAL_OPEN_COLUMN, filtered[GENERAL_ROW_KEY_COLUMN].isin(selected_keys).to_numpy())
+    grid.insert(0, "SELECCIONAR", filtered[GENERAL_ROW_KEY_COLUMN].isin(selected_keys).to_numpy())
     grid[GENERAL_ROW_KEY_COLUMN] = filtered[GENERAL_ROW_KEY_COLUMN].to_numpy()
-    revisions = []
+    revisions = [st.session_state.get(GENERAL_REVISION_KEY, 0)]
     for source in sources:
         with order_sheet_scope(source["sheet"]):
             revisions.append(st.session_state.get(tracking_key("aligners_revision"), 0))
     # Con datos o filtros nuevos la tabla se vuelve a dibujar con lo marcado guardado.
     signature = hashlib.sha256(json.dumps(
-        [current_user, revisions, origin_filter, search, signal, products, statuses, order_mode],
+        [current_user, revisions, origin_filter, search, signal, products, statuses, order_mode,
+         hide_automatic],
         ensure_ascii=False, sort_keys=True,
     ).encode()).hexdigest()[:16]
-    edited = st.data_editor(
-        grid,
-        hide_index=True,
+    key = f"{GENERAL_KEY_PREFIX}aligners_grid_{signature}"
+    st.session_state[GENERAL_EDITOR_KEY_STATE] = key
+    st.session_state[GENERAL_EDITOR_BASELINE_STATE] = grid.copy()
+
+    config_key = f"{GENERAL_KEY_PREFIX}aligners_grid_configuration"
+    cached = st.session_state.get(config_key)
+    if not cached or cached[0] != key:
+        cached = (key, general_grid_options(grid, filtered, sources, definitions, current_user,
+                                            AUTOMATIC_COLUMNS if hide_automatic else set()))
+        st.session_state[config_key] = cached
+    options = deepcopy(cached[1])
+    namespaces = []
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            namespaces.append(tracking_key("aligners"))
+    form_pending = any(order_detail.pending_count(namespace) for namespace in namespaces)
+    order_detail.lock_grid(options, form_pending)
+    edited = render_aligners_grid(grid, options, key, id_column=GENERAL_ROW_KEY_COLUMN)
+    batches, change_errors = split_general_changes(grid, edited, filtered, sources, definitions)
+    for error in change_errors:
+        st.error(error)
+    change_count = sum(len(batch["changes"]) for batch in batches)
+    sent_pending = False
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            sent_pending = sent_pending or sent_change_count(source["snapshot"]["definitions"]) > 0
+
+    save_column, discard_column, count_column, _ = st.columns([1.3, 1.3, 1.8, 4])
+    if save_column.button(
+        "Guardar cambios",
+        type="primary",
+        disabled=not can_edit_orders(current_user) or not batches or sent_pending or form_pending,
         width="stretch",
-        column_order=[GENERAL_OPEN_COLUMN, ORIGIN_COLUMN, *columns],
-        column_config={
-            GENERAL_OPEN_COLUMN: st.column_config.CheckboxColumn("Abrir", width="small", pinned=True),
-            ORIGIN_COLUMN: st.column_config.TextColumn("Origen", pinned=True),
-            ID_COLUMN: st.column_config.TextColumn(ID_COLUMN, pinned=True),
-        },
-        disabled=[column for column in grid.columns if column != GENERAL_OPEN_COLUMN],
-        key=f"{GENERAL_KEY_PREFIX}grid_{signature}",
-    )
+        key=f"{GENERAL_KEY_PREFIX}aligners_save",
+        help="Primero guarda o descarta los cambios del histórico de Enviados." if sent_pending else None,
+    ):
+        for batch in batches:
+            source = batch["source"]
+            with order_sheet_scope(source["sheet"]):
+                saved, errors = save_workbench_changes(
+                    batch["rows"], batch["baseline"], batch["edited"], current_user,
+                    source["snapshot"]["definitions"], select_catalog=tracking_form_catalog(),
+                )
+                st.session_state[tracking_key("aligners_feedback")] = (saved, errors, "")
+        reset_general_grid()
+        rerun_active_tab()
+    if discard_column.button(
+        "Descartar cambios",
+        disabled=not pending_before_grid and not change_count,
+        width="stretch",
+        key=f"{GENERAL_KEY_PREFIX}aligners_discard",
+    ):
+        discard_general_changes(sources)
+        rerun_active_tab()
+    drafts = sum(order_detail.pending_count(namespace) for namespace in namespaces)
+    count_column.caption(f"{change_count + drafts} pedidos con cambios pendientes")
+
+    checked = edited.loc[edited["SELECCIONAR"].eq(True), GENERAL_ROW_KEY_COLUMN].astype(str).tolist()
     visible_keys = set(grid[GENERAL_ROW_KEY_COLUMN])
-    checked = edited.loc[edited[GENERAL_OPEN_COLUMN].eq(True), GENERAL_ROW_KEY_COLUMN].tolist()
     # Lo marcado que quedó fuera por un filtro sigue abierto.
     selected_keys = [key for key in selected_keys if key not in visible_keys] + checked
     st.session_state[selected_state] = selected_keys
+    active_key = edited.attrs.get("activeId")
 
     shown = 0
-    for source in sources:
+    for source, namespace in zip(sources, namespaces):
         snapshot = source["snapshot"]
         origin_rows = table[(table[ORIGIN_COLUMN] == source["origin"])
                             & table[GENERAL_ROW_KEY_COLUMN].isin(selected_keys)]
         with order_sheet_scope(source["sheet"]):
-            namespace = tracking_key("aligners")
             if origin_rows.empty and not order_detail.pending_count(namespace):
                 continue
             source_table = snapshot["table"]
             selected = source_table[source_table[ID_COLUMN].isin(origin_rows[ID_COLUMN])]
-            order_detail.note_selection(selected[ID_COLUMN].tolist(), namespace)
+            active = origin_rows.loc[origin_rows[GENERAL_ROW_KEY_COLUMN] == active_key, ID_COLUMN]
+            order_detail.note_selection(selected[ID_COLUMN].tolist(), namespace,
+                                        active.iloc[0] if not active.empty else None)
             st.markdown(f"#### {source['origin']}")
             render_case_actions(
                 selected,
                 snapshot["times"],
                 current_user,
                 snapshot["definitions"],
-                sent_change_count(snapshot["definitions"]) > 0,
+                bool(batches) or sent_change_count(snapshot["definitions"]) > 0,
             )
         shown += 1
     if not shown:
-        st.caption("☑️ Marca Abrir en un pedido para ver y editar su ficha.")
+        st.caption("☑️ Marca Abrir en un pedido para ver su ficha; marca varios del mismo origen para "
+                   "cambiarles la etapa en lote.")
 
 
 def render_general_workbench(current_user: str) -> None:
@@ -4690,8 +4920,8 @@ def render_general_workbench(current_user: str) -> None:
     if not can_edit_orders(current_user):
         st.caption("👁️ Puedes consultar los pedidos y agregar nuevos; los pedidos existentes son de sólo lectura.")
 
-    render_general_new_order(current_user, sources)
-    render_general_orders(current_user, sources)
+    render_general_new_order(current_user, sources, pending)
+    render_general_orders(current_user, sources, pending)
     for source in sources:
         with order_sheet_scope(source["sheet"]):
             render_sent_archive(current_user, source["snapshot"], title_suffix=f" · {source['origin']}")

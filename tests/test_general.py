@@ -36,10 +36,36 @@ if "sheets" not in st.session_state:
             (app.SHEET_TIMES, app.SHEET_POLANCO_TIMES, app.SHEET_AERIS_TIMES)}},
     }}
 sheets = st.session_state["sheets"]
+
+
+def fake_grid(grid, options, key, id_column="No. Orden"):
+    """La tabla AG Grid no corre en AppTest: se guardan sus datos y se simulan ediciones."""
+    st.session_state["grid_shown"] = grid
+    st.session_state["grid_options"] = options
+    edited = grid.copy()
+    edits = st.session_state.get("grid_edits", {{}})
+    # Como el AG Grid real: las ediciones viven en esa tabla; al guardar o descartar
+    # la tabla cambia de key y empieza limpia.
+    if edits and st.session_state.setdefault("grid_edits_key", key) != key:
+        edits = {{}}
+    for row_key, values in edits.items():
+        for column, value in values.items():
+            edited.loc[edited[id_column] == row_key, column] = value
+    if edits:
+        st.session_state[key] = {{
+            "editedRows": edited[edited[id_column].isin(edits)].to_dict("records"),
+            "selectedIds": edited.loc[edited["SELECCIONAR"].eq(True), id_column].tolist(),
+        }}
+    edited.attrs["activeId"] = None
+    edited.attrs["manualStageTargets"] = {{}}
+    return edited
+
+
 with patch.object(app, "get_worksheet", sheets.__getitem__), \\
      patch.object(app, "ensure_times_headers", lambda: None), \\
      patch.object(app, "read_process_definitions", definitions), \\
-     patch.object(app, "get_order_form_catalog", lambda: FORM_CATALOG):
+     patch.object(app, "get_order_form_catalog", lambda: FORM_CATALOG), \\
+     patch.object(app, "render_aligners_grid", fake_grid):
     app.render_general_workbench(st.session_state.get("user", "Jime"))
 '''
 
@@ -77,8 +103,7 @@ def test_general_table_tells_origin_even_with_repeated_folios():
 def test_general_view_lists_every_sheet_and_opens_polanco_card():
     at = general_app().run()
     assert not at.exception
-    grid = at.dataframe[0]
-    shown = grid.value
+    shown = at.session_state["grid_shown"]
     assert shown[[app.ORIGIN_COLUMN, app.ID_COLUMN, "NOMBRE PACIENTE"]].values.tolist() == [
         ["📋 Seguimiento", "001", "Ana"],
         ["🏢 Polanco", "001", "Beto"],
@@ -98,8 +123,7 @@ def test_general_view_lists_every_sheet_and_opens_polanco_card():
     # Filtrar por origen deja sólo esa hoja.
     at.selectbox(key="general_origin_filter").select("📋 Seguimiento").run()
     assert not at.exception
-    grid = at.dataframe[0]
-    assert grid.value[app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento"]
+    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento"]
 
 
 def test_general_new_order_goes_only_to_chosen_origin():
@@ -127,8 +151,7 @@ def test_general_new_order_goes_only_to_chosen_origin():
     assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
     assert len(sheets[app.SHEET_TIMES].values) == 1
     # La tabla ya muestra la orden nueva con su origen.
-    grid = at.dataframe[0]
-    assert grid.value[app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento", "🏢 Polanco", "🏢 Polanco"]
+    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento", "🏢 Polanco", "🏢 Polanco"]
 
 
 def test_general_card_saves_change_in_its_own_sheet():
@@ -157,3 +180,59 @@ def test_hide_toggle_remembers_choice_in_session_and_link():
     at.toggle(key=app.GENERAL_HIDE_TOGGLE_KEY).set_value(False).run()
     assert at.session_state[app.GENERAL_HIDE_STATE_KEY] is False
     assert app.GENERAL_HIDE_PARAM not in at.query_params
+
+
+def test_general_grid_pins_origin_and_limits_edits_to_each_sheet_columns():
+    at = general_app().run()
+    assert not at.exception
+    options = at.session_state["grid_options"]
+    pinned = [column["field"] for column in options["columnDefs"] if column.get("pinned") == "left"]
+    assert pinned[:4] == ["SELECCIONAR", app.ORIGIN_COLUMN, app.ID_COLUMN, "SEMÁFORO"]
+    hidden = {column["field"] for column in options["columnDefs"] if column.get("hide")}
+    assert app.GENERAL_ROW_KEY_COLUMN in hidden
+    context = options["context"]
+    assert context["idColumn"] == app.GENERAL_ROW_KEY_COLUMN
+    assert "ADEUDO" in context["rowEditable"]["🏢 Polanco|001"]
+    assert "ADEUDO" not in context["rowEditable"]["📋 Seguimiento|001"]
+    assert app.ORIGIN_COLUMN not in context["rowEditable"]["🏢 Polanco|001"]
+    # Cada fila ofrece las etapas de su propio pedido.
+    assert set(context["stageOptions"]) == {"📋 Seguimiento|001", "🏢 Polanco|001"}
+
+
+def test_general_grid_saves_each_edit_in_its_own_sheet():
+    at = general_app()
+    at.session_state["grid_edits"] = {
+        "🏢 Polanco|001": {"NOMBRE PACIENTE": "Beto Corregido",
+                           app.STATUS_COLUMN: app.status_display_value("ENVIADO")},
+        "📋 Seguimiento|001": {"NOMBRE DOCTOR": "Dra. Normal Corregida"},
+    }
+    at.run()
+    assert not at.exception
+    assert any("2 pedidos con cambios pendientes" in item.value for item in at.caption)
+    at.button(key="general_aligners_save").click().run()
+    assert not at.exception
+    assert not at.error
+    sheets = at.session_state["sheets"]
+    assert sheets[app.SHEET_POLANCO].values[2][1:5] == [
+        "ENVIADO", "Graphy", "Dr. Polanco", "Beto Corregido"]
+    assert sheets[app.SHEET_ORDERS].values[2][1:5] == [
+        "REVISIÓN DE ARCHIVOS", "Graphy", "Dra. Normal Corregida", "Ana"]
+    # El cambio de etapa queda en la bitácora de Polanco y en ninguna otra.
+    assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
+    assert len(sheets[app.SHEET_TIMES].values) == 1
+    # El pedido enviado sale de la tabla de activos.
+    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento"]
+
+
+def test_pending_general_edits_lock_filters_and_can_be_discarded():
+    at = general_app()
+    at.session_state["grid_edits"] = {"🏢 Polanco|001": {"NOMBRE PACIENTE": "Sin guardar"}}
+    at.run()
+    at.run()
+    assert not at.exception
+    assert at.selectbox(key="general_origin_filter").disabled
+    assert at.button(key="general_refresh").disabled
+    at.button(key="general_aligners_discard").click().run()
+    assert not at.exception
+    assert not at.selectbox(key="general_origin_filter").disabled
+    assert at.session_state["sheets"][app.SHEET_POLANCO].values[2][4] == "Beto"
