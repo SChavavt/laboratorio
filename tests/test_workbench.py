@@ -1030,7 +1030,7 @@ def test_final_write_checks_fresh_values_and_accepts_aliases(monkeypatch,live_st
                                     expected_values={"STATUS":"REVISIÓN DE ARCHIVOS","NOMBRE DOCTOR":"Original"})
     assert result["success"] is allowed
     if allowed:
-        assert [(cell.row,cell.col,cell.value) for cell in writes] == [(3,4,"Corregido")]
+        assert [(cell.row,cell.col,cell.value) for cell in writes if cell.col <= 4] == [(3,4,"Corregido")]
     else:
         assert not writes and "Otro usuario" in result["error"]
 
@@ -2103,7 +2103,7 @@ def test_sheet_writers_drop_formula_delivery_column(monkeypatch):
     monkeypatch.setattr(app, "apply_estatus_row_styles", lambda *args: None)
     result = ORIGINAL_UPDATE_ROW("001", {"NOMBRE DOCTOR": "Otro", "FECHA PARA ENTREGA": "2026/10/20"})
     assert result["success"] and result["protected_columns"] == ["FECHA PARA ENTREGA"]
-    assert [(cell.row, cell.col) for cell in writes] == [(3, 4)]
+    assert [(cell.row, cell.col) for cell in writes if cell.col <= len(headers)] == [(3, 4)]
     only_formula = ORIGINAL_UPDATE_ROW("001", {"FECHA PARA ENTREGA": "2026/10/20"})
     assert not only_formula["success"] and "la calcula la hoja" in only_formula["error"]
     writes.clear()

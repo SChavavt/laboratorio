@@ -176,7 +176,9 @@ def test_sparse_table_two_cases_same_doctor_append_in_creation_order(sheets, she
         identifiers.append(identifier)
         assert not warning
     assert identifiers[0] != identifiers[1]
-    assert sheet.values[:len(before)] == before
+    assert sheet.values[0] == before[0]
+    assert sheet.values[1][:len(before[1])] == before[1]
+    assert sheet.values[2:len(before)] == before[2:]
     assert [row[4] for row in sheet.values[len(before):]] == ['Paciente primero', 'Paciente segundo']
     assert [row[0] for row in sheet.values[len(before):]] == identifiers
     table = app.build_tracking_table(app.read_orders_df(), app.read_times_df(), definitions())
@@ -395,7 +397,8 @@ def test_dropdown_raw_values_written_without_visual_prefixes(sheets):
                       'NOMBRE PACIENTE': 'Demo', 'VENDEDOR': 'JIMENA',
                       'PAQUETE MARCA BLANCA': 'NO APLICA '},
                      'Jime', definitions(), catalog=FORM_CATALOG)
-    assert sheet.values[-1][-2:] == ['JIMENA', 'NO APLICA ']
+    assert [sheet.values[-1][sheet.values[1].index(column)]
+            for column in ['VENDEDOR', 'PAQUETE MARCA BLANCA']] == ['JIMENA', 'NO APLICA ']
     assert sheet.values[-1][2] == 'GRAPHY'
 
 
@@ -405,7 +408,7 @@ def test_multiple_files_are_validated_and_written_as_native_values(sheets):
     values = {'PRODUCTO': 'GRAPHY', 'NOMBRE DOCTOR': 'Demo',
               'NOMBRE PACIENTE': 'Demo', 'ARCHIVOS RECIBIDOS': 'STLs, TOMO'}
     app.create_order(values, 'Jime', definitions(), catalog=FORM_CATALOG)
-    assert sheet.values[-1][-1] == 'STLs, TOMO'
+    assert sheet.values[-1][sheet.values[1].index('ARCHIVOS RECIBIDOS')] == 'STLs, TOMO'
     before = copy.deepcopy(sheet.values)
     with pytest.raises(ValueError, match='catálogo'):
         app.create_order({**values, 'ARCHIVOS RECIBIDOS': 'STLs, INVÁLIDO'},

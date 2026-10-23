@@ -97,7 +97,7 @@ def test_saving_totals_keeps_sheet_formulas(monkeypatch):
     monkeypatch.setattr(app, "get_worksheet", lambda name: sheet)
     result = app.update_order_row("001", {"NO. ALIN SUP_2": "7", "Total_2": "7", "Total": "20"})
     assert result["success"]
-    assert sorted(sheet.cells) == [(4, "7"), (5, "7")]
+    assert sorted(cell for cell in sheet.cells if cell[0] <= len(headers)) == [(4, "7"), (5, "7")]
 
 
 def editor_script(sheet, row):

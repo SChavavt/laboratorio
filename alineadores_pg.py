@@ -28,6 +28,8 @@ import pandas as pd
 import streamlit as st
 import forms_notices
 import order_detail
+from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
+                            edit_timestamp, prepare_activity_column, recent_first, serialized_order_write)
 import case_invoices
 import case_search
 from user_permissions import (APP_USERS, VIEW_AND_CREATE_USERS, can_change_status, can_create_orders,
@@ -309,7 +311,7 @@ AUTOMATIC_COLUMNS = {*COMPUTED_COLUMNS, "FECHA OBJETIVO ENVÍO"}
 
 def aligners_editable_columns(available_columns: Any = ()) -> set[str]:
     """Devuelve las columnas de la hoja que se pueden corregir desde Seguimiento."""
-    protected = {"SELECCIONAR", ID_COLUMN, *COMPUTED_COLUMNS}
+    protected = {"SELECCIONAR", ID_COLUMN, LAST_EDIT_COLUMN, *COMPUTED_COLUMNS}
     return set(available_columns) - protected
 
 GRID_COLUMNS = [
@@ -1196,7 +1198,7 @@ def canonical_header_key(value: Any) -> str:
 def canonical_column_name(value: Any) -> str:
     cleaned = clean_cell(value).strip()
     key = canonical_header_key(cleaned)
-    for known in [*PRIMARY_COLUMNS, *TIMES_HEADERS]:
+    for known in [*PRIMARY_COLUMNS, *TIMES_HEADERS, LAST_EDIT_COLUMN]:
         if canonical_header_key(known) == key:
             return known
     return cleaned
@@ -2306,6 +2308,7 @@ def apply_status_style(
         pass
 
 
+@serialized_order_write
 def update_order_row(
     identifier: str,
     changes: dict[str, Any],
@@ -2364,6 +2367,9 @@ def update_order_row(
 
     updates: list[Cell] = []
     for column, value in changes.items():
+        if canonical_column_name(column) == LAST_EDIT_COLUMN:
+            result["error"] = "La fecha de edición se registra automáticamente."
+            return result
         position = get_header_position(headers, column)
         if position is None:
             result["skipped_columns"].append(column)
@@ -2377,6 +2383,12 @@ def update_order_row(
         result["error"] = "No encontré encabezados válidos para los cambios."
         return result
     try:
+        if any(not values_equivalent(
+            column, fresh_row[position - 1] if position <= len(fresh_row) else "", value
+        ) for column, value in changes.items()
+            if (position := get_header_position(headers, column)) is not None):
+            headers, activity_position, header_cells = prepare_activity_column(worksheet, values)
+            updates.extend([*header_cells, Cell(row_number, activity_position, edit_timestamp(app_now()))])
         run_gsheets_request(
             lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
         )
@@ -3069,7 +3081,7 @@ def tracking_columns(available_columns: Iterable[str]) -> list[str]:
     # La hoja puede incorporar más campos propios sin cambiar la app.
     if current_order_sheet() in (SHEET_POLANCO, SHEET_AERIS):
         extras = [column for column in columns
-                  if column not in visible and not column.startswith("_")]
+                  if column not in visible and not column.startswith(("_", "Columna_"))]
         position = next((i for i, column in enumerate(visible)
                          if column in COMPUTED_COLUMNS[1:]), len(visible))
         visible[position:position] = extras
@@ -3198,6 +3210,7 @@ def create_order(values: dict[str, Any], current_user: str,
         return _create_order(values, current_user, definitions, catalog=catalog)
 
 
+@serialized_order_write
 def _create_order(values: dict[str, Any], current_user: str,
                   definitions: dict[str, ProcessDefinition], *,
                   catalog: dict[str, list[str]] | None = None) -> tuple[str, str]:
@@ -3240,6 +3253,13 @@ def _create_order(values: dict[str, Any], current_user: str,
     identifier = generate_order_identifier(existing, headers, reserved)
     row.update({ID_COLUMN: identifier, STATUS_COLUMN: definition.normal_statuses[0],
                 "FECHA DE RECEPCIÓN": app_today().isoformat()})
+    _, activity_position, header_cells = prepare_activity_column(worksheet, existing)
+    headers.extend([""] * (activity_position - len(headers) - 1))
+    if len(headers) < activity_position:
+        headers.append(LAST_EDIT_COLUMN)
+    row[LAST_EDIT_COLUMN] = edit_timestamp(app_now())
+    if header_cells:
+        run_gsheets_request(lambda: worksheet.update_cells(header_cells, value_input_option="RAW"))
     # values.append detects logical tables and can insert above later cases.
     # appendCells uses the last populated row of the whole sheet, atomically.
     # Explicit string values preserve folios and literal user-entered text.
@@ -3566,7 +3586,9 @@ def filter_tracking_table(
     if statuses:
         selected_keys = {status_key(item) for item in statuses}
         filtered = filtered[filtered[STATUS_COLUMN].map(status_key).isin(selected_keys)]
-    if order_mode == "Atender urgentes primero":
+    if order_mode == RECENT_FIRST:
+        filtered = recent_first(filtered)
+    elif order_mode == URGENT_FIRST:
         filtered = filtered.sort_values(
             "SEMÁFORO", key=lambda column: column.map(signal_rank), kind="stable"
         )
@@ -4049,7 +4071,7 @@ def render_case_actions(
                 )
 
             st.markdown("#### 📋 Todos los datos de la hoja")
-            excluded = {*COMPUTED_COLUMNS, "_SHEET_ROW"}
+            excluded = {*COMPUTED_COLUMNS, "_SHEET_ROW", LAST_EDIT_COLUMN}
             details = [
                 {"Campo": column, "Valor": clean_cell(value)}
                 for column, value in row.items()
@@ -4170,7 +4192,7 @@ def render_active_orders(
     )
     order_mode = filters[3].selectbox(
         "Orden",
-        ["Orden de la hoja", "Atender urgentes primero"],
+        ORDER_MODES,
         disabled=pending_before_grid,
         key=tracking_key("aligners_order_mode"),
     )
@@ -4198,7 +4220,9 @@ def render_active_orders(
     visibility[1].markdown(legend if can_edit_orders(current_user) else
         STATUS_ONLY_LEGEND if status_only_here(current_user) else '<div class="align-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
     st.caption(
-        f"{len(filtered)} de {len(table)} pedidos · Cada fila sólo ofrece su siguiente etapa normal, "
+        f"{len(filtered)} de {len(table)} pedidos · "
+        + ("Lo último guardado aparece arriba. " if order_mode == RECENT_FIRST else "")
+        + "Cada fila sólo ofrece su siguiente etapa normal, "
         "las pausas aplicables y Cancelado. En una pausa se habilitan las etapas para reanudar."
         + (" Para corregir, «Ver todas las etapas…» dentro de STATUS ofrece todo el flujo."
            if current_user in MANUAL_STAGE_USERS else "")
@@ -4371,7 +4395,7 @@ def render_order_archive(
             signal="Todos",
             products=products,
             statuses=[],
-            order_mode="Orden de la hoja",
+            order_mode=RECENT_FIRST,
         )
         st.caption(
             f"{len(filtered)} de {len(table)} {description} · Sólo se edita la etapa; "
@@ -4852,7 +4876,7 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
     )
     order_mode = filters[4].selectbox(
         "Orden",
-        ["Orden de la hoja", "Atender urgentes primero"],
+        ORDER_MODES,
         disabled=pending_before_grid,
         key=f"{GENERAL_KEY_PREFIX}order_mode",
     )
@@ -4876,7 +4900,9 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
         unsafe_allow_html=True,
     )
     st.caption(
-        f"{len(filtered)} de {len(table)} pedidos activos · Cada cambio se guarda en la hoja de su "
+        f"{len(filtered)} de {len(table)} pedidos activos · "
+        + ("Lo último guardado aparece arriba. " if order_mode == RECENT_FIRST else "")
+        + "Cada cambio se guarda en la hoja de su "
         "**Origen**. Cada fila sólo ofrece su siguiente etapa normal, las pausas aplicables y Cancelado."
         + (" Para corregir, «Ver todas las etapas…» dentro de STATUS ofrece todo el flujo."
            if current_user in MANUAL_STAGE_USERS else "")
