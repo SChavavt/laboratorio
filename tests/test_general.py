@@ -151,7 +151,8 @@ def test_general_new_order_goes_only_to_chosen_origin():
     assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
     assert len(sheets[app.SHEET_TIMES].values) == 1
     # La tabla ya muestra la orden nueva con su origen.
-    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento", "🏢 Polanco", "🏢 Polanco"]
+    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["🏢 Polanco", "📋 Seguimiento", "🏢 Polanco"]
+    assert at.session_state["grid_shown"].iloc[0]["NOMBRE PACIENTE"] == "Nuevo"
 
 
 def test_general_card_saves_change_in_its_own_sheet():

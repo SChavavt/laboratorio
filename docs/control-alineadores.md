@@ -57,6 +57,15 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
 
 ## Datos de alineadores
 
+Las tablas abren con **Última edición primero**: al guardar una orden nueva,
+corregir campos de la tabla o ficha (incluidos los envíos), o cambiar de etapa,
+el caso aparece arriba. El orden se conserva al recargar y se aplica también a
+Polanco, AERIS, Seguimiento General, Pausados y Enviados. El selector **Orden**
+ofrece además el orden de la hoja y la prioridad por urgencia. Los pedidos sin
+fecha de edición registrada conservan entre ellos su orden anterior.
+Los detalles de persistencia y el alcance de los guardados se describen en
+[Orden de los casos por última edición](tabla-unificada.md#orden-de-los-casos-por-última-edición).
+
 - `ALINEADORES (nuevo)` contiene los pedidos.
 - `PROCESOS POR PRODUCTO` es la fuente de verdad para etapas y plazos.
 - `TIEMPOS_ALINEADORES` registra cada cambio y se crea al primer arranque si

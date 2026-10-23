@@ -28,6 +28,8 @@ import alineadores_pg
 import forms_notices
 import guias_pg
 import order_detail
+from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
+                            edit_timestamp, prepare_activity_column, recent_first, serialized_order_write)
 from grid_interactions import response_frame
 import dropdown_fields
 from copy import deepcopy
@@ -1082,6 +1084,7 @@ def known_estatus_columns() -> set[str]:
     """Columnas conocidas de ESTATUS APARATOS para tratar encabezados con espacios."""
 
     return {
+        LAST_EDIT_COLUMN,
         *FIELD_LABEL_DISPLAY,
         *SELECTBOX_OPTIONS_BY_COLUMN,
         *DATE_COLUMNS,
@@ -3188,6 +3191,7 @@ def estatus_formula_positions(headers: list[str]) -> set[int]:
             if (position := get_header_position(headers, column)) is not None}
 
 
+@serialized_order_write
 def update_row_by_columna_1(
     identifier: str, changes: dict[str, Any], *, expected_values: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -3251,6 +3255,9 @@ def update_row_by_columna_1(
     canonical_changes: dict[str, Any] = {}
     protected_positions = estatus_formula_positions(headers)
     for column, value in changes.items():
+        if canonical_column_name(column) == LAST_EDIT_COLUMN:
+            result["protected_columns"].append(column)
+            continue
         column_position = get_header_position(headers, column)
         if column_position is None:
             result["skipped_columns"].append(column)
@@ -3273,6 +3280,15 @@ def update_row_by_columna_1(
         return result
 
     try:
+        # Guardar una corrección real registra su fecha en el mismo write que
+        # los datos; una lectura, un fallo o un guardado sin cambios no la mueve.
+        current_row = values[target_row_number - 1]
+        if any(not values_equivalent_for_column(
+            column, current_row[position - 1] if position <= len(current_row) else "", value
+        ) for column, value in canonical_changes.items()
+            if (position := get_header_position(headers, column)) is not None):
+            headers, activity_position, header_cells = prepare_activity_column(worksheet, values)
+            updates.extend([*header_cells, Cell(target_row_number, activity_position, edit_timestamp(app_now()))])
         run_gsheets_request(
         lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
     )
@@ -3318,6 +3334,7 @@ def find_first_available_estatus_row(values: list[list[str]], headers: list[str]
     return len(values) + 1
 
 
+@serialized_order_write
 def append_estatus_row(row_dict: dict[str, Any]) -> int:
     """Escribe un nuevo pedido en ESTATUS APARATOS y devuelve el renglón usado."""
 
@@ -3351,6 +3368,8 @@ def append_estatus_row(row_dict: dict[str, Any]) -> int:
     if not updates:
         raise ValueError("No hay campos válidos para guardar en ESTATUS APARATOS.")
 
+    headers, activity_position, header_cells = prepare_activity_column(worksheet, values)
+    updates.extend([*header_cells, Cell(target_row, activity_position, edit_timestamp(app_now()))])
     run_gsheets_request(
         lambda: worksheet.update_cells(updates, value_input_option="USER_ENTERED")
     )
@@ -6156,7 +6175,7 @@ def workbench_editable_columns(current_user: str, available_columns: Any = ()) -
     """
     if not can_edit_orders(current_user):
         return set()
-    protected = {"SELECCIONAR", ID_COLUMN, *WORKBENCH_COMPUTED_COLUMNS, *ESTATUS_FORMULA_COLUMNS}
+    protected = {"SELECCIONAR", ID_COLUMN, LAST_EDIT_COLUMN, *WORKBENCH_COMPUTED_COLUMNS, *ESTATUS_FORMULA_COLUMNS}
     return set(available_columns) - protected
 
 
@@ -6301,7 +6320,8 @@ def workbench_saved_column_order(current_user: str, available_columns: Any) -> l
 
 def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
     """Añade las etiquetas visuales existentes sólo a la copia del editor."""
-    displayed = df.copy()
+    hidden = [column for column in df if column == LAST_EDIT_COLUMN or str(column).startswith("Columna_")]
+    displayed = df.drop(columns=hidden).copy()
     for column in DISPLAY_OPTIONS_BY_COLUMN:
         if column in displayed:
             if column == APARATO_COLUMN:
@@ -6334,7 +6354,7 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
         raise ValueError("No se pueden agregar, borrar ni cambiar folios desde la tabla.")
     lookup = original.set_index(ID_COLUMN, drop=False)
     source_columns = [column for column in original if column not in WORKBENCH_COMPUTED_COLUMNS
-                      and column not in {ID_COLUMN, "SELECCIONAR"}]
+                      and column not in {ID_COLUMN, "SELECCIONAR", LAST_EDIT_COLUMN}]
     for _, row in edited.iterrows():
         identifier = row[ID_COLUMN]
         previous = lookup.loc[identifier]
@@ -6912,6 +6932,7 @@ def render_paused_workbench(
     table: pd.DataFrame, current_user: str, *, scroll_into_view: bool = False
 ) -> None:
     """Muestra el archivo temporal y permite devolver cada caso a su flujo."""
+    table = recent_first(table)
     expanded = bool(st.session_state.get("workbench_paused_expanded", False))
     if not expanded and st.session_state.get("workbench_paused_pending"):
         # Cerrar el expander desmonta la grilla; si hay cambios de etapa sin
@@ -7036,7 +7057,7 @@ def render_sent_workbench(table: pd.DataFrame, current_user: str) -> None:
             "Aparato", workbench_apparatus_options(table),
             disabled=sent_pending, key="workbench_sent_apparatus",
         )
-        filtered = filter_workbench_cases(table, search=search, apparatuses=apparatuses).reset_index(drop=True)
+        filtered = recent_first(filter_workbench_cases(table, search=search, apparatuses=apparatuses))
         st.caption(
             f"{len(filtered)} de {len(table)} pedidos enviados · Sólo se edita la etapa; se ofrece "
             "Envío de encuesta o una etapa de trabajo del flujo del aparato."
@@ -7177,7 +7198,7 @@ def render_workbench(current_user: str) -> None:
         st.session_state["workbench_owner"] = owner_default
         st.session_state["workbench_owner_active_user"] = current_user
     owner = filters[2].selectbox("Responsable", owner_options, disabled=pending, key="workbench_owner")
-    priority = filters[3].selectbox("Orden", ["Orden de la hoja", "Atender urgentes primero"], disabled=pending, key="workbench_order")
+    priority = filters[3].selectbox("Orden", ORDER_MODES, disabled=pending, key="workbench_order")
     more_filters = st.columns(3)
     chosen = {APARATO_COLUMN: apparatuses}
     for container, column in zip(more_filters, [STATUS_COLUMN, "VENDEDOR", "PAGO"]):
@@ -7198,7 +7219,9 @@ def render_workbench(current_user: str) -> None:
                 filtered = filter_workbench_cases(filtered, apparatuses=values)
             else:
                 filtered = filtered[filtered[column].str.strip().isin(values)]
-    if priority != "Orden de la hoja":
+    if priority == RECENT_FIRST:
+        filtered = recent_first(filtered)
+    elif priority == URGENT_FIRST:
         filtered = filtered.sort_values("SEMÁFORO", key=lambda col: col.map(workbench_signal_rank), kind="stable")
     filtered = filtered.reset_index(drop=True)
     visibility = st.columns([2, 7])
@@ -7214,7 +7237,8 @@ def render_workbench(current_user: str) -> None:
     )
     visibility[1].markdown(legend if can_edit_orders(current_user) else
         '<div class="lab-column-legend"><span class="readonly">🔒 Pedidos de sólo lectura</span></div>', unsafe_allow_html=True)
-    st.caption(f"{len(filtered)} de {len(table)} pedidos · " + (
+    st.caption(f"{len(filtered)} de {len(table)} pedidos · "
+               + ("Lo último guardado aparece arriba. " if priority == RECENT_FIRST else "") + (
                "Marca un pedido en Abrir para consultar su ficha, archivos e historial."
                if not can_edit_orders(current_user) else
                "Pulsa una celda para editar. Cada pedido muestra sus siguientes etapas permitidas. "

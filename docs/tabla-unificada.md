@@ -58,7 +58,8 @@ valida este permiso antes de escribir, además de bloquear los controles.
 ## Operación
 
 1. Busca por folio, doctor, paciente o aparato. Puedes filtrar por responsable,
-   semáforo, aparato, etapa, vendedor y pago, u ordenar por urgencia.
+   semáforo, aparato, etapa, vendedor y pago. El orden predeterminado es
+   **Última edición primero**; también puedes elegir el orden de la hoja o la urgencia.
 2. Edita las celdas habilitadas. **Guardar cambios** valida todos los pedidos
    modificados antes de comenzar las escrituras. Para los usuarios con edición, el
    selector muestra la etapa actual, la siguiente y las alternativas previstas
@@ -106,6 +107,27 @@ valida este permiso antes de escribir, además de bloquear los controles.
 5. **Actualizar datos** vuelve a leer los pedidos y calcular el semáforo.
    La hora de consulta es visible. Los filtros y las acciones quedan bloqueados
    mientras hay celdas pendientes, para no perder cambios sin guardarlos.
+
+## Orden de los casos por última edición
+
+En Aparatos y Alineadores, **Última edición primero** muestra arriba el último
+caso guardado, tanto al crear una orden como al corregir campos, registrar fechas
+o cambiar de etapa. También se aplica en Polanco, AERIS y Seguimiento General;
+los archivos de Pausados y Enviados se consultan con los últimos guardados arriba.
+El selector **Orden** permite volver a **Orden de la hoja** o priorizar urgentes.
+
+La fecha se conserva en cada hoja de pedidos, en la columna interna
+`_ULTIMA_EDICION_APP`, que la app agrega al primer guardado. La columna se coloca
+después de la cuadrícula existente para conservar las fórmulas y los datos sin
+encabezado. No se muestra ni se edita en la tabla o ficha. Una corrección y su
+fecha se escriben juntas; abrir, filtrar, actualizar, descartar o guardar sin
+cambios no altera la fecha. Los renglones físicos de Sheets conservan su posición.
+
+Se registran los guardados hechos desde esta versión de la app. Los pedidos
+anteriores sin fecha de edición permanecen después de los editados, conservando
+entre ellos el orden de la hoja. Las correcciones hechas directamente en Sheets
+no actualizan esta fecha. El Tablero para pantalla conserva su orden operativo
+por antigüedad y prioridad.
 
 ## Facturas PDF y buscador de casos
 
