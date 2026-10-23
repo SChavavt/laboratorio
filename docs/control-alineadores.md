@@ -76,6 +76,18 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
   Setup, Guarda y Guía. Retenedores y Modelos sólo llevan impresión, por lo que
   no deben ofrecer esa pausa. `FALTA DE PAGO DE IMPRESIÓN` corresponde a los
   siete productos, incluidos Retenedores y Modelos.
+- **🚫 Caso en pausa** está disponible en STATUS para todos los productos, sin
+  agregarlo a `PROCESOS POR PRODUCTO`. Al guardar `CASO EN PAUSA`, el pedido sale
+  de la lista principal, de los contadores activos y del tablero para pantalla.
+  Permanece en su hoja y se consulta debajo de Seguimiento en el desplegable
+  **🚫 Caso en pausa · N pedido(s)**, con buscador y filtro por producto. También
+  aparece en Polanco, AERIS y Seguimiento General, separado por origen.
+  Las pausas operativas (Titan, cambios, impresión y pagos) siguen visibles en
+  la lista principal: sólo el nuevo estatus archiva temporalmente el caso.
+  Para devolverlo, elige una etapa del producto y pulsa **Guardar y reactivar**;
+  en este archivo sólo se edita STATUS. La bitácora conserva la etapa anterior,
+  registra la pausa sin plazo de producción y abre la medición de la etapa
+  elegida al reanudar. Se conservan los permisos de edición existentes.
 - **STATUS** ofrece la etapa actual, la siguiente, las pausas y Cancelado. Para
   correcciones, Admin, Jime y Lesly tienen además **Ver todas las etapas…**,
   igual que en Aparatos: en la tabla abre el segundo nivel del mismo menú (con
@@ -95,8 +107,9 @@ o, si no existen, las del laboratorio; sin ellas el enlace abre la URL directa.
   Cancelado. Al pulsar **Guardar y reactivar** el pedido vuelve a la tabla de
   pedidos activos y la bitácora registra `ENVIADO → nueva etapa` con el comentario
   "Reactivado desde el histórico de Enviados.".
-- Mientras haya etapas elegidas sin guardar en Enviados no se puede refrescar,
-  cambiar de pestaña ni guardar la tabla principal; lo mismo al revés.
+- Mientras haya etapas elegidas sin guardar en Enviados o Caso en pausa no se
+  puede refrescar, cambiar de pestaña ni guardar la tabla principal; lo mismo
+  al revés. En Seguimiento General también se protegen las otras hojas.
 
 ## Ficha del pedido
 
