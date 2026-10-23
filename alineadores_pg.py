@@ -122,7 +122,9 @@ PRODUCT_COLUMN = "PRODUCTO"
 APP_TIMEZONE_NAME = "America/Mexico_City"
 APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
 
+PAUSED_STATUS = "CASO EN PAUSA"
 PAUSE_STATUSES = (
+    PAUSED_STATUS,
     "BORRADOR TITAN",
     "SOLICITUD DE CAMBIOS",
     "IMPRESIÓN EN PAUSA",
@@ -337,6 +339,7 @@ GRID_COLUMNS = [
 ]
 
 STATUS_EMOJIS = {
+    "CASO EN PAUSA": "🚫",
     "REVISION DE ARCHIVOS": "🔵",
     "POR HACER SETUP": "🧩",
     "BORRADOR TITAN": "⏸️",
@@ -355,6 +358,7 @@ STATUS_EMOJIS = {
 }
 
 STATUS_COLORS = {
+    "CASO EN PAUSA": ("#FEE2E2", "#991B1B"),
     "REVISION DE ARCHIVOS": ("#C9E6EC", "#24545E"),
     "POR HACER SETUP": ("#DDEBFF", "#123A63"),
     "BORRADOR TITAN": ("#F4CCCC", "#8A1C1C"),
@@ -495,6 +499,8 @@ def canonical_status(value: Any, configured: Iterable[str] = ()) -> str:
     key = status_key(cleaned)
     if key == "CANCELADO":
         return "CANCELADO"
+    if key == PAUSED_STATUS:
+        return PAUSED_STATUS
     for candidate in configured:
         if status_key(candidate) == key:
             return candidate
@@ -503,6 +509,11 @@ def canonical_status(value: Any, configured: Iterable[str] = ()) -> str:
 
 def is_pause_status(value: Any) -> bool:
     return status_key(value) in {status_key(item) for item in PAUSE_STATUSES}
+
+
+def is_archived_pause_status(value: Any) -> bool:
+    """Sólo la pausa explícita del caso lo saca de la mesa activa."""
+    return status_key(value) == PAUSED_STATUS
 
 
 def is_terminal_status(value: Any) -> bool:
@@ -564,7 +575,7 @@ def configured_statuses(definitions: dict[str, ProcessDefinition]) -> list[str]:
         for definition in definitions.values()
         for status in (*definition.normal_statuses, *definition.pauses)
     ]
-    return list(dict.fromkeys([*statuses, "CANCELADO"]))
+    return list(dict.fromkeys([*statuses, PAUSED_STATUS, "CANCELADO"]))
 
 
 def get_allowed_next_statuses(
@@ -587,7 +598,8 @@ def get_allowed_next_statuses(
         return list(dict.fromkeys([current, "CANCELADO"] if current else ["CANCELADO"]))
 
     normal = list(definition.normal_statuses)
-    pauses = list(definition.pauses)
+    # La pausa del caso es global; no requiere editar PROCESOS POR PRODUCTO.
+    pauses = list(dict.fromkeys([*definition.pauses, PAUSED_STATUS]))
     current_key = status_key(current)
     normal_keys = [status_key(item) for item in normal]
 
@@ -627,7 +639,7 @@ def get_manual_stage_statuses(
     current = canonical_status(current_status, configured_statuses(definitions))
     if current_user not in MANUAL_STAGE_USERS or definition is None or is_terminal_status(current):
         return [current]
-    return list(dict.fromkeys([current, *definition.normal_statuses, *definition.pauses, "CANCELADO"]))
+    return list(dict.fromkeys([current, *definition.normal_statuses, *definition.pauses, PAUSED_STATUS, "CANCELADO"]))
 
 
 def get_reactivation_statuses(
@@ -635,20 +647,20 @@ def get_reactivation_statuses(
     current_status: Any,
     definitions: dict[str, ProcessDefinition],
 ) -> list[str]:
-    """Etapas a las que puede regresar un pedido enviado para volver a la mesa activa.
+    """Etapas a las que puede regresar un pedido enviado o un caso en pausa.
 
-    Se ofrece cualquier etapa normal o pausa del producto, salvo Enviado y
-    Cancelado. Un pedido que no está enviado sólo conserva su etapa actual.
+    Se ofrece cualquier etapa normal o pausa del producto, salvo Enviado,
+    Cancelado y Caso en pausa. Los demás pedidos conservan su etapa actual.
     """
 
     definition = get_process_definition(product, definitions)
     current = canonical_status(current_status, configured_statuses(definitions))
-    if definition is None or not is_sent_status(current):
+    if definition is None or not (is_sent_status(current) or is_archived_pause_status(current)):
         return [current]
     targets = [
         status
         for status in (*definition.normal_statuses, *definition.pauses)
-        if not is_terminal_status(status)
+        if not is_terminal_status(status) and not is_archived_pause_status(status)
     ]
     return list(dict.fromkeys([current, *targets]))
 
@@ -2561,8 +2573,16 @@ def active_orders(
     frame: pd.DataFrame, definitions: dict[str, ProcessDefinition]
 ) -> pd.DataFrame:
     return orders_with_status(
-        frame, definitions, lambda status: not is_terminal_status(status)
+        frame, definitions,
+        lambda status: not is_terminal_status(status) and not is_archived_pause_status(status)
     )
+
+
+def paused_orders(
+    frame: pd.DataFrame, definitions: dict[str, ProcessDefinition]
+) -> pd.DataFrame:
+    """Archivo temporal de los casos marcados explícitamente en pausa."""
+    return orders_with_status(frame, definitions, is_archived_pause_status)
 
 
 def sent_orders(
@@ -2771,7 +2791,7 @@ def validate_delta(
             return [f"{identifier}: tu usuario sólo puede cambiar la etapa (STATUS)."]
     errors: list[str] = []
     if manual_stage and reactivate:
-        return [f"{identifier}: usa el histórico de Enviados para reactivar este pedido."]
+        return [f"{identifier}: usa el archivo de Enviados o Caso en pausa para reactivar este pedido."]
     if manual_stage and current_user not in MANUAL_STAGE_USERS:
         return [f"{identifier}: tu usuario no puede cambiar etapas manualmente."]
     invalid_columns = set(delta) - aligners_editable_columns(row.index)
@@ -2781,7 +2801,7 @@ def validate_delta(
             and product_key(delta[PRODUCT_COLUMN]) != product_key(SHEET_AERIS)):
         errors.append(f"{identifier}: el seguimiento AERIS sólo admite el producto AERIS.")
     if reactivate and set(delta) - {STATUS_COLUMN}:
-        errors.append(f"{identifier}: en Enviados sólo se puede cambiar la etapa.")
+        errors.append(f"{identifier}: en Enviados o Caso en pausa sólo se puede cambiar la etapa.")
     for column in {column for column in delta if column in DATE_COLUMNS or column.startswith("FECHA")}:
         value = clean_cell(delta[column]).strip()
         if value and parse_simple_date(value) is None and not is_payment_text(column, value):
@@ -2811,7 +2831,7 @@ def save_workbench_changes(
     reactivate: bool = False,
     select_catalog: dict | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Guarda por número de orden; ``reactivate`` saca pedidos del histórico de Enviados."""
+    """Guarda por número de orden; ``reactivate`` devuelve pedidos archivados al flujo."""
     try:
         changes = grid_changes(baseline, edited, definitions)
     except ValueError as exc:
@@ -2884,7 +2904,8 @@ def save_workbench_changes(
                     current_user=current_user,
                     definitions=definitions,
                     comment=(
-                        "Reactivado desde el histórico de Enviados."
+                        ("Reactivado desde Caso en pausa." if is_archived_pause_status(previous_status)
+                         else "Reactivado desde el histórico de Enviados.")
                         if reactivate
                         else " ".join(filter(None, [
                             MANUAL_STAGE_COMMENT if identifier in manual_ids else "",
@@ -3021,7 +3042,7 @@ def build_grid_configuration(
     select_catalog: dict | None = None,
     current_user: str = "",
 ) -> dict:
-    """En modo ``reactivate`` (histórico de Enviados) sólo se edita la etapa.
+    """En modo ``reactivate`` (Enviados o Caso en pausa) sólo se edita la etapa.
 
     Fuera de él, ``current_user`` decide si STATUS ofrece «Ver todas las etapas…».
     """
@@ -3351,7 +3372,7 @@ def guard_tracking_tab_change(current_user: str) -> None:
 
 def reset_workbench() -> None:
     st.session_state.pop(tracking_key("aligners_snapshot"), None)
-    for prefix in ("aligners", "aligners_sent"):
+    for prefix in ("aligners", "aligners_sent", "aligners_paused"):
         st.session_state.pop(tracking_key(f"{prefix}_editor_key"), None)
         st.session_state.pop(tracking_key(f"{prefix}_editor_baseline"), None)
     st.session_state[tracking_key("aligners_revision")] = st.session_state.get(tracking_key("aligners_revision"), 0) + 1
@@ -3359,16 +3380,21 @@ def reset_workbench() -> None:
 
 def discard_sent_changes() -> None:
     """Descarta sólo el histórico de Enviados; la mesa activa conserva sus ediciones."""
-    st.session_state.pop(tracking_key("aligners_sent_editor_key"), None)
-    st.session_state.pop(tracking_key("aligners_sent_editor_baseline"), None)
-    revision_key = tracking_key("aligners_sent_revision")
+    discard_archive_changes("sent")
+
+
+def discard_archive_changes(kind: str) -> None:
+    """Descarta un archivo sin borrar ediciones de las otras tablas."""
+    st.session_state.pop(tracking_key(f"aligners_{kind}_editor_key"), None)
+    st.session_state.pop(tracking_key(f"aligners_{kind}_editor_baseline"), None)
+    revision_key = tracking_key(f"aligners_{kind}_revision")
     st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
 
 
 def without_repeated_orders(
     baseline: pd.DataFrame, edited: pd.DataFrame
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Los folios repetidos se muestran en Enviados, pero no se pueden reactivar."""
+    """Los folios repetidos se muestran en el archivo, pero no se pueden reactivar."""
     if ID_COLUMN not in baseline or ID_COLUMN not in edited:
         return baseline, edited
     repeated = set(baseline.loc[baseline[ID_COLUMN].duplicated(keep=False), ID_COLUMN])
@@ -3404,9 +3430,17 @@ def sent_change_count(definitions: dict[str, ProcessDefinition]) -> int:
     return editor_change_count("aligners_sent", definitions, skip_repeated=True)
 
 
+def paused_change_count(definitions: dict[str, ProcessDefinition]) -> int:
+    return editor_change_count("aligners_paused", definitions, skip_repeated=True)
+
+
+def archive_change_count(definitions: dict[str, ProcessDefinition]) -> int:
+    return sent_change_count(definitions) + paused_change_count(definitions)
+
+
 def pending_change_count(definitions: dict[str, ProcessDefinition]) -> int:
-    """Suma la mesa activa y el histórico de Enviados: refrescar perdería ambos."""
-    return (editor_change_count("aligners", definitions) + sent_change_count(definitions)
+    """Suma la mesa, sus fichas y los archivos para proteger las ediciones al refrescar."""
+    return (editor_change_count("aligners", definitions) + archive_change_count(definitions)
             + order_detail.pending_count(tracking_key("aligners")))
 
 
@@ -3417,8 +3451,8 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
     snapshot = st.session_state.get(tracking_key("aligners_snapshot"))
     if snapshot is not None and snapshot.get("user") != current_user:
         order_detail.clear_drafts(tracking_key("aligners"))
-    # Las sesiones abiertas antes del histórico de Enviados no traen "sent".
-    if snapshot is None or snapshot.get("user") != current_user or "sent" not in snapshot:
+    # Reconstruir también las sesiones abiertas antes del archivo de pausados.
+    if snapshot is None or snapshot.get("user") != current_user or not {"sent", "paused"}.issubset(snapshot):
         definitions = read_process_definitions()
         orders = read_orders_df()
         times = read_times_df()
@@ -3429,6 +3463,7 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
             "times": times,
             "table": build_tracking_table(orders, times, definitions),
             "sent": sent_orders(orders, definitions),
+            "paused": paused_orders(orders, definitions),
             "at": app_now(),
         }
         st.session_state[tracking_key("aligners_snapshot")] = snapshot
@@ -4076,6 +4111,7 @@ def render_workbench(current_user: str) -> None:
         "Los tiempos cuentan de lunes a viernes."
     )
     render_active_orders(current_user, snapshot, signal, stored_pending)
+    render_paused_archive(current_user, snapshot)
     render_sent_archive(current_user, snapshot)
 
 
@@ -4091,8 +4127,8 @@ def render_active_orders(
     pending_before_grid = stored_pending > 0
     if table.empty:
         st.info(
-            "No hay pedidos activos. Los enviados se consultan abajo, en el histórico de "
-            "Enviados; los cancelados permanecen archivados en la hoja."
+            "No hay pedidos activos. Consulta abajo Caso en pausa o Enviados; "
+            "los cancelados permanecen archivados en la hoja."
         )
         return
 
@@ -4215,19 +4251,19 @@ def render_active_orders(
         st.error(str(exc))
         changes = []
     pending = bool(changes)
-    # Guardar reconstruye ambas tablas; no debe borrar en silencio lo elegido en Enviados.
-    sent_pending = sent_change_count(definitions) > 0
+    # Guardar reconstruye las tablas; protege también lo elegido en los archivos.
+    archive_pending = archive_change_count(definitions) > 0
 
     save_column, discard_column, count_column, _ = st.columns([1.3, 1.3, 1.8, 4])
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not can_change_status_here(current_user) or not changes or sent_pending or form_pending,
+        disabled=not can_change_status_here(current_user) or not changes or archive_pending or form_pending,
         use_container_width=True,
         key=tracking_key("aligners_save"),
         help=(
-            "Primero guarda o descarta los cambios del histórico de Enviados."
-            if sent_pending
+            "Primero guarda o descarta los cambios de Caso en pausa o Enviados."
+            if archive_pending
             else None
         ),
     ):
@@ -4256,27 +4292,46 @@ def render_active_orders(
         snapshot["times"],
         current_user,
         definitions,
-        pending or sent_pending,
+        pending or archive_pending,
     )
 
 
-def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffix: str = "") -> None:
-    """Histórico de enviados; cambiar la etapa devuelve el pedido a la mesa activa."""
+def render_sent_archive(
+    current_user: str, snapshot: dict[str, Any], title_suffix: str = "", *, other_pending: bool = False
+) -> None:
+    render_order_archive(current_user, snapshot, "sent", title_suffix, other_pending=other_pending)
+
+
+def render_paused_archive(
+    current_user: str, snapshot: dict[str, Any], title_suffix: str = "", *, other_pending: bool = False
+) -> None:
+    render_order_archive(current_user, snapshot, "paused", title_suffix, other_pending=other_pending)
+
+
+def render_order_archive(
+    current_user: str, snapshot: dict[str, Any], kind: str, title_suffix: str = "", *, other_pending: bool = False
+) -> None:
+    """Archivo plegable; sólo cambiar la etapa devuelve el pedido a la mesa activa."""
     definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
-    sent: pd.DataFrame = snapshot.get("sent", pd.DataFrame())
-    main_pending = (editor_change_count("aligners", definitions) > 0
-                    or order_detail.pending_count(tracking_key("aligners")) > 0)
-    sent_pending = sent_change_count(definitions) > 0
-    expander_key = tracking_key("aligners_sent_expander")
-    if sent_pending and not st.session_state.get(expander_key):
+    table: pd.DataFrame = snapshot.get(kind, pd.DataFrame())
+    title = "🚫 Caso en pausa" if kind == "paused" else "🚚 Enviados"
+    description = "casos en pausa" if kind == "paused" else "pedidos enviados"
+    prefix = f"aligners_{kind}"
+    archive_pending = editor_change_count(prefix, definitions, skip_repeated=True) > 0
+    other_kind = "sent" if kind == "paused" else "paused"
+    main_pending = (other_pending or editor_change_count("aligners", definitions) > 0
+                    or order_detail.pending_count(tracking_key("aligners")) > 0
+                    or editor_change_count(f"aligners_{other_kind}", definitions, skip_repeated=True) > 0)
+    expander_key = tracking_key(f"{prefix}_expander")
+    if archive_pending and not st.session_state.get(expander_key):
         # Sin esto, cerrar el expander desmontaría la grilla y las etapas elegidas
         # se perderían en silencio. El servidor lo mantiene abierto (el navegador
         # puede dibujarlo cerrado) hasta guardar o descartar.
         st.session_state[expander_key] = True
-        st.toast("Guarda o descarta los cambios antes de cerrar Enviados.", icon="⚠️")
+        st.toast(f"Guarda o descarta los cambios antes de cerrar {title}.", icon="⚠️")
     # on_change="rerun": la grilla se monta con el expander ya abierto, no con ancho cero.
     with st.expander(
-        f"🚚 Enviados{title_suffix} · {len(sent)} pedido(s)",
+        f"{title}{title_suffix} · {len(table)} pedido(s)",
         expanded=False,
         key=expander_key,
         on_change="rerun",
@@ -4284,31 +4339,34 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
         if not archive.open:
             return
         st.caption(
+            "Estos casos están archivados temporalmente. Cambia la etapa y pulsa "
+            "Guardar y reactivar para devolverlos a la lista principal."
+            if kind == "paused" else
             "Histórico de pedidos enviados. Cambia la etapa de un pedido y pulsa "
             "Guardar y reactivar: regresará a los pedidos activos de arriba."
         )
-        if sent.empty:
-            st.info("Todavía no hay pedidos enviados.")
+        if table.empty:
+            st.info("No hay casos en pausa." if kind == "paused" else "Todavía no hay pedidos enviados.")
             return
 
         filters = st.columns([2.2, 1.5])
         search = filters[0].text_input(
             "Buscar pedido",
             placeholder="Orden, doctor, paciente o producto",
-            disabled=sent_pending,
-            key=tracking_key("aligners_sent_search"),
+            disabled=archive_pending,
+            key=tracking_key(f"{prefix}_search"),
         )
         product_options = sorted(
-            {clean_cell(value).strip() for value in sent.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
+            {clean_cell(value).strip() for value in table.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
         )
         products = filters[1].multiselect(
             "Producto",
             product_options,
-            disabled=sent_pending,
-            key=tracking_key("aligners_sent_products"),
+            disabled=archive_pending,
+            key=tracking_key(f"{prefix}_products"),
         )
         filtered = filter_tracking_table(
-            sent,
+            table,
             search=search,
             signal="Todos",
             products=products,
@@ -4316,11 +4374,11 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
             order_mode="Orden de la hoja",
         )
         st.caption(
-            f"{len(filtered)} de {len(sent)} pedidos enviados · Sólo se edita la etapa; "
-            "se ofrece cualquier etapa o pausa del producto excepto Enviado."
+            f"{len(filtered)} de {len(table)} {description} · Sólo se edita la etapa; "
+            "se ofrece cualquier etapa o pausa del producto excepto Enviado, Cancelado y Caso en pausa."
         )
         if filtered.empty:
-            st.info("No hay pedidos enviados que coincidan con la búsqueda.")
+            st.info(f"No hay {description} que coincidan con la búsqueda.")
             return
 
         source_grid = filtered[tracking_columns(filtered.columns)].copy()
@@ -4330,7 +4388,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
                 [
                     current_user,
                     st.session_state.get(tracking_key("aligners_revision"), 0),
-                    st.session_state.get(tracking_key("aligners_sent_revision"), 0),
+                    st.session_state.get(tracking_key(f"{prefix}_revision"), 0),
                     search,
                     products,
                 ],
@@ -4338,12 +4396,12 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
                 sort_keys=True,
             ).encode()
         ).hexdigest()[:16]
-        key = tracking_key(f"aligners_sent_grid_{signature}")
-        st.session_state[tracking_key("aligners_sent_editor_key")] = key
-        st.session_state[tracking_key("aligners_sent_editor_baseline")] = grid.copy()
+        key = tracking_key(f"{prefix}_grid_{signature}")
+        st.session_state[tracking_key(f"{prefix}_editor_key")] = key
+        st.session_state[tracking_key(f"{prefix}_editor_baseline")] = grid.copy()
 
         options = build_grid_configuration(grid, source_grid, definitions, reactivate=True, current_user=current_user)
-        order_detail.lock_grid(options, bool(order_detail.pending_count(tracking_key("aligners"))))
+        order_detail.lock_grid(options, main_pending)
         edited = render_aligners_grid(grid, options, key)
         baseline, reactivated = without_repeated_orders(grid, edited)
         try:
@@ -4359,7 +4417,7 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
             # Guardar reconstruye ambas tablas; no debe borrar ediciones de arriba.
             disabled=not can_edit_orders(current_user) or not changes or main_pending,
             use_container_width=True,
-            key=tracking_key("aligners_sent_save"),
+            key=tracking_key(f"{prefix}_save"),
         ):
             saved, errors = save_workbench_changes(
                 filtered, baseline, reactivated, current_user, definitions, reactivate=True
@@ -4373,15 +4431,15 @@ def render_sent_archive(current_user: str, snapshot: dict[str, Any], title_suffi
             rerun_active_tab()
         if discard_column.button(
             "Descartar cambios",
-            disabled=not changes and not sent_pending,
+            disabled=not changes and not archive_pending,
             use_container_width=True,
-            key=tracking_key("aligners_sent_discard"),
+            key=tracking_key(f"{prefix}_discard"),
         ):
-            discard_sent_changes()
+            discard_archive_changes(kind)
             rerun_active_tab()
         if main_pending:
             count_column.caption(
-                "Guarda o descarta primero los cambios de la tabla de pedidos activos."
+                "Guarda o descarta primero los cambios de las otras tablas o fichas."
             )
         else:
             count_column.caption(f"{len(changes)} pedidos por reactivar")
@@ -4533,7 +4591,7 @@ def show_general_feedback(sources: list[dict[str, Any]]) -> None:
 
 
 def general_pending_count(sources: list[dict[str, Any]]) -> int:
-    """Cambios sin guardar de la tabla general, de las fichas y de Enviados de cada hoja."""
+    """Cambios sin guardar de la tabla general, las fichas y los archivos de cada hoja."""
     total = general_grid_change_count()
     for source in sources:
         with order_sheet_scope(source["sheet"]):
@@ -4750,8 +4808,7 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
     )
     if table.empty:
         st.info(
-            "No hay pedidos activos. Los enviados se consultan abajo, en el histórico de "
-            "Enviados de cada origen."
+            "No hay pedidos activos. Consulta abajo Caso en pausa o Enviados de cada origen."
         )
         return
 
@@ -4869,19 +4926,19 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
     for error in change_errors:
         st.error(error)
     change_count = sum(len(batch["changes"]) for batch in batches)
-    sent_pending = False
+    archive_pending = False
     for source in sources:
         with order_sheet_scope(source["sheet"]):
-            sent_pending = sent_pending or sent_change_count(source["snapshot"]["definitions"]) > 0
+            archive_pending = archive_pending or archive_change_count(source["snapshot"]["definitions"]) > 0
 
     save_column, discard_column, count_column, _ = st.columns([1.3, 1.3, 1.8, 4])
     if save_column.button(
         "Guardar cambios",
         type="primary",
-        disabled=not any_status_access(current_user, sources) or not batches or sent_pending or form_pending,
+        disabled=not any_status_access(current_user, sources) or not batches or archive_pending or form_pending,
         width="stretch",
         key=f"{GENERAL_KEY_PREFIX}aligners_save",
-        help="Primero guarda o descarta los cambios del histórico de Enviados." if sent_pending else None,
+        help="Primero guarda o descarta los cambios de Caso en pausa o Enviados." if archive_pending else None,
     ):
         for batch in batches:
             source = batch["source"]
@@ -4930,7 +4987,7 @@ def render_general_orders(current_user: str, sources: list[dict[str, Any]], stor
                 snapshot["times"],
                 current_user,
                 snapshot["definitions"],
-                bool(batches) or sent_change_count(snapshot["definitions"]) > 0,
+                bool(batches) or archive_pending,
             )
         shown += 1
     if not shown:
@@ -4979,7 +5036,15 @@ def render_general_workbench(current_user: str) -> None:
     render_general_orders(current_user, sources, pending)
     for source in sources:
         with order_sheet_scope(source["sheet"]):
-            render_sent_archive(current_user, source["snapshot"], title_suffix=f" · {source['origin']}")
+            definitions = source["snapshot"]["definitions"]
+            render_paused_archive(
+                current_user, source["snapshot"], title_suffix=f" · {source['origin']}",
+                other_pending=general_pending_count(sources) > paused_change_count(definitions),
+            )
+            render_sent_archive(
+                current_user, source["snapshot"], title_suffix=f" · {source['origin']}",
+                other_pending=general_pending_count(sources) > sent_change_count(definitions),
+            )
 
 
 # ==============================

@@ -172,7 +172,7 @@ def test_normal_stage_only_offers_next_stage_pauses_and_cancel(definitions):
         "CONVENC.", "POR HACER SETUP", definitions
     )
     assert options[:2] == ["POR HACER SETUP", "EN PLANEACIÓN"]
-    assert options[2:-1] == list(definitions["CONVENCIONAL"].pauses)
+    assert options[2:-1] == [*definitions["CONVENCIONAL"].pauses, app.PAUSED_STATUS]
     assert options[-1] == "CANCELADO"
     assert "CASO APROBADO" not in options
 
