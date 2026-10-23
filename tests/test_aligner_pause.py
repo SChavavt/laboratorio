@@ -126,17 +126,25 @@ def test_general_pause_leaves_active_list_and_exposes_archive():
     assert at.session_state["sheets"][app.SHEET_POLANCO].values[2][1] == app.PAUSED_STATUS
     assert at.session_state["sheets"][app.SHEET_ORDERS].values[2][1] == "REVISIÓN DE ARCHIVOS"
 
-    # Un solo expander por archivo; dentro, una sección por origen.
+    # Un solo expander por archivo; dentro, un expander cerrado por origen.
     assert [item.label for item in at.expander if "pedido(s)" in item.label] == [
         "🚫 Caso en pausa · 1 pedido(s)", "🚚 Enviados · 0 pedido(s)",
     ]
     at.session_state["general_aligners_paused_expander"] = True
     at.run()
     assert not at.exception
-    sections = [item.value for item in at.markdown if item.value.startswith("#### ")]
-    assert sections == [
-        "#### 📋 Seguimiento · 0 pedido(s)", "#### 🏢 Polanco · 1 pedido(s)", "#### 🌬️ AERIS · 0 pedido(s)",
+    assert [item.label for item in at.expander if "pedido(s)" in item.label] == [
+        "🚫 Caso en pausa · 1 pedido(s)",
+        "📋 Seguimiento · 0 pedido(s)", "🏢 Polanco · 1 pedido(s)", "🌬️ AERIS · 0 pedido(s)",
+        "🚚 Enviados · 0 pedido(s)",
     ]
+    assert not any(item.key == "general_polanco_aligners_paused_search" for item in at.text_input)
+    # Al abrir Polanco aparece su buscador y su tabla.
+    at.session_state["general_aligners_paused_expander"] = True
+    at.session_state["general_polanco_aligners_paused_origin_expander"] = True
+    at.run()
+    assert not at.exception
+    assert any(item.key == "polanco_aligners_paused_search" for item in at.text_input)
 
 
 def test_paused_archive_filters_reactivates_and_retains_pending_edits():
