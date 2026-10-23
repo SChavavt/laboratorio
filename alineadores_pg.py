@@ -4395,18 +4395,26 @@ def render_general_archive(current_user: str, sources: list[dict[str, Any]], kin
         if not archive.open:
             return
         st.caption(ARCHIVE_CAPTIONS[kind])
-        for index, source in enumerate(sources):
-            if index:
-                st.divider()
+        for source in sources:
             with order_sheet_scope(source["sheet"]):
                 definitions = source["snapshot"]["definitions"]
                 count = len(source["snapshot"].get(kind, pd.DataFrame()))
-                st.markdown(f"#### {source['origin']} · {count} pedido(s)")
                 own = editor_change_count(f"aligners_{kind}", definitions, skip_repeated=True)
-                render_order_archive_body(
-                    current_user, source["snapshot"], kind,
-                    other_pending=general_pending_count(sources) > own,
-                )
+                # Un expander por origen, cerrado por defecto, dentro del expander del archivo.
+                origin_key = GENERAL_KEY_PREFIX + tracking_key(f"aligners_{kind}_origin_expander")
+                keep_archive_open(origin_key, own > 0, f"{title} · {source['origin']}")
+                with st.expander(
+                    f"{source['origin']} · {count} pedido(s)",
+                    expanded=False,
+                    key=origin_key,
+                    on_change="rerun",
+                ) as section:
+                    if not section.open:
+                        continue
+                    render_order_archive_body(
+                        current_user, source["snapshot"], kind,
+                        other_pending=general_pending_count(sources) > own,
+                    )
 
 
 def render_order_archive_body(
