@@ -4332,27 +4332,35 @@ def render_paused_archive(
     render_order_archive(current_user, snapshot, "paused", title_suffix, other_pending=other_pending)
 
 
-def render_order_archive(
-    current_user: str, snapshot: dict[str, Any], kind: str, title_suffix: str = "", *, other_pending: bool = False
-) -> None:
-    """Archivo plegable; sólo cambiar la etapa devuelve el pedido a la mesa activa."""
-    definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
-    table: pd.DataFrame = snapshot.get(kind, pd.DataFrame())
-    title = "🚫 Caso en pausa" if kind == "paused" else "🚚 Enviados"
-    description = "casos en pausa" if kind == "paused" else "pedidos enviados"
-    prefix = f"aligners_{kind}"
-    archive_pending = editor_change_count(prefix, definitions, skip_repeated=True) > 0
-    other_kind = "sent" if kind == "paused" else "paused"
-    main_pending = (other_pending or editor_change_count("aligners", definitions) > 0
-                    or order_detail.pending_count(tracking_key("aligners")) > 0
-                    or editor_change_count(f"aligners_{other_kind}", definitions, skip_repeated=True) > 0)
-    expander_key = tracking_key(f"{prefix}_expander")
+ARCHIVE_TITLES = {"paused": "🚫 Caso en pausa", "sent": "🚚 Enviados"}
+ARCHIVE_CAPTIONS = {
+    "paused": "Estos casos están archivados temporalmente. Cambia la etapa y pulsa "
+              "Guardar y reactivar para devolverlos a la lista principal.",
+    "sent": "Histórico de pedidos enviados. Cambia la etapa de un pedido y pulsa "
+            "Guardar y reactivar: regresará a los pedidos activos de arriba.",
+}
+
+
+def keep_archive_open(expander_key: str, archive_pending: bool, title: str) -> None:
     if archive_pending and not st.session_state.get(expander_key):
         # Sin esto, cerrar el expander desmontaría la grilla y las etapas elegidas
         # se perderían en silencio. El servidor lo mantiene abierto (el navegador
         # puede dibujarlo cerrado) hasta guardar o descartar.
         st.session_state[expander_key] = True
         st.toast(f"Guarda o descarta los cambios antes de cerrar {title}.", icon="⚠️")
+
+
+def render_order_archive(
+    current_user: str, snapshot: dict[str, Any], kind: str, title_suffix: str = "", *, other_pending: bool = False
+) -> None:
+    """Archivo plegable; sólo cambiar la etapa devuelve el pedido a la mesa activa."""
+    definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
+    table: pd.DataFrame = snapshot.get(kind, pd.DataFrame())
+    title = ARCHIVE_TITLES[kind]
+    prefix = f"aligners_{kind}"
+    archive_pending = editor_change_count(prefix, definitions, skip_repeated=True) > 0
+    expander_key = tracking_key(f"{prefix}_expander")
+    keep_archive_open(expander_key, archive_pending, title)
     # on_change="rerun": la grilla se monta con el expander ya abierto, no con ancho cero.
     with st.expander(
         f"{title}{title_suffix} · {len(table)} pedido(s)",
@@ -4362,111 +4370,156 @@ def render_order_archive(
     ) as archive:
         if not archive.open:
             return
-        st.caption(
-            "Estos casos están archivados temporalmente. Cambia la etapa y pulsa "
-            "Guardar y reactivar para devolverlos a la lista principal."
-            if kind == "paused" else
-            "Histórico de pedidos enviados. Cambia la etapa de un pedido y pulsa "
-            "Guardar y reactivar: regresará a los pedidos activos de arriba."
-        )
-        if table.empty:
-            st.info("No hay casos en pausa." if kind == "paused" else "Todavía no hay pedidos enviados.")
+        st.caption(ARCHIVE_CAPTIONS[kind])
+        render_order_archive_body(current_user, snapshot, kind, other_pending=other_pending)
+
+
+def render_general_archive(current_user: str, sources: list[dict[str, Any]], kind: str) -> None:
+    """Un solo expander por archivo; dentro, una sección por origen (Seguimiento, Polanco, AERIS)."""
+    title = ARCHIVE_TITLES[kind]
+    total = sum(len(source["snapshot"].get(kind, pd.DataFrame())) for source in sources)
+    archive_pending = False
+    for source in sources:
+        with order_sheet_scope(source["sheet"]):
+            definitions = source["snapshot"]["definitions"]
+            archive_pending = archive_pending or editor_change_count(
+                f"aligners_{kind}", definitions, skip_repeated=True) > 0
+    expander_key = f"{GENERAL_KEY_PREFIX}aligners_{kind}_expander"
+    keep_archive_open(expander_key, archive_pending, title)
+    with st.expander(
+        f"{title} · {total} pedido(s)",
+        expanded=False,
+        key=expander_key,
+        on_change="rerun",
+    ) as archive:
+        if not archive.open:
             return
+        st.caption(ARCHIVE_CAPTIONS[kind])
+        for index, source in enumerate(sources):
+            if index:
+                st.divider()
+            with order_sheet_scope(source["sheet"]):
+                definitions = source["snapshot"]["definitions"]
+                count = len(source["snapshot"].get(kind, pd.DataFrame()))
+                st.markdown(f"#### {source['origin']} · {count} pedido(s)")
+                own = editor_change_count(f"aligners_{kind}", definitions, skip_repeated=True)
+                render_order_archive_body(
+                    current_user, source["snapshot"], kind,
+                    other_pending=general_pending_count(sources) > own,
+                )
 
-        filters = st.columns([2.2, 1.5])
-        search = filters[0].text_input(
-            "Buscar pedido",
-            placeholder="Orden, doctor, paciente o producto",
-            disabled=archive_pending,
-            key=tracking_key(f"{prefix}_search"),
-        )
-        product_options = sorted(
-            {clean_cell(value).strip() for value in table.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
-        )
-        products = filters[1].multiselect(
-            "Producto",
-            product_options,
-            disabled=archive_pending,
-            key=tracking_key(f"{prefix}_products"),
-        )
-        filtered = filter_tracking_table(
-            table,
-            search=search,
-            signal="Todos",
-            products=products,
-            statuses=[],
-            order_mode=RECENT_FIRST,
-        )
-        st.caption(
-            f"{len(filtered)} de {len(table)} {description} · Sólo se edita la etapa; "
-            "se ofrece cualquier etapa o pausa del producto excepto Enviado, Cancelado y Caso en pausa."
-        )
-        if filtered.empty:
-            st.info(f"No hay {description} que coincidan con la búsqueda.")
-            return
 
-        source_grid = filtered[tracking_columns(filtered.columns)].copy()
-        grid = display_workbench_df(source_grid, definitions)
-        signature = hashlib.sha256(
-            json.dumps(
-                [
-                    current_user,
-                    st.session_state.get(tracking_key("aligners_revision"), 0),
-                    st.session_state.get(tracking_key(f"{prefix}_revision"), 0),
-                    search,
-                    products,
-                ],
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()[:16]
-        key = tracking_key(f"{prefix}_grid_{signature}")
-        st.session_state[tracking_key(f"{prefix}_editor_key")] = key
-        st.session_state[tracking_key(f"{prefix}_editor_baseline")] = grid.copy()
+def render_order_archive_body(
+    current_user: str, snapshot: dict[str, Any], kind: str, *, other_pending: bool = False
+) -> None:
+    """Buscador, grilla y botones de un archivo (Caso en pausa o Enviados) de un seguimiento."""
+    definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
+    table: pd.DataFrame = snapshot.get(kind, pd.DataFrame())
+    description = "casos en pausa" if kind == "paused" else "pedidos enviados"
+    prefix = f"aligners_{kind}"
+    archive_pending = editor_change_count(prefix, definitions, skip_repeated=True) > 0
+    other_kind = "sent" if kind == "paused" else "paused"
+    main_pending = (other_pending or editor_change_count("aligners", definitions) > 0
+                    or order_detail.pending_count(tracking_key("aligners")) > 0
+                    or editor_change_count(f"aligners_{other_kind}", definitions, skip_repeated=True) > 0)
+    if table.empty:
+        st.info("No hay casos en pausa." if kind == "paused" else "Todavía no hay pedidos enviados.")
+        return
 
-        options = build_grid_configuration(grid, source_grid, definitions, reactivate=True, current_user=current_user)
-        order_detail.lock_grid(options, main_pending)
-        edited = render_aligners_grid(grid, options, key)
-        baseline, reactivated = without_repeated_orders(grid, edited)
-        try:
-            changes = grid_changes(baseline, reactivated, definitions)
-        except ValueError as exc:
-            st.error(str(exc))
-            changes = []
+    filters = st.columns([2.2, 1.5])
+    search = filters[0].text_input(
+        "Buscar pedido",
+        placeholder="Orden, doctor, paciente o producto",
+        disabled=archive_pending,
+        key=tracking_key(f"{prefix}_search"),
+    )
+    product_options = sorted(
+        {clean_cell(value).strip() for value in table.get(PRODUCT_COLUMN, []) if clean_cell(value).strip()}
+    )
+    products = filters[1].multiselect(
+        "Producto",
+        product_options,
+        disabled=archive_pending,
+        key=tracking_key(f"{prefix}_products"),
+    )
+    filtered = filter_tracking_table(
+        table,
+        search=search,
+        signal="Todos",
+        products=products,
+        statuses=[],
+        order_mode=RECENT_FIRST,
+    )
+    st.caption(
+        f"{len(filtered)} de {len(table)} {description} · Sólo se edita la etapa; "
+        "se ofrece cualquier etapa o pausa del producto excepto Enviado, Cancelado y Caso en pausa."
+    )
+    if filtered.empty:
+        st.info(f"No hay {description} que coincidan con la búsqueda.")
+        return
 
-        save_column, discard_column, count_column = st.columns([1.5, 1.3, 3.2])
-        if save_column.button(
-            "Guardar y reactivar",
-            type="primary",
-            # Guardar reconstruye ambas tablas; no debe borrar ediciones de arriba.
-            disabled=not can_edit_orders(current_user) or not changes or main_pending,
-            use_container_width=True,
-            key=tracking_key(f"{prefix}_save"),
-        ):
-            saved, errors = save_workbench_changes(
-                filtered, baseline, reactivated, current_user, definitions, reactivate=True
-            )
-            message = (
-                f"Reactivado: {', '.join(saved)} · ya aparece en los pedidos activos."
-                if saved
-                else ""
-            )
-            st.session_state[tracking_key("aligners_feedback")] = (saved, errors, message)
-            rerun_active_tab()
-        if discard_column.button(
-            "Descartar cambios",
-            disabled=not changes and not archive_pending,
-            use_container_width=True,
-            key=tracking_key(f"{prefix}_discard"),
-        ):
-            discard_archive_changes(kind)
-            rerun_active_tab()
-        if main_pending:
-            count_column.caption(
-                "Guarda o descarta primero los cambios de las otras tablas o fichas."
-            )
-        else:
-            count_column.caption(f"{len(changes)} pedidos por reactivar")
+    source_grid = filtered[tracking_columns(filtered.columns)].copy()
+    grid = display_workbench_df(source_grid, definitions)
+    signature = hashlib.sha256(
+        json.dumps(
+            [
+                current_user,
+                st.session_state.get(tracking_key("aligners_revision"), 0),
+                st.session_state.get(tracking_key(f"{prefix}_revision"), 0),
+                search,
+                products,
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
+    key = tracking_key(f"{prefix}_grid_{signature}")
+    st.session_state[tracking_key(f"{prefix}_editor_key")] = key
+    st.session_state[tracking_key(f"{prefix}_editor_baseline")] = grid.copy()
+
+    options = build_grid_configuration(grid, source_grid, definitions, reactivate=True, current_user=current_user)
+    order_detail.lock_grid(options, main_pending)
+    edited = render_aligners_grid(grid, options, key)
+    baseline, reactivated = without_repeated_orders(grid, edited)
+    try:
+        changes = grid_changes(baseline, reactivated, definitions)
+    except ValueError as exc:
+        st.error(str(exc))
+        changes = []
+
+    save_column, discard_column, count_column = st.columns([1.5, 1.3, 3.2])
+    if save_column.button(
+        "Guardar y reactivar",
+        type="primary",
+        # Guardar reconstruye ambas tablas; no debe borrar ediciones de arriba.
+        disabled=not can_edit_orders(current_user) or not changes or main_pending,
+        use_container_width=True,
+        key=tracking_key(f"{prefix}_save"),
+    ):
+        saved, errors = save_workbench_changes(
+            filtered, baseline, reactivated, current_user, definitions, reactivate=True
+        )
+        message = (
+            f"Reactivado: {', '.join(saved)} · ya aparece en los pedidos activos."
+            if saved
+            else ""
+        )
+        st.session_state[tracking_key("aligners_feedback")] = (saved, errors, message)
+        rerun_active_tab()
+    if discard_column.button(
+        "Descartar cambios",
+        disabled=not changes and not archive_pending,
+        use_container_width=True,
+        key=tracking_key(f"{prefix}_discard"),
+    ):
+        discard_archive_changes(kind)
+        rerun_active_tab()
+    if main_pending:
+        count_column.caption(
+            "Guarda o descarta primero los cambios de las otras tablas o fichas."
+        )
+    else:
+        count_column.caption(f"{len(changes)} pedidos por reactivar")
 
 
 def render_alerts(current_user: str) -> None:
@@ -5060,17 +5113,8 @@ def render_general_workbench(current_user: str) -> None:
 
     render_general_new_order(current_user, sources, pending)
     render_general_orders(current_user, sources, pending)
-    for source in sources:
-        with order_sheet_scope(source["sheet"]):
-            definitions = source["snapshot"]["definitions"]
-            render_paused_archive(
-                current_user, source["snapshot"], title_suffix=f" · {source['origin']}",
-                other_pending=general_pending_count(sources) > paused_change_count(definitions),
-            )
-            render_sent_archive(
-                current_user, source["snapshot"], title_suffix=f" · {source['origin']}",
-                other_pending=general_pending_count(sources) > sent_change_count(definitions),
-            )
+    render_general_archive(current_user, sources, "paused")
+    render_general_archive(current_user, sources, "sent")
 
 
 # ==============================
