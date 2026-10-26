@@ -218,3 +218,15 @@ with patch.object(app, "get_worksheet", st.session_state["sheets"].__getitem__),
     assert at.session_state["sheets"][app.SHEET_ORDERS].values[2][1] == "REVISIÓN DE ARCHIVOS"
     assert any(item.label == "🚫 Caso en pausa · 0 pedido(s)" for item in at.expander)
     assert not at.button(key="aligners_refresh").disabled
+
+
+def test_opening_an_archive_scrolls_once_to_its_table(monkeypatch):
+    state = {"general_polanco_aligners_paused_origin_expander": True}
+    monkeypatch.setattr(app.st, "session_state", state)
+    app.request_scroll_on_open("general_polanco_aligners_paused_origin_expander")
+    assert state["general_polanco_aligners_paused_origin_expander_scroll"] is True
+    # Al cerrarlo no se pide desplazar.
+    state.clear()
+    state["general_aligners_paused_origin_expander"] = False
+    app.request_scroll_on_open("general_aligners_paused_origin_expander")
+    assert "general_aligners_paused_origin_expander_scroll" not in state
