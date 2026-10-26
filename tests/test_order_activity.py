@@ -125,13 +125,13 @@ def test_sort_handles_timezones_ties_bad_dates_and_legacy_rows_without_mutation(
 
 def test_general_save_moves_only_the_edited_origin_to_the_top():
     at = general_app()
-    at.session_state["grid_edits"] = {"🏢 Polanco|001": {"NOMBRE PACIENTE": "Beto editado"}}
+    at.session_state["grid_edits"] = {"📋 Seguimiento|001": {"NOMBRE PACIENTE": "Ana editada"}}
     at.run()
     assert not at.exception
     assert at.selectbox(key="general_order_mode").value == RECENT_FIRST
     at.button(key="general_aligners_save").click().run()
     assert not at.exception and not at.error
-    assert at.session_state["grid_shown"][align.ORIGIN_COLUMN].tolist() == ["🏢 Polanco", "📋 Seguimiento"]
+    assert at.session_state["grid_shown"][align.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento", "🏢 Polanco"]
     assert LAST_EDIT_COLUMN not in at.session_state["grid_shown"]
     at.selectbox(key="general_order_mode").select(SHEET_ORDER).run()
     assert at.session_state["grid_shown"][align.ORIGIN_COLUMN].tolist() == ["📋 Seguimiento", "🏢 Polanco"]
