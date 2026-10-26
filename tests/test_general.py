@@ -105,8 +105,8 @@ def test_general_view_lists_every_sheet_and_opens_polanco_card():
     assert not at.exception
     shown = at.session_state["grid_shown"]
     assert shown[[app.ORIGIN_COLUMN, app.ID_COLUMN, "NOMBRE PACIENTE"]].values.tolist() == [
-        ["📋 Seguimiento", "001", "Ana"],
         ["🏢 Polanco", "001", "Beto"],
+        ["📋 Seguimiento", "001", "Ana"],
     ]
     assert "ADEUDO" in shown.columns
     assert not at.warning
@@ -151,7 +151,7 @@ def test_general_new_order_goes_only_to_chosen_origin():
     assert len(sheets[app.SHEET_POLANCO_TIMES].values) == 2
     assert len(sheets[app.SHEET_TIMES].values) == 1
     # La tabla ya muestra la orden nueva con su origen.
-    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["🏢 Polanco", "📋 Seguimiento", "🏢 Polanco"]
+    assert at.session_state["grid_shown"][app.ORIGIN_COLUMN].tolist() == ["🏢 Polanco", "🏢 Polanco", "📋 Seguimiento"]
     assert at.session_state["grid_shown"].iloc[0]["NOMBRE PACIENTE"] == "Nuevo"
 
 

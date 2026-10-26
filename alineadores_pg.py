@@ -30,7 +30,8 @@ import streamlit.components.v1 as components
 import forms_notices
 import order_detail
 from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
-                            edit_timestamp, prepare_activity_column, recent_first, serialized_order_write)
+                            ACTIVITY_ORDER_VERSION, edit_timestamp, initialize_recent_order,
+                            prepare_activity_column, recent_first, serialized_order_write, with_history_activity)
 import case_invoices
 import case_search
 from user_permissions import (APP_USERS, VIEW_AND_CREATE_USERS, can_change_status, can_create_orders,
@@ -313,7 +314,7 @@ AUTOMATIC_COLUMNS = {*COMPUTED_COLUMNS, "FECHA OBJETIVO ENVÍO"}
 def aligners_editable_columns(available_columns: Any = ()) -> set[str]:
     """Devuelve las columnas de la hoja que se pueden corregir desde Seguimiento."""
     protected = {"SELECCIONAR", ID_COLUMN, LAST_EDIT_COLUMN, *COMPUTED_COLUMNS}
-    return set(available_columns) - protected
+    return {column for column in available_columns if not column.startswith("_")} - protected
 
 GRID_COLUMNS = [
     ID_COLUMN,
@@ -2631,6 +2632,7 @@ def build_tracking_table(
             cases[column] = pd.Series(dtype="object")
         return cases
     logs = canonical_times_df(times_df, orders_df.get(ID_COLUMN, []))
+    cases = with_history_activity(cases, logs, ID_COLUMN, order_ids=orders_df.get(ID_COLUMN, []))
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN"}.issubset(logs.columns):
         open_logs = logs[logs["FECHA_FIN"].astype(str).str.strip().eq("")]
@@ -3488,6 +3490,11 @@ def get_snapshot(current_user: str) -> dict[str, Any]:
             "at": app_now(),
         }
         st.session_state[tracking_key("aligners_snapshot")] = snapshot
+    if snapshot.get("activity_order_version") != ACTIVITY_ORDER_VERSION:
+        order_ids = snapshot["orders"].get(ID_COLUMN, [])
+        for key in ("table", "sent", "paused"):
+            snapshot[key] = with_history_activity(snapshot[key], snapshot["times"], ID_COLUMN, order_ids=order_ids)
+        snapshot["activity_order_version"] = ACTIVITY_ORDER_VERSION
     return snapshot
 
 
@@ -4076,7 +4083,7 @@ def render_case_actions(
             details = [
                 {"Campo": column, "Valor": clean_cell(value)}
                 for column, value in row.items()
-                if column not in excluded and clean_cell(value).strip()
+                if column not in excluded and not column.startswith("_") and clean_cell(value).strip()
             ]
             st.dataframe(pd.DataFrame(details), hide_index=True, use_container_width=True)
 
@@ -4086,6 +4093,9 @@ def render_workbench(current_user: str) -> None:
     definitions: dict[str, ProcessDefinition] = snapshot["definitions"]
     table: pd.DataFrame = snapshot["table"]
     stored_pending = pending_change_count(definitions)
+    if initialize_recent_order(st.session_state, tracking_key("aligners_order_mode"), pending=bool(stored_pending)):
+        revision = tracking_key("aligners_revision")
+        st.session_state[revision] = st.session_state.get(revision, 0) + 1
     pending_before_grid = stored_pending > 0
 
     heading, refresh = st.columns([5, 1])
@@ -5141,6 +5151,12 @@ def render_general_workbench(current_user: str) -> None:
     if not sources:
         return
     pending = general_pending_count(sources)
+    if initialize_recent_order(st.session_state, f"{GENERAL_KEY_PREFIX}order_mode", pending=bool(pending)):
+        reset_general_grid()
+        for source in sources:
+            with order_sheet_scope(source["sheet"]):
+                revision = tracking_key("aligners_revision")
+                st.session_state[revision] = st.session_state.get(revision, 0) + 1
 
     info, refresh = st.columns([5, 1])
     info.caption(

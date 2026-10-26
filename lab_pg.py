@@ -29,7 +29,8 @@ import forms_notices
 import guias_pg
 import order_detail
 from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
-                            edit_timestamp, prepare_activity_column, recent_first, serialized_order_write)
+                            ACTIVITY_ORDER_VERSION, edit_timestamp, initialize_recent_order,
+                            prepare_activity_column, recent_first, serialized_order_write, with_history_activity)
 from grid_interactions import response_frame
 import dropdown_fields
 from copy import deepcopy
@@ -6106,6 +6107,7 @@ def build_workbench_table(
     logs = canonical_workbench_df(tiempos_df)
     if ID_COLUMN in logs:
         logs[ID_COLUMN] = logs[ID_COLUMN].map(identifier_resolver(estatus_df.get(ID_COLUMN, [])))
+    cases = with_history_activity(cases, logs, ID_COLUMN, order_ids=estatus_df.get(ID_COLUMN, []))
     active_logs: dict[str, pd.DataFrame] = {}
     if {ID_COLUMN, "FECHA_FIN", STATUS_COLUMN}.issubset(logs.columns):
         active_logs = dict(tuple(logs[logs["FECHA_FIN"].str.strip().eq("")].groupby(ID_COLUMN)))
@@ -6176,7 +6178,7 @@ def workbench_editable_columns(current_user: str, available_columns: Any = ()) -
     if not can_edit_orders(current_user):
         return set()
     protected = {"SELECCIONAR", ID_COLUMN, LAST_EDIT_COLUMN, *WORKBENCH_COMPUTED_COLUMNS, *ESTATUS_FORMULA_COLUMNS}
-    return set(available_columns) - protected
+    return {column for column in available_columns if not column.startswith("_")} - protected
 
 
 def workbench_stage_options(row: pd.Series, current_user: str) -> list[str]:
@@ -6320,7 +6322,7 @@ def workbench_saved_column_order(current_user: str, available_columns: Any) -> l
 
 def workbench_display_df(df: pd.DataFrame) -> pd.DataFrame:
     """Añade las etiquetas visuales existentes sólo a la copia del editor."""
-    hidden = [column for column in df if column == LAST_EDIT_COLUMN or str(column).startswith("Columna_")]
+    hidden = [column for column in df if str(column).startswith(("_", "Columna_"))]
     displayed = df.drop(columns=hidden).copy()
     for column in DISPLAY_OPTIONS_BY_COLUMN:
         if column in displayed:
@@ -6354,7 +6356,7 @@ def workbench_changes(original: pd.DataFrame, edited: pd.DataFrame) -> list[tupl
         raise ValueError("No se pueden agregar, borrar ni cambiar folios desde la tabla.")
     lookup = original.set_index(ID_COLUMN, drop=False)
     source_columns = [column for column in original if column not in WORKBENCH_COMPUTED_COLUMNS
-                      and column not in {ID_COLUMN, "SELECCIONAR", LAST_EDIT_COLUMN}]
+                      and column not in {ID_COLUMN, "SELECCIONAR"} and not column.startswith("_")]
     for _, row in edited.iterrows():
         identifier = row[ID_COLUMN]
         previous = lookup.loc[identifier]
@@ -7126,12 +7128,24 @@ def render_workbench(current_user: str) -> None:
         paused_table = build_workbench_table(estatus, tiempos, paused_only=True)
         snapshot = {"user": current_user, "table": table, "paused_table": paused_table,
                     "sent_table": sent_workbench_cases(estatus), "times": tiempos, "at": app_now(),
+                    "activity_order_ids": estatus.get(ID_COLUMN, pd.Series(dtype=str)).tolist(),
                     "sent_statuses": WORKBENCH_SENT_STATUSES}
         st.session_state["workbench_snapshot"] = snapshot
+    if snapshot.get("activity_order_version") != ACTIVITY_ORDER_VERSION:
+        all_ids = snapshot.get("activity_order_ids", [value for key in ("table", "paused_table", "sent_table")
+                                                    for value in snapshot[key].get(ID_COLUMN, [])])
+        for key in ("table", "paused_table", "sent_table"):
+            # Estos logs ya se resolvieron contra la hoja completa al leerla;
+            # volver a resolver sólo contra activos podría unir folios ambiguos.
+            snapshot[key] = with_history_activity(snapshot[key], snapshot["times"], ID_COLUMN,
+                                                  order_ids=all_ids, resolve_legacy=False)
+        snapshot["activity_order_version"] = ACTIVITY_ORDER_VERSION
     table = snapshot["table"]
     paused_table = snapshot.get("paused_table", table.iloc[0:0])
     pending_count = workbench_pending_count()
     pending = pending_count > 0
+    if initialize_recent_order(st.session_state, "workbench_order", pending=pending):
+        st.session_state["workbench_revision"] = st.session_state.get("workbench_revision", 0) + 1
     heading, refresh = st.columns([5, 1])
     with heading:
         st.caption(f"{current_user} · Datos consultados {snapshot['at']:%d/%m/%Y %H:%M} · Hora de Ciudad de México")

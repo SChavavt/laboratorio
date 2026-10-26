@@ -1,15 +1,19 @@
 """Fecha persistente de edición y orden común de las mesas de laboratorio."""
 
 from datetime import datetime, timezone
+from collections import Counter
 from functools import wraps
 from threading import RLock
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 from gspread.cell import Cell
+from order_identifiers import identifier_resolver
 
 
 LAST_EDIT_COLUMN = "_ULTIMA_EDICION_APP"
+HISTORY_ACTIVITY_COLUMN = "_ULTIMA_ACTIVIDAD_HISTORICA"
+ACTIVITY_ORDER_VERSION = 2
 RECENT_FIRST = "Última edición primero"
 SHEET_ORDER = "Orden de la hoja"
 URGENT_FIRST = "Atender urgentes primero"
@@ -56,11 +60,89 @@ def prepare_activity_column(worksheet, values: list[list[str]]) -> tuple[list[st
     return headers, position, [Cell(2, position, LAST_EDIT_COLUMN)]
 
 
+def activity_timestamp(value):
+    """Lee fechas ISO y de Sheets; las fechas sin zona son de Ciudad de México."""
+    text = str(value).strip()
+    if text.lower() in {"", "none", "nan", "nat", "<na>"}:
+        return pd.NaT
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        parsed = None
+        for pattern in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
+                        "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+                        "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y"):
+            try:
+                parsed = datetime.strptime(text, pattern)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return pd.NaT
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=APP_TIMEZONE)
+    return pd.Timestamp(parsed.astimezone(timezone.utc))
+
+
+def with_history_activity(
+    frame: pd.DataFrame, history: pd.DataFrame, id_column: str, *, order_ids=None, resolve_legacy: bool = True,
+) -> pd.DataFrame:
+    """Añade sólo a la copia de lectura la última actividad real de la bitácora.
+
+    Se usan registros, inicios/cierres, pagos e impresión; nunca fechas límite
+    o de entrega futura. Los folios se resuelven dentro de su hoja de origen.
+    """
+    result = frame.copy()
+    if id_column not in result:
+        return result
+    identifiers = list(result[id_column] if order_ids is None else order_ids)
+    identifiers = [str(value).strip() for value in identifiers]
+    counts = Counter(identifiers)
+    resolve = identifier_resolver(identifiers) if resolve_legacy else lambda value: str(value).strip()
+    latest = {}
+    if id_column in history:
+        events = (("FECHA_REGISTRO_LOG", None), ("FECHA_INICIO", "HORA_INICIO"),
+                  ("FECHA_FIN", "HORA_FIN"), ("PAGO_FECHA", None),
+                  ("FECHA_IMPRESION", "HORA_IMPRESION"))
+        for row in history.to_dict("records"):
+            identifier = resolve(row.get(id_column, ""))
+            if not identifier or counts[identifier] != 1:
+                continue
+            for date_column, time_column in events:
+                day = str(row.get(date_column, "")).strip()
+                if day.lower() in {"", "none", "nan", "nat", "<na>"}:
+                    continue
+                clock = str(row.get(time_column, "")).strip() if time_column else ""
+                if clock.lower() in {"none", "nan", "nat", "<na>"}:
+                    clock = ""
+                stamp = activity_timestamp(f"{day} {clock}".strip())
+                if pd.notna(stamp) and (identifier not in latest or stamp > latest[identifier]):
+                    latest[identifier] = stamp
+    result[HISTORY_ACTIVITY_COLUMN] = [latest.get(str(value).strip(), pd.NaT) for value in result[id_column]]
+    return result
+
+
+def initialize_recent_order(state, key: str, *, pending: bool) -> bool:
+    """Activa una vez el orden nuevo en sesiones abiertas, cuando no hay borradores."""
+    marker = f"{key}_activity_version"
+    if pending or state.get(marker) == ACTIVITY_ORDER_VERSION:
+        return False
+    state[key] = RECENT_FIRST
+    state[marker] = ACTIVITY_ORDER_VERSION
+    return True
+
+
 def recent_first(frame: pd.DataFrame) -> pd.DataFrame:
-    """Últimos guardados arriba; sin fecha válida se conserva el orden de origen."""
-    if LAST_EDIT_COLUMN not in frame or frame.empty:
+    """Última edición/actividad arriba; sin historial, recepción reciente primero."""
+    if frame.empty:
         return frame.copy()
-    timestamps = pd.to_datetime(frame[LAST_EDIT_COLUMN].reset_index(drop=True),
-                                format="ISO8601", utc=True, errors="coerce")
-    order = timestamps.sort_values(ascending=False, kind="stable", na_position="last").index
+    dates = pd.DataFrame(index=range(len(frame)))
+    for column in (LAST_EDIT_COLUMN, HISTORY_ACTIVITY_COLUMN):
+        values = frame[column] if column in frame else pd.Series("", index=frame.index)
+        dates[column] = pd.to_datetime(values.reset_index(drop=True).map(activity_timestamp), utc=True)
+    dates["activity"] = dates[[LAST_EDIT_COLUMN, HISTORY_ACTIVITY_COLUMN]].max(axis=1)
+    received = frame.get("FECHA DE RECEPCIÓN", pd.Series("", index=frame.index))
+    dates["received"] = pd.to_datetime(received.reset_index(drop=True).map(activity_timestamp), utc=True)
+    order = dates.sort_values(["activity", "received"], ascending=False,
+                              kind="stable", na_position="last").index
     return frame.iloc[order].reset_index(drop=True)

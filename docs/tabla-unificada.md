@@ -123,11 +123,24 @@ encabezado. No se muestra ni se edita en la tabla o ficha. Una corrección y su
 fecha se escriben juntas; abrir, filtrar, actualizar, descartar o guardar sin
 cambios no altera la fecha. Los renglones físicos de Sheets conservan su posición.
 
-Se registran los guardados hechos desde esta versión de la app. Los pedidos
-anteriores sin fecha de edición permanecen después de los editados, conservando
-entre ellos el orden de la hoja. Las correcciones hechas directamente en Sheets
-no actualizan esta fecha. El Tablero para pantalla conserva su orden operativo
-por antigüedad y prioridad.
+Los pedidos anteriores se ordenan automáticamente en la primera lectura usando
+su última actividad registrada en la bitácora (registros, inicios y cierres de
+etapa, pagos e impresión), combinada con las fechas de edición nuevas. Se usa
+el momento más reciente de cada caso en su hoja de origen; nunca una fecha
+límite o de entrega prevista. Esta recuperación se calcula sólo para mostrar
+la tabla: no cambia datos, fechas de edición ni renglones de Sheets, y no requiere
+abrir y guardar cada caso.
+
+Los casos sin actividad registrada quedan al final, ordenados por recepción
+reciente; si tampoco tienen fecha de recepción, mantienen entre ellos el orden
+de la hoja. En sesiones que ya estaban abiertas se activa una vez el orden nuevo
+y se reconstruye la tabla cuando no hay cambios pendientes. Después se respeta
+la opción de Orden que el usuario elija.
+
+Las correcciones antiguas que no dejaron ninguna fecha o bitácora no se pueden
+reconstruir con exactitud. Las correcciones hechas directamente en Sheets no
+actualizan la fecha de edición de la app. El Tablero para pantalla conserva su
+orden operativo por antigüedad y prioridad.
 
 ## Facturas PDF y buscador de casos
 
