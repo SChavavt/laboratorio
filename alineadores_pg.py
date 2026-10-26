@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import forms_notices
 import order_detail
 from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
@@ -4360,6 +4361,38 @@ def keep_archive_open(expander_key: str, archive_pending: bool, title: str) -> N
         st.toast(f"Guarda o descarta los cambios antes de cerrar {title}.", icon="⚠️")
 
 
+def request_scroll_on_open(expander_key: str) -> None:
+    """Callback del expander: al abrirlo, pide llevar la vista hasta su tabla."""
+    if st.session_state.get(expander_key):
+        st.session_state[f"{expander_key}_scroll"] = True
+
+
+def scroll_to_open_archive(expander_key: str) -> None:
+    """Deja un ancla dentro del expander y, si se acaba de abrir, desplaza la página hasta él."""
+    anchor_id = f"{expander_key.replace('_', '-')}-anchor"
+    st.markdown(f'<div id="{anchor_id}"></div>', unsafe_allow_html=True)
+    if not st.session_state.pop(f"{expander_key}_scroll", False):
+        return
+    # El encabezado del expander queda arriba y su tabla justo debajo. Se repite
+    # cuando la tabla ya cargó, porque al dibujarse cambia la altura de la página.
+    components.html(
+        f"""
+        <script>
+        const move = (behavior) => {{
+            const anchor = window.parent.document.getElementById({anchor_id!r});
+            if (!anchor) return;
+            const box = anchor.closest('details') || anchor;
+            box.style.scrollMarginTop = '4.5rem';  // que no lo tape la barra superior
+            box.scrollIntoView({{ behavior, block: 'start' }});
+        }};
+        setTimeout(() => move('smooth'), 250);
+        setTimeout(() => move('auto'), 1000);
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_order_archive(
     current_user: str, snapshot: dict[str, Any], kind: str, title_suffix: str = "", *, other_pending: bool = False
 ) -> None:
@@ -4371,15 +4404,17 @@ def render_order_archive(
     archive_pending = editor_change_count(prefix, definitions, skip_repeated=True) > 0
     expander_key = tracking_key(f"{prefix}_expander")
     keep_archive_open(expander_key, archive_pending, title)
-    # on_change="rerun": la grilla se monta con el expander ya abierto, no con ancho cero.
+    # on_change (callback) provoca una corrida real: la grilla se monta con el expander ya abierto.
     with st.expander(
         f"{title}{title_suffix} · {len(table)} pedido(s)",
         expanded=False,
         key=expander_key,
-        on_change="rerun",
+        on_change=request_scroll_on_open,
+        args=(expander_key,),
     ) as archive:
         if not archive.open:
             return
+        scroll_to_open_archive(expander_key)
         st.caption(ARCHIVE_CAPTIONS[kind])
         render_order_archive_body(current_user, snapshot, kind, other_pending=other_pending)
 
@@ -4417,10 +4452,12 @@ def render_general_archive(current_user: str, sources: list[dict[str, Any]], kin
                     f"{source['origin']} · {count} pedido(s)",
                     expanded=False,
                     key=origin_key,
-                    on_change="rerun",
+                    on_change=request_scroll_on_open,
+                    args=(origin_key,),
                 ) as section:
                     if not section.open:
                         continue
+                    scroll_to_open_archive(origin_key)
                     render_order_archive_body(
                         current_user, source["snapshot"], kind,
                         other_pending=general_pending_count(sources) > own,
