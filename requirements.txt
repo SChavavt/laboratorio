@@ -11,3 +11,6 @@ numpy==2.0.2
 pyarrow==17.0.0
 protobuf==5.29.5
 reportlab==4.2.5
+# Guías: lectura de facturas TD&S, notas de venta y capturas (mismas versiones que app_v).
+pdfplumber==0.10.3
+Pillow>=10.0,<13.0
