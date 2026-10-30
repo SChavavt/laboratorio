@@ -27,6 +27,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from connection_watchdog import install_connection_watchdog
 import forms_notices
 import order_detail
 from order_activity import (LAST_EDIT_COLUMN, ORDER_MODES, RECENT_FIRST, URGENT_FIRST,
@@ -5934,6 +5935,7 @@ def render_embedded_workspace(current_user: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Control de Alineadores – ARTTDLAB", layout="wide")
+    install_connection_watchdog()
     apply_custom_css()
     st.markdown(
         """<section class="align-hero">
