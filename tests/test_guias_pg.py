@@ -268,6 +268,13 @@ SOURCES = {{
         "ID_Pedido": "PED-W", "Cliente": "ANA ESPERA", "Vendedor_Registro": "ARTTD JIMENA",
         "Tipo_Envio": "📋 Solicitudes de Guía", "Hora_Registro": "2026-09-24 10:30:00",
         "Fecha_Entrega": "2026-09-24", "id_vendedor": "ARTTDJIM01", "Estado": "🟡 Pendiente",
+    }}, {{
+        # Venta foránea con guía: su dirección alimenta el buscador de clientes anteriores.
+        "ID_Pedido": "PED-V", "Cliente": "CLINICA DENTAL SUR", "Vendedor_Registro": "SCHAVA",
+        "Tipo_Envio": "🚚 Pedido Foráneo", "Hora_Registro": "2026-09-10 12:38:00", "Folio_Factura": "F9001",
+        "Direccion_Guia_Retorno": "Nombre: HILDA TORRE MARTÍNEZ\\nCalle y número: Octavio Paz 940\\n"
+            "Colonia: Ladrón de Guevara\\nCódigo Postal: 44600\\nCiudad: Guadalajara\\nEstado: Jalisco\\n"
+            "País: México\\nTeléfono: 3312345678\\nInterior / Depto: 3B",
     }}]),
 }}
 
@@ -311,14 +318,14 @@ def test_request_form_registers_guide_like_app_v():
     assert at.text_input(key="guides_pais_0").value == "México"
 
     at.text_input(key="guides_nombre_0").input("JUAN MEJIA")
-    at.button[0].click().run()
+    at.button(key="guides_submit_0").click().run()
     assert "registered" not in at.session_state
     assert any("La solicitud no se registró" in item.value for item in at.warning)
 
     fill_address(at)
     at.text_input(key="guides_folio_0").input(" F999 ")
     at.text_area(key="guides_comentario_0").input("Enviar hoy")
-    at.button[0].click().run()
+    at.button(key="guides_submit_0").click().run()
     assert not at.exception
     request = at.session_state["registered"]
     assert request["folio_factura"] == " F999 " and request["comentario"] == "Enviar hoy"
@@ -427,3 +434,111 @@ def test_retry_of_same_request_reuses_the_order_id(monkeypatch):
     first = guides.submission_identity_for(request)
     assert guides.submission_identity_for(request) == first
     assert guides.submission_identity_for({**request, "comentario": "otro"}) != first
+
+
+CORREO_GUIA = """REMITENTE
+JUAN MEJIA
+Acapulco 36,
+Roma Norte
+06700 Cuauhtémoc
+
+DESTINATARIO
+ANA LÓPEZ RUIZ
+CALLE: Reforma
+NO. EXTERIOR: 10
+NO. INTERIOR:
+COLONIA: Juárez
+C.P.: 06600
+CIUDAD: Ciudad de México
+ESTADO: CDMX
+TELÉFONO: 55 9876 5432"""
+
+
+HILDA_KEY = "hilda torre martinez::octaviopaz940|44600"
+
+
+def autofill_note(at):
+    return "\n".join(item.value for item in at.caption if "Llenado con" in item.value or "⚠️" in item.value)
+
+
+def test_saved_client_fills_the_whole_address_and_registers_it():
+    from streamlit.testing.v1 import AppTest
+
+    guides.cached_client_directory.clear()  # otras pruebas pueden haberlo llenado
+
+    at = AppTest.from_string(GUIDES_SCRIPT, default_timeout=15).run()
+    assert not at.exception
+    picker = at.selectbox(key="guides_saved_client_0")
+    assert picker.value is None
+    assert picker.options == ["HILDA TORRE MARTINEZ — Octavio Paz 940 · Guadalajara, Jalisco — "
+                              "cliente CLINICA DENTAL SUR — último envío 10/09/26"]
+    # Lo que ya estaba escrito y la dirección guardada no trae se limpia.
+    at.text_area(key="guides_referencias_0").input("Dato de otro cliente")
+    picker.select(HILDA_KEY).run()
+    assert not at.exception
+    values = {key: at.text_input(key=f"guides_{key}_0").value for key in (
+        "nombre", "calle_numero", "colonia", "codigo_postal", "ciudad", "estado", "pais", "telefono", "interior")}
+    assert values == {
+        "nombre": "HILDA TORRE MARTÍNEZ", "calle_numero": "Octavio Paz 940", "colonia": "Ladrón de Guevara",
+        "codigo_postal": "44600", "ciudad": "Guadalajara", "estado": "Jalisco", "pais": "México",
+        "telefono": "3312345678", "interior": "3B",
+    }
+    assert at.text_area(key="guides_referencias_0").value == ""
+    note = autofill_note(at)
+    assert "Llenado con su último envío" in note and "Falta" not in note
+    assert any("Último envío 10/09/26 (F9001)" in item.value for item in at.caption)
+
+    at.button(key="guides_submit_0").click().run()
+    assert not at.exception
+    assert at.session_state["registered"]["direccion"]["interior"] == "3B"
+    assert at.selectbox(key="guides_saved_client_1").value is None  # formulario nuevo, buscador vacío
+
+
+def test_pasted_email_fills_the_recipient_and_replaces_another_client():
+    from streamlit.testing.v1 import AppTest
+
+    guides.cached_client_directory.clear()  # otras pruebas pueden haberlo llenado
+
+    at = AppTest.from_string(GUIDES_SCRIPT, default_timeout=15).run()
+    at.button(key="guides_paste_fill_0").click().run()
+    assert "Pega primero" in autofill_note(at)
+
+    at.selectbox(key="guides_saved_client_0").select(HILDA_KEY).run()
+    at.text_area(key="guides_paste_0").input(CORREO_GUIA)
+    at.button(key="guides_paste_fill_0").click().run()
+    assert not at.exception
+    form = {key: at.text_input(key=f"guides_{key}_0").value for key in (
+        "nombre", "calle_numero", "colonia", "codigo_postal", "ciudad", "estado", "telefono", "interior")}
+    assert form == {
+        "nombre": "ANA LÓPEZ RUIZ", "calle_numero": "Reforma 10", "colonia": "Juárez", "codigo_postal": "06600",
+        "ciudad": "Ciudad de México", "estado": "CDMX", "telefono": "5598765432", "interior": "",
+    }
+    # Es otra destinataria: el interior de Hilda no se queda y el buscador se limpia.
+    assert at.selectbox(key="guides_saved_client_0").value is None
+    assert "Llenado con el texto pegado" in autofill_note(at)
+
+    at.text_area(key="guides_paste_0").input("Gracias, saludos")
+    at.button(key="guides_paste_fill_0").click().run()
+    assert "No se reconoció una dirección de envío en el texto pegado" in autofill_note(at)
+    assert at.text_input(key="guides_nombre_0").value == "ANA LÓPEZ RUIZ"  # no borra lo ya llenado
+
+
+def test_reading_files_fills_folio_and_address(monkeypatch):
+    from types import SimpleNamespace
+
+    from pdf_prueba import factura_pdf
+
+    # AppTest no sube archivos: se prueba el botón con la función que llama.
+    state = {"guides_files_0": [SimpleNamespace(name="F200101.pdf", getvalue=factura_pdf)],
+             "guides_nombre_0": "", "guides_pais_0": "México"}
+    monkeypatch.setattr(guides.st, "session_state", state)
+    guides.on_files_fill(0)
+    assert (state["guides_nombre_0"], state["guides_folio_0"], state["guides_calle_numero_0"]) == (
+        "ANA LUCÍA PÉREZ SOTO", "F200101", "Av. Colón # 450")
+    note = state["guides_autofill_note_0"]
+    assert note["source"] == "la factura F200101" and "Folio de factura" in note["filled"]
+    assert note["missing"] == [] and note["warnings"] == []
+
+    state["guides_files_0"] = []
+    guides.on_files_fill(0)
+    assert state["guides_autofill_note_0"]["warnings"] == ["Sube primero la factura, nota de venta o captura."]

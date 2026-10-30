@@ -341,6 +341,33 @@ Usa el mismo registro que ARTTD JIMENA en app_v, para que almacén las vea igual
   las columnas que app_v agrega (`TD_Leal_Etapa`, `Tipo_Venta`, crédito y
   `Direccion_Guia_Retorno`) se crean al registrar. Reenviar la misma solicitud
   tras un error de conexión reutiliza su ID, así que no se duplica.
+- **⚡ Llenado rápido de la dirección** (arriba del formulario). Todo llena los
+  campos del formulario para revisarlos antes de registrar; nada se registra solo:
+  - **🔎 Cliente anterior**: se escribe el nombre y se elige. Salen los
+    destinatarios con dirección en `Direccion_Guia_Retorno` de `data_pedidos` y
+    `datos_pedidos`: solicitudes de guía (de esta vista y de app_v) y ventas
+    foráneas con guía, de cualquier vendedor. Hasta 3 direcciones distintas por
+    destinatario, la más reciente primero, con la fecha del último envío. No hay
+    hoja aparte: cada solicitud registrada aparece aquí la siguiente vez. El
+    nombre se muestra sin acentos para encontrarlo escribiendo «martinez».
+  - **📋 Pegar datos de envío**: el mensaje de WhatsApp o el correo tal como lo
+    mandó el cliente. Reconoce datos con etiqueta (`CALLE:`, `NO. EXTERIOR:`,
+    `NO. INTERIOR:`, `COLONIA:`, `C.P.:`, `Municipio / Alcaldía:`, `Tel`, `Cel`,
+    `Correo`, `Referencias`, `Entre calles`…) y direcciones escritas de corrido.
+    Si el texto trae los bloques `REMITENTE` y `DESTINATARIO` (formato de los
+    correos de guía) sólo se usa el destinatario.
+  - **📎 Factura, nota de venta o captura**: de la factura TD&S se toman el
+    cliente, el folio y el recuadro «Consignado a» (no el domicilio fiscal), igual
+    que la 🪄 de app_v; de la nota de venta («Orden de surtido»), el cliente y su
+    domicilio. También se leen capturas JPG/PNG/WebP con OCR y PDFs con texto
+    (por ejemplo, un correo guardado con «Convertir a PDF»). Una foto de la
+    pantalla tomada con el celular casi no se puede leer: mejor captura o pegar el
+    texto.
+  - Si los datos son de otro destinatario que el ya escrito, se reemplaza toda la
+    dirección para no mezclar dos clientes; si son del mismo, sólo se completan los
+    campos que vienen. Debajo de los botones se ve qué se llenó y qué falta.
+  - El OCR usa `tesseract` en el servidor (`packages.txt`); la lectura de PDFs,
+    `pdfplumber`. Nada se manda a servicios externos.
 - **📦 Guías cargadas**: sólo solicitudes de guía (`Tipo_Envio = 📋 Solicitudes de
   Guía`) de ARTTD JIMENA y SCHAVA a las que almacén ya les cargó la guía, del
   último mes, en `data_pedidos` (En curso) y `datos_pedidos` (Histórico). Tiene

@@ -25,6 +25,8 @@ import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from streamlit.errors import StreamlitAPIException
+from guias_clientes import SavedAddress, build_client_directory, saved_address_label
+from guias_lectura import UPLOAD_TYPES, Lectura, combinar_lecturas, leer_archivo, leer_texto, normalizar
 from user_permissions import can_edit_orders
 
 SCOPE = [
@@ -84,11 +86,18 @@ DHL_OPTIONAL_FIELDS = (
     ("Correo electrónico", "correo"),
     ("Referencias de dirección", "referencias"),
 )
+DEFAULT_COUNTRY = "México"
+# Campo del formulario → nombre que se ve en el resumen del llenado rápido.
+FORM_FIELD_LABELS = {
+    key: "Destinatario" if key == "nombre" else label for label, key in (*DHL_REQUIRED_FIELDS, *DHL_OPTIONAL_FIELDS)
+}
 
 SOURCE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
     "Fecha_Entrega", "Hora_Registro", "Folio_Factura", "id_vendedor",
     "Completados_Limpiado", "Adjuntos_Guia",
+    # Dirección DHL de solicitudes y ventas: de aquí sale el buscador de clientes anteriores.
+    "Direccion_Guia_Retorno",
 ]
 GUIDE_COLUMNS = [
     "ID_Pedido", "Cliente", "Vendedor_Registro", "Tipo_Envio", "Estado",
@@ -722,6 +731,7 @@ def apply_custom_css() -> None:
         [data-testid="stTextInputRootElement"]:focus-within, [data-testid="stTextAreaRootElement"]:focus-within,
         [data-testid="stDateInputField"]:focus-within {border-color:#2F74D6 !important;}
         [data-testid="stExpander"] summary {background:#E4EDFB !important;}
+        [data-testid="stFileUploaderDropzone"] {background:#E6EEFB; border:1px dashed #9DBBE8;}
         [data-testid="stCheckbox"] label:has(input:checked) > div:not([data-testid]) {
             background:#1F5DB8 !important; border-color:#1F5DB8 !important;
         }
@@ -814,6 +824,206 @@ def render_request_feedback() -> None:
             rerun_active_tab()
 
 
+# ==============================
+# Llenado rápido de la dirección
+# ==============================
+def form_key(field_name: str, version: int) -> str:
+    return f"guides_{field_name}_{version}"
+
+
+def autofill_note_key(version: int) -> str:
+    return f"guides_autofill_note_{version}"
+
+
+def saved_client_key(version: int) -> str:
+    return f"guides_saved_client_{version}"
+
+
+def autofill_form(address: Mapping[str, Any], version: int, *, replace: bool = False, folio: str = "") -> list[str]:
+    """Pone en el formulario los datos leídos y devuelve qué campos llenó.
+
+    Sin ``replace`` sólo se escriben los campos que se reconocieron y se respeta
+    lo demás. Con ``replace`` (cliente anterior) los campos que la dirección no
+    trae quedan vacíos. Si los datos son de otro destinatario que el ya escrito,
+    también se reemplaza todo para no mezclar dos direcciones.
+    """
+
+    state = st.session_state
+    current_name = clean_cell(state.get(form_key("nombre", version)))
+    new_name = clean_cell(address.get("nombre"))
+    if current_name and new_name and normalizar(current_name) != normalizar(new_name):
+        replace = True
+    filled = []
+    for key, label in FORM_FIELD_LABELS.items():
+        value = clean_cell(address.get(key))
+        if value:
+            state[form_key(key, version)] = value
+            filled.append(label)
+        elif replace:
+            state[form_key(key, version)] = DEFAULT_COUNTRY if key == "pais" else ""
+    if folio:
+        state[form_key("folio", version)] = folio
+        filled.append("Folio de factura")
+    return filled
+
+
+def missing_form_fields(version: int) -> list[str]:
+    return [FORM_FIELD_LABELS[key] for _, key in DHL_REQUIRED_FIELDS
+            if not clean_cell(st.session_state.get(form_key(key, version)))]
+
+
+def set_autofill_note(version: int, *, source: str = "", filled: Sequence[str] = (),
+                      warnings: Sequence[str] = (), detail: str = "") -> None:
+    st.session_state[autofill_note_key(version)] = {
+        "source": source, "filled": list(filled), "warnings": list(warnings),
+        "missing": missing_form_fields(version) if filled else [], "detail": detail,
+    }
+
+
+def apply_reading(lectura: Lectura | None, warnings: Sequence[str], version: int) -> None:
+    """Llena el formulario con lo leído de un texto o archivo y deja el resumen."""
+
+    warnings = list(warnings)
+    if lectura is None or not lectura.direccion:
+        reason = f" ({lectura.motivo})" if lectura and lectura.motivo else ""
+        source = lectura.fuente if lectura and lectura.fuente else "los archivos"
+        warnings.append(f"No se reconoció una dirección de envío en {source}{reason}. "
+                        "Revisa que traiga calle, colonia y C.P., o captura los datos a mano.")
+        set_autofill_note(version, warnings=list(dict.fromkeys(warnings)))
+        return
+    if lectura.aviso:
+        warnings.append(lectura.aviso)
+    filled = autofill_form(lectura.direccion, version, folio=lectura.folio)
+    set_autofill_note(version, source=lectura.fuente, filled=filled, warnings=list(dict.fromkeys(warnings)))
+    # Otro origen de datos: el buscador de clientes anteriores ya no aplica.
+    st.session_state[saved_client_key(version)] = None
+
+
+def on_saved_client_selected(version: int, entries: Mapping[str, SavedAddress]) -> None:
+    entry = entries.get(st.session_state.get(saved_client_key(version)) or "")
+    if entry is None:
+        return
+    filled = autofill_form(entry.address, version, replace=True)
+    detail = f"🗓 Último envío {entry.last_used:%d/%m/%y}" if entry.last_used else ""
+    if entry.reference:
+        detail += f" ({entry.reference})" if detail else f"🗓 Último envío: {entry.reference}"
+    if entry.uses > 1:
+        detail += f" · se le ha enviado {entry.uses} veces a esta dirección"
+    set_autofill_note(version, source="su último envío", filled=filled, detail=detail)
+
+
+def on_paste_fill(version: int) -> None:
+    text = clean_cell(st.session_state.get(f"guides_paste_{version}"))
+    if not text:
+        set_autofill_note(version, warnings=["Pega primero el mensaje o correo con la dirección."])
+        return
+    lectura = leer_texto(text)
+    apply_reading(lectura, [], version)
+
+
+def on_files_fill(version: int) -> None:
+    files = st.session_state.get(f"guides_files_{version}") or []
+    if not files:
+        set_autofill_note(version, warnings=["Sube primero la factura, nota de venta o captura."])
+        return
+    readings = []
+    for uploaded in files:
+        try:
+            readings.append(leer_archivo(uploaded.name, uploaded.getvalue()))
+        except Exception:
+            # Un archivo raro no debe tumbar el formulario: se captura a mano.
+            readings.append(Lectura(fuente=uploaded.name, motivo="no se pudo leer"))
+    lectura, warnings = combinar_lecturas(readings)
+    apply_reading(lectura, warnings, version)
+
+
+def _markdown_text(text: str) -> str:
+    """Texto literal en st.caption: "$" o "_" de un nombre de archivo no dan formato y los
+    corchetes, que cierran los colores de Streamlit, pasan a paréntesis."""
+
+    text = str(text).replace("[", "(").replace("]", ")")
+    return re.sub(r"([\\`*_{}<>#|$~])", r"\\\1", text)
+
+
+def render_autofill_note(version: int) -> None:
+    note = st.session_state.get(autofill_note_key(version))
+    if not note:
+        return
+    lines = []
+    if note.get("filled"):
+        lines.append(f":green[✅ Llenado con {_markdown_text(note['source'])}:] "
+                     + ", ".join(_markdown_text(label) for label in note["filled"]))
+    if note.get("detail"):
+        lines.append(_markdown_text(note["detail"]))
+    lines += [f":orange[⚠️ {_markdown_text(warning)}]" for warning in note.get("warnings") or []]
+    if note.get("missing"):
+        lines.append("⬜ Falta: " + ", ".join(note["missing"]))
+    if note.get("filled"):
+        lines.append("Revisa los datos abajo antes de registrar.")
+    with st.container(key=f"guides_autofill_note_box_{version}"):
+        st.caption("  \n".join(lines))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_client_directory(refresh_token: float | None = None) -> list[SavedAddress]:
+    """Se arma una vez por lectura de las hojas, no en cada clic de la pestaña."""
+
+    return build_client_directory(read_guides_sources(refresh_token))
+
+
+def load_client_directory() -> list[SavedAddress]:
+    try:
+        return cached_client_directory(current_refresh_token())
+    except Exception:
+        return []  # sin buscador, la solicitud se captura a mano como siempre
+
+
+def render_quick_fill(version: int) -> None:
+    """Cliente anterior, texto pegado o archivo: llenan la dirección del formulario."""
+
+    with st.container(border=True, key=f"guides_quick_fill_{version}"):
+        _render_quick_fill_tools(version)
+
+
+def _render_quick_fill_tools(version: int) -> None:
+    section_title("⚡ Llenado rápido de la dirección")
+    st.caption("Busca a un cliente al que ya se le envió, pega los datos tal como te los mandaron o sube "
+               "la factura o una captura. Después revisa el formulario y registra.")
+    directory = load_client_directory()
+    if directory:
+        entries = {entry.key: entry for entry in directory}
+        st.selectbox(
+            "🔎 Cliente anterior", list(entries), index=None, key=saved_client_key(version),
+            format_func=lambda key: saved_address_label(entries[key]),
+            placeholder="Escribe el nombre del doctor o destinatario…",
+            on_change=on_saved_client_selected, args=(version, entries),
+            help="Clientes con solicitudes de guía o ventas con guía registradas. Cada solicitud que "
+                 "registras aquí se guarda para la próxima vez.",
+        )
+    else:
+        st.caption("🔎 Todavía no hay clientes con dirección guardada; cada solicitud que registres "
+                   "quedará disponible aquí para la próxima vez.")
+    paste_column, files_column = st.columns(2)
+    with paste_column:
+        st.text_area(
+            "📋 Pegar datos de envío", key=f"guides_paste_{version}", height=150,
+            placeholder="Pega aquí el mensaje de WhatsApp o el correo con la dirección, tal como te lo "
+                        "mandaron. Si trae REMITENTE y DESTINATARIO, se usa el destinatario.",
+        )
+        st.button("🪄 Llenar con el texto", key=f"guides_paste_fill_{version}",
+                  on_click=on_paste_fill, args=(version,))
+    with files_column:
+        st.file_uploader(
+            "📎 Factura, nota de venta o captura", type=UPLOAD_TYPES, accept_multiple_files=True,
+            key=f"guides_files_{version}",
+            help="De la factura TD&S se toma el cliente, el folio y el recuadro «Consignado a». "
+                 "También se leen capturas de WhatsApp y correos guardados en PDF.",
+        )
+        st.button("🪄 Leer archivos", key=f"guides_files_fill_{version}",
+                  on_click=on_files_fill, args=(version,))
+    render_autofill_note(version)
+
+
 def render_request_tab(current_user: str = "Admin") -> None:
     """Formulario de solicitud de guía DHL a nombre de ARTTD JIMENA."""
 
@@ -829,6 +1039,9 @@ def render_request_tab(current_user: str = "Admin") -> None:
     render_request_feedback()
     version = st.session_state.get("guides_form_version", 0)
     today = app_today()
+    # País vive en session_state (no en value=) para que el llenado rápido lo cambie sin aviso.
+    st.session_state.setdefault(form_key("pais", version), DEFAULT_COUNTRY)
+    render_quick_fill(version)
 
     def field(label: str, key: str, *, area: bool = False, container=st, **kwargs) -> str:
         widget = container.text_area if area else container.text_input
@@ -855,7 +1068,7 @@ def render_request_tab(current_user: str = "Admin") -> None:
             "codigo_postal": field("Código Postal *", "codigo_postal", container=left),
             "ciudad": field("Ciudad *", "ciudad", container=right),
             "estado": field("Estado *", "estado", container=right),
-            "pais": field("País *", "pais", container=right, value="México"),
+            "pais": field("País *", "pais", container=right),
             "telefono": field("Teléfono *", "telefono", container=right),
         }
         section_title("➕ Datos opcionales / recomendados")
@@ -864,7 +1077,8 @@ def render_request_tab(current_user: str = "Admin") -> None:
         address["municipio"] = field("Municipio / Alcaldía", "municipio", container=optional[1])
         address["correo"] = field("Correo electrónico", "correo", container=optional[2])
         address["referencias"] = field("Referencias de dirección", "referencias", area=True)
-        submitted = st.form_submit_button("📋 Registrar solicitud de guía", type="primary")
+        submitted = st.form_submit_button("📋 Registrar solicitud de guía", type="primary",
+                                          key=f"guides_submit_{version}")
 
     if not submitted:
         return
@@ -887,6 +1101,7 @@ def render_request_tab(current_user: str = "Admin") -> None:
         f"✅ Solicitud de guía registrada para {destinatario} (ID {pedido_id})."
     )
     st.session_state["guides_request_celebrate"] = True
+    st.session_state.pop(autofill_note_key(version), None)
     st.session_state["guides_form_version"] = version + 1
     # Relee las hojas para que la nueva solicitud ya aparezca en En espera.
     st.session_state[GUIDES_REFRESH_TOKEN_KEY] = time.time()
