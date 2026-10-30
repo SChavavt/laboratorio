@@ -19,6 +19,7 @@ import pandas as pd
 from order_identifiers import identifier_resolver
 import streamlit as st
 import streamlit.components.v1 as components
+from connection_watchdog import install_connection_watchdog
 from google.oauth2.service_account import Credentials
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
@@ -7942,6 +7943,7 @@ def render_selected_workspace(selected_view: str, current_user: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Control de Laboratorio – ARTTDLAB", layout="wide")
+    install_connection_watchdog()
     apply_forms_notice_navigation()
     apply_app_shell_css(current_workspace_view())
     selected_view = render_workspace_header()
