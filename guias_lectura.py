@@ -134,8 +134,11 @@ _ESTADO_FINAL = re.compile(
     r"(?:^|[\s,])(" + "|".join(re.escape(e) for e in sorted(_ESTADOS_AL_FINAL, key=len, reverse=True))
     + r")\.?$"
 )
-_CP = re.compile(r"\b(?:C\.?\s*P\.?|C[oó]digo\s+postal)\s*[:\-]?\s*([0-9Oo]{5})\b", re.IGNORECASE)
+# El OCR puede confundir la ó de «Código» con una é.
+_CP = re.compile(r"\b(?:C\.?\s*P\.?|C[oóeé]digo\s+postal)\s*[:\-]?\s*([0-9Oo]{5})\b", re.IGNORECASE)
 _TELEFONO = re.compile(r"(?<!\d)(?:\+?\s*52\s*1?\s*)?(\d(?:[ ()\-.]*\d){9})(?![ ()\-.]*\d)")
+_TELEFONO_INTERNACIONAL = re.compile(r"(?<![\w+])(\+\s*\d(?:[ ()\-.]*\d){7,14})(?![ ()\-.]*\d)")
+_TELEFONO_COSTA_RICA = re.compile(r"(?<!\d)([2-8](?:[ ()\-.]*\d){7})(?![ ()\-.]*\d)")
 _TELEFONO_FACTURA = r"\(?\+?\d[\d() .\-]*\d"
 _COLONIA = re.compile(r"\b(fraccionamiento|fracc\.?|colonia|col\.?)(?!\w)\s*[:.]?\s*", re.IGNORECASE)
 _HORA = re.compile(r"\s*\d{1,2}:\d{2}\s*(?:[ap]\.?\s*m\.?|[ap]m)?\s*[✓✔]*$", re.IGNORECASE)
@@ -155,6 +158,23 @@ def telefono_diez_digitos(texto: str) -> str:
         return re.sub(r"\D", "", encontrado[1])
     digitos = re.sub(r"\D", "", str(texto or ""))
     return digitos if len(digitos) >= 7 else ""
+
+
+def _telefonos_contacto(texto: str, pais: str = "") -> list[str]:
+    """Conserva la lada internacional; los teléfonos de México siguen sin +52."""
+    texto = _CORREO.sub(" ", texto)
+    encontrados: list[tuple[int, str]] = []
+    internacionales = list(_TELEFONO_INTERNACIONAL.finditer(texto))
+    for marca in internacionales:
+        digitos = re.sub(r"\D", "", marca[1])
+        es_mexicano = digitos.startswith("52") and len(digitos) in {12, 13}
+        valor = telefono_diez_digitos(marca[1]) if es_mexicano else "+" + digitos
+        encontrados.append((marca.start(), valor))
+    patron = _TELEFONO_COSTA_RICA if normalizar(pais).rstrip(".") == "costa rica" else _TELEFONO
+    for marca in patron.finditer(texto):
+        if not any(inicio.start() <= marca.start() < inicio.end() for inicio in internacionales):
+            encontrados.append((marca.start(), re.sub(r"\D", "", marca[1])))
+    return list(dict.fromkeys(valor for _, valor in sorted(encontrados)))
 
 
 def _lugar(texto: str) -> tuple[str, str]:
@@ -387,10 +407,13 @@ _ETIQUETAS = (
     ("calle", r"calle(?:\s+y\s+(?:n[uo]m(?:ero)?|no)\.?)?|calle\s*/\s*avenida|avenida|av\.?"),
     ("direccion", r"direcci[oó]n(?:\s+de\s+(?:env[ií]o|entrega))?|domicilio"),
     ("colonia", r"colonia|col\.?|fraccionamiento|fracc\.?|barrio"),
-    ("codigo_postal", r"c\.?\s?p\.?|c[oó]digo\s+postal|cod\.?\s+postal"),
+    ("codigo_postal", r"c\.?\s?p\.?|c[oóeé]digo\s+postal|cod\.?\s+postal"),
     ("ciudad", r"ciudad|localidad|poblaci[oó]n"),
     ("municipio", r"municipio|alcald[ií]a|delegaci[oó]n|mpio\.?"),
     ("estado", r"estado|entidad(?:\s+federativa)?|edo\.?"),
+    ("distrito", r"distrito"),
+    ("canton", r"cant[oó]n"),
+    ("provincia", r"provincia"),
     ("pais", r"pa[ií]s"),
     ("correo", r"correo(?:\s+electr[oó]nico)?|e-?mail|mail"),
     ("referencias", r"referencias?|entre\s+calles|indicaciones"),
@@ -404,7 +427,10 @@ _ETIQUETAS_SOLO_CON_DOS_PUNTOS = {"no", "#", "num", "nom", "int", "ext", "av", "
 # Interiores que conservan su etiqueta: "Consultorio: 204" → "Consultorio 204".
 _INTERIOR_CON_ETIQUETA = re.compile(r"^(consultorio|oficina|suite|depto|departamento|dpto)\b", re.IGNORECASE)
 # Campos que, si vienen etiquetados, describen la dirección por sí solos.
-_CAMPOS_DE_DIRECCION = ("calle", "exterior", "colonia", "codigo_postal", "ciudad", "municipio", "estado")
+_CAMPOS_DE_DIRECCION = (
+    "calle", "exterior", "colonia", "codigo_postal", "ciudad", "municipio", "estado",
+    "distrito", "canton", "provincia",
+)
 
 
 def _campo_de_etiqueta(texto: str) -> str:
@@ -486,7 +512,7 @@ def _parece_nombre(linea: str) -> bool:
     return not _ESTADO_FINAL.search(_sin_acentos(linea).lower())
 
 
-def _nombre_libre(lineas: list[str]) -> str:
+def _nombre_libre(lineas: list[str], pais: str = "") -> str:
     """Nombre sin etiqueta: el renglón con forma de nombre junto a un teléfono o una dirección."""
     indice_cp = next((i for i, linea in enumerate(lineas) if _CP.search(linea)), -1)
     for i in range(len(lineas) - 1, -1, -1):
@@ -498,12 +524,13 @@ def _nombre_libre(lineas: list[str]) -> str:
             re.search(r"\b(?:calle|avenida|direcci[oó]n)\b|\bno\.?(?=\s*\d)|#", siguiente, re.IGNORECASE)
             or (_etiqueta(siguiente) or ("",))[0] in {*_CAMPOS_DE_DIRECCION, "direccion", "interior"}
         )
-        sigue_telefono = bool(re.search(r"tel[eé]fono|\b(?:tel|cel|celular)\b", siguiente, re.IGNORECASE)
-                              or _TELEFONO.search(siguiente))
-        if indice_cp >= 0 and i < indice_cp and not (empieza_direccion or sigue_telefono):
+        sigue_contacto = bool(re.search(r"tel[eé]fono|\b(?:tel|cel|celular)\b", siguiente, re.IGNORECASE)
+                              or _telefonos_contacto(siguiente, pais) or _CORREO.search(siguiente))
+        if indice_cp >= 0 and i < indice_cp and not (empieza_direccion or sigue_contacto):
             continue
         cercanas = " ".join(lineas[i + 1:i + 3])
-        if re.search(r"tel[eé]fono|\b(?:tel|cel|celular)\b", cercanas, re.IGNORECASE) or _TELEFONO.search(cercanas):
+        if (re.search(r"tel[eé]fono|\b(?:tel|cel|celular)\b", cercanas, re.IGNORECASE)
+                or any(_telefonos_contacto(l, pais) or _CORREO.search(l) for l in lineas[i + 1:i + 3])):
             if i > indice_cp + 1 and _parece_nombre(lineas[i - 1]) and len((lineas[i - 1] + " " + linea).split()) <= 8:
                 return lineas[i - 1] + " " + linea
             return linea
@@ -627,8 +654,6 @@ def _campos_etiquetados(lineas: list[str]) -> dict[str, str]:
             campo = "telefono"  # "Nombre: 33 1234 5678"
         elif campo == "telefono" and valor and not telefono_diez_digitos(valor) and _parece_nombre(valor):
             campo = "nombre"  # "Contacto: Ana López"
-        if campo == "telefono":
-            valor = telefono_diez_digitos(valor)
         if campo == "interior" and valor:
             etiqueta = _INTERIOR_CON_ETIQUETA.match(_limpiar(re.split(r"[:：]", linea)[0]))
             if etiqueta and not normalizar(valor).startswith(normalizar(etiqueta[1])):
@@ -636,9 +661,42 @@ def _campos_etiquetados(lineas: list[str]) -> dict[str, str]:
         if campo in campos and campos[campo]:
             continue  # se queda el primero
         campos[campo] = valor
+    if campos.get("telefono"):
+        telefonos = _telefonos_contacto(campos["telefono"], campos.get("pais", ""))
+        campos["telefono"] = telefonos[0] if telefonos else telefono_diez_digitos(campos["telefono"])
     if referencias:
         campos["referencias"] = ". ".join(referencias)
     return campos
+
+
+def _complementos_direccion(lineas: list[str], direccion: dict[str, str]) -> None:
+    """Conserva edificio, clínica e interior cuando vienen en renglones sin etiqueta."""
+    referencias = [direccion["referencias"]] if direccion.get("referencias") else []
+    for linea in lineas:
+        if _etiqueta(linea) or linea == direccion.get("nombre"):
+            continue
+        if not re.match(r"^(?:plaza|edificio|torre|cl[ií]nica)\b", linea, re.IGNORECASE):
+            continue
+        # El fijo de la clínica es una referencia, no sustituye al celular del contacto.
+        partes = re.split(r"\b(?:tel[eé]fono|tel\.?)\s*:?\s*(?=\d|\+)", linea, maxsplit=1, flags=re.IGNORECASE)
+        inmueble = partes[0].strip(" .")
+        interior = re.search(
+            r"\b(?:lobby|(?:primer|segundo|tercer|\d+)\s+piso|piso\s+\d+|planta\s+(?:baja|alta))\b",
+            inmueble, re.IGNORECASE,
+        )
+        if interior:
+            detalle = inmueble[interior.start():].strip(" .")
+            if not direccion.get("interior"):
+                direccion["interior"] = detalle
+            elif normalizar(detalle) not in normalizar(direccion["interior"]):
+                referencias.append(detalle)
+            inmueble = inmueble[:interior.start()].strip(" .")
+        if inmueble and normalizar(inmueble) not in normalizar(" ".join(direccion.values())):
+            referencias.append(inmueble)
+        if len(partes) > 1:
+            referencias.append("Tel. clínica: " + partes[1].strip(" ."))
+    if referencias:
+        direccion["referencias"] = ". ".join(dict.fromkeys(referencias))
 
 
 def leer_texto(texto: str, *, fuente: str = "el texto pegado") -> Lectura:
@@ -648,7 +706,8 @@ def leer_texto(texto: str, *, fuente: str = "el texto pegado") -> Lectura:
     libres = [linea for linea in lineas if not _etiqueta(linea)]
     direccion: dict[str, str] = {}
 
-    direccion["nombre"] = etiquetados.get("nombre") or _nombre_libre(lineas)
+    pais = etiquetados.get("pais", "")
+    direccion["nombre"] = etiquetados.get("nombre") or _nombre_libre(lineas, pais)
     if not direccion["nombre"]:
         # Correo con bloque "DESTINATARIO": el nombre es el primer renglón sin etiqueta.
         direccion["nombre"] = next((linea for linea in libres if _parece_nombre(linea)), "")
@@ -674,13 +733,17 @@ def leer_texto(texto: str, *, fuente: str = "el texto pegado") -> Lectura:
     for campo in ("colonia", "ciudad", "municipio", "interior", "correo", "referencias", "pais"):
         if campo in etiquetados:
             direccion[campo] = etiquetados[campo]
+    # Equivalencias de los campos actuales para direcciones de Costa Rica.
+    for origen, destino in (("distrito", "colonia"), ("canton", "municipio"), ("provincia", "estado")):
+        if origen in etiquetados and destino not in etiquetados:
+            direccion[destino] = etiquetados[origen].rstrip(".")
     if "colonia" in etiquetados:
         direccion["colonia"] = re.sub(r"^(?:col(?:onia)?\.?)\s+", "", direccion["colonia"], flags=re.IGNORECASE)
     if "codigo_postal" in etiquetados:
         valor = etiquetados["codigo_postal"]
         cp = re.search(r"[0-9Oo]{5}", valor)
         direccion["codigo_postal"] = cp[0].replace("O", "0").replace("o", "0") if cp else ""
-        resto = _limpiar(valor[cp.end():]) if cp else ""
+        resto = _limpiar(valor[cp.end():]).strip(". ") if cp else ""
         if resto and not re.search(r"\d", resto):  # "C.P.: 44100 Guadalajara, Jal."
             ciudad, estado = _lugar(resto)
             direccion.setdefault("ciudad", ciudad)
@@ -696,15 +759,22 @@ def leer_texto(texto: str, *, fuente: str = "el texto pegado") -> Lectura:
     if not direccion.get("ciudad") and direccion.get("municipio"):
         direccion["ciudad"] = direccion["municipio"]
 
-    telefonos = list(dict.fromkeys(
-        re.sub(r"\D", "", m[1]) for linea in lineas for m in _TELEFONO.finditer(linea)
-    ))
+    # El contacto puede estar después de la dirección, junto al correo y al celular.
+    indice_nombre = next((i for i, linea in enumerate(lineas)
+                          if linea == direccion["nombre"] or " ".join(lineas[i:i + 2]) == direccion["nombre"]), None)
+    cercanas = lineas[indice_nombre + 1:indice_nombre + 4] if indice_nombre is not None else []
+    telefonos = [telefono for linea in cercanas for telefono in _telefonos_contacto(linea, pais)]
+    telefonos += [telefono for linea in lineas for telefono in _telefonos_contacto(linea, pais)]
     direccion["telefono"] = etiquetados.get("telefono") or (telefonos[0] if telefonos else "")
     if not direccion.get("correo"):
         # "Nombre <correo>" es el encabezado de un correo (quién lo mandó), no el cliente.
         correo = _CORREO.search(re.sub(r"<[^>]*>", " ", " ".join(lineas)))
         direccion["correo"] = correo[0] if correo else ""
-    direccion = {clave: _limpiar(valor) for clave, valor in direccion.items() if _limpiar(valor)}
+    _complementos_direccion(lineas, direccion)
+    for campo in ("colonia", "ciudad", "municipio", "estado", "pais"):
+        if campo in direccion:
+            direccion[campo] = direccion[campo].rstrip(".")
+    direccion = {clave: _limpiar(valor) for clave, valor in direccion.items() if any(c.isalnum() for c in valor)}
 
     reconocido = any(direccion.get(clave) for clave in ("calle_numero", "codigo_postal", "colonia")) or (
         direccion.get("telefono") and direccion.get("nombre")
