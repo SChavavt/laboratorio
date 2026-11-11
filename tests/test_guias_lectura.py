@@ -47,6 +47,32 @@ Teléfono
 : 4421234567
 7:43 p.m."""
 
+# Texto de prueba equivalente al caso internacional, con contactos ficticios.
+# La dirección y el contacto llegan en mensajes distintos, seguidos de conversación.
+WHATSAPP_COSTA_RICA = """Reenviado
+Plaza Central
+
+Dirección: Autopista Próspero Fernández, costado oeste del Hospital CIMA.
+Distrito: San Rafael de Escazú.
+Cantón: Escazú.
+Provincia: San José.
+Código postal: 10203.
+País: Costa Rica.
+
+Clínica Dental Central. Lobby A. Primer piso. Tel. 22221234
+4:20 p. m.
+Reenviado
+María Elena Vargas Solano
+mvargas@example.com
+{telefono}
+4:20 p. m.
+Holaaa chava
+Oye me podrías apoyar subiendo está guía al app
+Es que es fuera del país
+No sé bien cómo iría la info
+Hola jime si clarooo mmmm déjame lo checo
+4:21 p. m."""
+
 
 def test_correo_usa_el_destinatario_y_descarta_remitente_y_encabezado():
     leido = leer_texto(CORREO_GUIA)
@@ -81,6 +107,69 @@ def test_whatsapp_separa_direccion_nombre_y_telefono():
     assert (d["calle_numero"], d["colonia"], d["codigo_postal"]) == (
         "Mesa del Fraile No. 11", "Fraccionamiento Misión San Joaquín", "76904")
     assert (d["ciudad"], d["estado"], d["pais"], d["telefono"]) == ("Corregidora", "Querétaro", "México", "4421234567")
+
+
+@pytest.mark.parametrize("telefono, esperado", [
+    ("+506 87771234", "+50687771234"),
+    ("87771234", "87771234"),
+])
+def test_whatsapp_costa_rica_reune_domicilio_y_contacto_internacional(telefono, esperado):
+    leido = leer_texto(WHATSAPP_COSTA_RICA.format(telefono=telefono))
+    assert not leido.motivo
+    d = leido.direccion
+    assert d["nombre"] == "María Elena Vargas Solano"
+    assert (d["colonia"], d["municipio"], d["ciudad"], d["estado"], d["codigo_postal"], d["pais"]) == (
+        "San Rafael de Escazú", "Escazú", "Escazú", "San José", "10203", "Costa Rica")
+    assert (d["telefono"], d["correo"]) == (esperado, "mvargas@example.com")
+    assert "autopista prospero fernandez" in normalizar(d["calle_numero"])
+    domicilio = normalizar(" ".join(d.get(campo, "") for campo in ("calle_numero", "referencias")))
+    assert "plaza central" in domicilio and "clinica dental central" in domicilio
+    assert "costado oeste del hospital cima" in domicilio
+    interior = normalizar(" ".join(d.get(campo, "") for campo in ("interior", "referencias")))
+    assert "lobby a" in interior and "primer piso" in interior
+    todos_los_campos = normalizar(" ".join(d.values()))
+    for charla in ("reenviado", "holaaa chava", "subiendo esta guia", "fuera del pais",
+                   "como iria la info", "dejame lo checo"):
+        assert charla not in todos_los_campos
+
+
+def test_costa_rica_con_campos_explicitos_conserva_ciudad_y_telefono():
+    d = leer_texto("""Destinatario: María Elena Vargas Solano
+Calle y número: Autopista Próspero Fernández, Plaza Central
+Colonia: San Rafael de Escazú
+Código postal: 10203.
+Ciudad: San Rafael de Escazú
+Municipio / Alcaldía: Escazú
+Estado: San José
+País: Costa Rica
+Teléfono: +506 (8777) 1234
+Interior: Lobby A, primer piso
+Correo: mvargas@example.com
+Referencias: Clínica Dental Central, costado oeste del Hospital CIMA""").direccion
+    assert d == {
+        "nombre": "María Elena Vargas Solano",
+        "calle_numero": "Autopista Próspero Fernández, Plaza Central",
+        "colonia": "San Rafael de Escazú", "codigo_postal": "10203",
+        "ciudad": "San Rafael de Escazú", "municipio": "Escazú", "estado": "San José",
+        "pais": "Costa Rica", "telefono": "+50687771234", "interior": "Lobby A, primer piso",
+        "correo": "mvargas@example.com",
+        "referencias": "Clínica Dental Central, costado oeste del Hospital CIMA",
+    }
+
+
+def test_punto_final_del_codigo_postal_no_se_interpreta_como_ciudad():
+    d = leer_texto("Nombre: Ana López\nCalle: Avenida 1 # 2\nColonia: Centro\n"
+                   "Código postal: 44100.\nEstado: Jalisco\nTeléfono: 3312345678").direccion
+    assert d["codigo_postal"] == "44100"
+    assert not d.get("ciudad")
+
+
+def test_telefono_de_costa_rica_no_se_toma_de_los_digitos_del_correo():
+    texto = WHATSAPP_COSTA_RICA.format(telefono="+506 87771234").replace(
+        "mvargas@example.com", "mvargas20261234@example.com")
+    d = leer_texto(texto).direccion
+    assert d["telefono"] == "+50687771234"
+    assert d["correo"] == "mvargas20261234@example.com"
 
 
 def test_datos_etiquetados_con_lada_y_codigo_postal_con_o():
@@ -195,6 +284,25 @@ def test_ocr_real_de_captura_oscura():
     assert normalizar(d["nombre"]) == "ana lucia perez soto"
     assert (d["calle_numero"], d["codigo_postal"], d["telefono"], d["estado"]) == (
         "Mesa del Fraile No. 11", "76904", "4421234567", "Querétaro")
+
+
+@pytest.mark.skipif(not shutil.which("tesseract"), reason="OCR nativo no instalado")
+def test_ocr_real_de_captura_de_costa_rica():
+    """OCR real sobre una imagen generada equivalente, sin la captura del usuario."""
+    texto = WHATSAPP_COSTA_RICA.format(telefono="+506 87771234")
+    imagen = Image.new("RGB", (1100, len(texto.splitlines()) * 27 + 40), (32, 38, 38))
+    font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    fuente = ImageFont.truetype(str(font_path), 18) if font_path.exists() else ImageFont.load_default(size=18)
+    ImageDraw.Draw(imagen).multiline_text((20, 20), texto, font=fuente, fill=(245, 245, 240), spacing=6)
+    salida = BytesIO()
+    imagen.save(salida, format="PNG")
+    leido = leer_archivo("costa-rica.png", salida.getvalue())
+    assert not leido.motivo
+    d = leido.direccion
+    assert normalizar(d["nombre"]) == "maria elena vargas solano"
+    assert (normalizar(d["ciudad"]), normalizar(d["estado"]), d["codigo_postal"], d["telefono"]) == (
+        "escazu", "san jose", "10203", "+50687771234")
+    assert normalizar(d["colonia"]) == "san rafael de escazu"
 
 
 def test_factura_manda_y_la_captura_del_mismo_cliente_completa():

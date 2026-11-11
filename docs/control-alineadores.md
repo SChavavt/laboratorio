@@ -356,6 +356,10 @@ Usa el mismo registro que ARTTD JIMENA en app_v, para que almacén las vea igual
     `Correo`, `Referencias`, `Entre calles`…) y direcciones escritas de corrido.
     Si el texto trae los bloques `REMITENTE` y `DESTINATARIO` (formato de los
     correos de guía) sólo se usa el destinatario.
+    En direcciones de Costa Rica, `Distrito` llena Colonia, `Cantón` llena
+    Municipio (y Ciudad si no viene explícita) y `Provincia` llena Estado.
+    Se conserva la lada `+506` y el contacto junto al correo o celular tiene
+    prioridad sobre el nombre del edificio y el teléfono de la clínica.
   - **📎 Factura, nota de venta o captura**: de la factura TD&S se toman el
     cliente, el folio y el recuadro «Consignado a» (no el domicilio fiscal), igual
     que la 🪄 de app_v; de la nota de venta («Orden de surtido»), el cliente y su
